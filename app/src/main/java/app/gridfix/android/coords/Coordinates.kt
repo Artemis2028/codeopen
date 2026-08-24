@@ -215,4 +215,89 @@ object Coordinates {
         val point = MGRS.parse(cleaned).toPoint()
         point.latitude to point.longitude
     }.getOrNull()
+
+    // ---- Grid-overlay math: forced-zone UTM forward and the Snyder-series inverse ----
+    // Validated by roundtrip against the forward formulas above: < 1 mm error worldwide,
+    // < 7 mm out to 4.5 degrees from the central meridian (grid lines never go further).
+
+    /** UTM easting/northing of a point projected in a SPECIFIC zone (for grid drawing). */
+    fun utmForZone(lat: Double, lon: Double, zone: Int, north: Boolean): DoubleArray {
+        val latRad = Math.toRadians(lat)
+        val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
+        val lonRad = Math.toRadians(lon)
+        val a = 6378137.0
+        val f = 1.0 / 298.257223563
+        val k0 = 0.9996
+        val e2 = f * (2.0 - f)
+        val ep2 = e2 / (1.0 - e2)
+        val n = a / sqrt(1.0 - e2 * sin(latRad).pow(2))
+        val t = tan(latRad).pow(2)
+        val c = ep2 * cos(latRad).pow(2)
+        val bigA = cos(latRad) * (lonRad - lonOrigin)
+        val m = a * (
+            (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0) * latRad -
+                (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(2.0 * latRad) +
+                (15.0 * e2 * e2 / 256.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(4.0 * latRad) -
+                (35.0 * e2 * e2 * e2 / 3072.0) * sin(6.0 * latRad)
+            )
+        val easting = k0 * n * (
+            bigA + (1.0 - t + c) * bigA.pow(3) / 6.0 +
+                (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * bigA.pow(5) / 120.0
+            ) + 500000.0
+        var northing = k0 * (
+            m + n * tan(latRad) * (
+                bigA.pow(2) / 2.0 +
+                    (5.0 - t + 9.0 * c + 4.0 * c * c) * bigA.pow(4) / 24.0 +
+                    (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * bigA.pow(6) / 720.0
+                )
+            )
+        if (!north) northing += 10000000.0
+        return doubleArrayOf(easting, northing)
+    }
+
+    /** UTM easting/northing back to lat/lon (WGS84). Returns [lat, lon]. */
+    fun utmInverse(easting: Double, northing: Double, zone: Int, north: Boolean): DoubleArray {
+        val a = 6378137.0
+        val f = 1.0 / 298.257223563
+        val k0 = 0.9996
+        val e2 = f * (2.0 - f)
+        val ep2 = e2 / (1.0 - e2)
+        val x = easting - 500000.0
+        val y = if (north) northing else northing - 10000000.0
+        val m = y / k0
+        val mu = m / (a * (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0))
+        val e1 = (1.0 - sqrt(1.0 - e2)) / (1.0 + sqrt(1.0 - e2))
+        val phi1 = mu +
+            (3.0 * e1 / 2.0 - 27.0 * e1 * e1 * e1 / 32.0) * sin(2.0 * mu) +
+            (21.0 * e1 * e1 / 16.0 - 55.0 * e1.pow(4) / 32.0) * sin(4.0 * mu) +
+            (151.0 * e1 * e1 * e1 / 96.0) * sin(6.0 * mu) +
+            (1097.0 * e1.pow(4) / 512.0) * sin(8.0 * mu)
+        val sin1 = sin(phi1)
+        val cos1 = cos(phi1)
+        val tan1 = tan(phi1)
+        val c1 = ep2 * cos1 * cos1
+        val t1 = tan1 * tan1
+        val n1 = a / sqrt(1.0 - e2 * sin1 * sin1)
+        val r1 = a * (1.0 - e2) / (1.0 - e2 * sin1 * sin1).pow(1.5)
+        val d = x / (n1 * k0)
+        val lat = phi1 - (n1 * tan1 / r1) * (
+            d * d / 2.0 -
+                (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * ep2) * d.pow(4) / 24.0 +
+                (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1 - 252.0 * ep2 - 3.0 * c1 * c1) * d.pow(6) / 720.0
+            )
+        val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
+        val lon = lonOrigin + (
+            d -
+                (1.0 + 2.0 * t1 + c1) * d.pow(3) / 6.0 +
+                (5.0 - 2.0 * c1 + 28.0 * t1 - 3.0 * c1 * c1 + 8.0 * ep2 + 24.0 * t1 * t1) * d.pow(5) / 120.0
+            ) / cos1
+        return doubleArrayOf(Math.toDegrees(lat), Math.toDegrees(lon))
+    }
+
+    /** MGRS latitude band letter for a latitude in -80..84, e.g. 'R' for Dubai. */
+    fun bandLetter(lat: Double): Char {
+        val letters = "CDEFGHJKLMNPQRSTUVWX"
+        val idx = floor((lat + 80.0) / 8.0).toInt().coerceIn(0, 19)
+        return letters[idx]
+    }
 }

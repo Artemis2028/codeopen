@@ -12,8 +12,8 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.2.2-m2"
+        versionCode = 5
+        versionName = "0.3.0-m3"
     }
 
     buildTypes {
@@ -50,4 +50,7 @@ dependencies {
 
     // NGA (National Geospatial-Intelligence Agency) MGRS library, MIT licensed
     implementation("mil.nga:mgrs:2.1.3")
+
+    // Map engine: osmdroid (Apache 2.0) — offline-first raster maps, MBTiles, tile cache
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 }

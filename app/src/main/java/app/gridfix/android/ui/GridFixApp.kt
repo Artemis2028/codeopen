@@ -59,8 +59,8 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.data.WaypointRepository
 import app.gridfix.android.location.LocationTracker
+import app.gridfix.android.ui.screens.MapScreen
 import app.gridfix.android.ui.screens.NavigateScreen
-import app.gridfix.android.ui.screens.PlaceholderScreen
 import app.gridfix.android.ui.screens.PositionScreen
 import app.gridfix.android.ui.screens.SettingsScreen
 import app.gridfix.android.ui.screens.WaypointsScreen
@@ -224,10 +224,23 @@ fun GridFixApp() {
                     )
                 }
                 composable("map") {
-                    PlaceholderScreen(
-                        icon = Icons.Outlined.Map,
-                        title = "Map",
-                        message = "Map view with a scrolling MGRS grid overlay and offline maps arrives in Milestone 3.",
+                    MapScreen(
+                        fix = fix,
+                        settings = settings,
+                        waypoints = waypoints,
+                        folders = folders,
+                        hasPermission = hasPermission,
+                        onRequestPermission = requestPermission,
+                        onAdd = { draft ->
+                            scope.launch { waypointRepo.add(draft, System.currentTimeMillis()) }
+                        },
+                        onUpdate = { id, draft ->
+                            scope.launch { waypointRepo.update(id, draft) }
+                        },
+                        onNavigateTo = { id ->
+                            scope.launch { waypointRepo.select(id) }
+                            goTo("navigate")
+                        },
                     )
                 }
                 composable("waypoints") {
