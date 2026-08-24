@@ -1,0 +1,60 @@
+package app.gridfix.android.data
+
+import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+private val Context.dataStore by preferencesDataStore(name = "settings")
+
+data class AppSettings(
+    val nightMode: Boolean = false,
+    val keepScreenOn: Boolean = true,
+    val mgrsDigits: Int = 8,      // 4, 6, 8, or 10
+    val latLonFormat: Int = 1,    // 0 = DD, 1 = DDM, 2 = DMS
+    val units: Int = 0,           // 0 = metric, 1 = imperial, 2 = nautical
+)
+
+class SettingsRepository(private val context: Context) {
+
+    private object Keys {
+        val NIGHT_MODE = booleanPreferencesKey("night_mode")
+        val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
+        val MGRS_DIGITS = intPreferencesKey("mgrs_digits")
+        val LATLON_FORMAT = intPreferencesKey("latlon_format")
+        val UNITS = intPreferencesKey("units")
+    }
+
+    val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
+        AppSettings(
+            nightMode = p[Keys.NIGHT_MODE] ?: false,
+            keepScreenOn = p[Keys.KEEP_SCREEN_ON] ?: true,
+            mgrsDigits = p[Keys.MGRS_DIGITS] ?: 8,
+            latLonFormat = p[Keys.LATLON_FORMAT] ?: 1,
+            units = p[Keys.UNITS] ?: 0,
+        )
+    }
+
+    suspend fun setNightMode(value: Boolean) {
+        context.dataStore.edit { it[Keys.NIGHT_MODE] = value }
+    }
+
+    suspend fun setKeepScreenOn(value: Boolean) {
+        context.dataStore.edit { it[Keys.KEEP_SCREEN_ON] = value }
+    }
+
+    suspend fun setMgrsDigits(value: Int) {
+        context.dataStore.edit { it[Keys.MGRS_DIGITS] = value }
+    }
+
+    suspend fun setLatLonFormat(value: Int) {
+        context.dataStore.edit { it[Keys.LATLON_FORMAT] = value }
+    }
+
+    suspend fun setUnits(value: Int) {
+        context.dataStore.edit { it[Keys.UNITS] = value }
+    }
+}
