@@ -3,9 +3,10 @@
 MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
 built independently with its own design and code.
 
-**Status: Milestone 3** — map view with MGRS grid overlay, waypoints on map, ruler,
-offline tile cache + area download, MBTiles import. (M1: position readout · M2: compass
-navigation, waypoint folders, NATO symbology.)
+**Status: Milestone 3, build 2** — tactical layer: control-measure graphics drawn on the
+map (phase lines, boundaries, axes of advance, direction of attack, objectives, assembly
+areas, routes), echelon marks + unit designations on symbols. (M3b1: map, MGRS grid,
+ruler, offline + MBTiles · M2: compass nav, folders, NATO symbology · M1: position.)
 
 ## Roadmap
 

@@ -64,15 +64,23 @@ fun WaypointMarker(
     affiliation: String,
     modifier: Modifier = Modifier,
     size: Dp = 30.dp,
+    echelon: String = "",
 ) {
     if (NatoSymbols.isNato(symbol)) {
         val res = NatoSymbols.resId(symbol)
         if (res != null) {
-            Image(
-                painter = painterResource(res),
-                contentDescription = NatoSymbols.label(symbol),
-                modifier = modifier.size(size),
-            )
+            Box(modifier.size(size)) {
+                Image(
+                    painter = painterResource(res),
+                    contentDescription = NatoSymbols.label(symbol),
+                    modifier = Modifier.fillMaxSize(),
+                )
+                EchelonMarks(
+                    echelon = echelon,
+                    color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
+                    halo = MaterialTheme.colorScheme.background,
+                )
+            }
             return
         }
     }
@@ -239,6 +247,75 @@ fun WaypointMarker(
                 fontWeight = FontWeight.Bold,
                 fontSize = (size.value * 0.55f).sp,
             )
+        }
+        if (!isTask) {
+            EchelonMarks(echelon = echelon, color = color, halo = MaterialTheme.colorScheme.background)
+        }
+    }
+}
+
+/**
+ * MIL-STD-2525-style echelon marks drawn along the top edge of the marker:
+ * team = slashed circle, squad/section/platoon = 1–3 dots,
+ * company/battalion/regiment = 1–3 bars, brigade = X.
+ */
+@Composable
+private fun EchelonMarks(echelon: String, color: Color, halo: Color) {
+    if (echelon.isEmpty()) return
+    Canvas(Modifier.fillMaxSize()) {
+        val w = this.size.width
+        val cy = w * 0.085f
+        val s = w * 0.13f
+        val stroke = s * 0.30f
+
+        fun marks(count: Int, dot: Boolean) {
+            val gap = if (dot) s * 0.78f else s * 0.62f
+            val x0 = w / 2f - gap * (count - 1) / 2f
+            for (i in 0 until count) {
+                val x = x0 + gap * i
+                if (dot) {
+                    drawCircle(halo, radius = s * 0.30f + stroke * 0.5f, center = Offset(x, cy))
+                    drawCircle(color, radius = s * 0.30f, center = Offset(x, cy))
+                } else {
+                    drawLine(halo, Offset(x, cy - s * 0.55f), Offset(x, cy + s * 0.55f), stroke * 1.9f)
+                    drawLine(color, Offset(x, cy - s * 0.55f), Offset(x, cy + s * 0.55f), stroke)
+                }
+            }
+        }
+
+        when (echelon) {
+            "tm" -> {
+                drawCircle(halo, radius = s * 0.62f, center = Offset(w / 2f, cy), style = Stroke(stroke * 1.9f))
+                drawCircle(color, radius = s * 0.62f, center = Offset(w / 2f, cy), style = Stroke(stroke))
+                drawLine(
+                    halo,
+                    Offset(w / 2f - s * 0.85f, cy + s * 0.85f),
+                    Offset(w / 2f + s * 0.85f, cy - s * 0.85f),
+                    stroke * 1.9f,
+                )
+                drawLine(
+                    color,
+                    Offset(w / 2f - s * 0.85f, cy + s * 0.85f),
+                    Offset(w / 2f + s * 0.85f, cy - s * 0.85f),
+                    stroke,
+                )
+            }
+            "sqd" -> marks(1, dot = true)
+            "sec" -> marks(2, dot = true)
+            "plt" -> marks(3, dot = true)
+            "co" -> marks(1, dot = false)
+            "bn" -> marks(2, dot = false)
+            "rgt" -> marks(3, dot = false)
+            "bde" -> {
+                val r = s * 0.60f
+                listOf(
+                    Offset(w / 2f - r, cy - r) to Offset(w / 2f + r, cy + r),
+                    Offset(w / 2f - r, cy + r) to Offset(w / 2f + r, cy - r),
+                ).forEach { (a, b) ->
+                    drawLine(halo, a, b, stroke * 1.9f)
+                    drawLine(color, a, b, stroke)
+                }
+            }
         }
     }
 }

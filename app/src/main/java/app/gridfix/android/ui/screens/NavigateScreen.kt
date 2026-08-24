@@ -173,6 +173,7 @@ fun NavigateScreen(
                     symbol = target?.symbol ?: "flag",
                     affiliation = target?.affiliation ?: "none",
                     size = 32.dp,
+                    echelon = target?.echelon ?: "",
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
@@ -183,7 +184,7 @@ fun NavigateScreen(
                     DropdownMenuItem(
                         text = { Text(w.name) },
                         leadingIcon = {
-                            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp)
+                            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon)
                         },
                         onClick = {
                             onSelect(w.id)

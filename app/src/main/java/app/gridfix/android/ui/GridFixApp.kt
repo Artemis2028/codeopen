@@ -56,6 +56,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import app.gridfix.android.data.AppSettings
+import app.gridfix.android.data.GraphicsRepository
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.data.WaypointRepository
 import app.gridfix.android.location.LocationTracker
@@ -79,6 +80,8 @@ fun GridFixApp() {
     val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
     val selectedId by waypointRepo.selectedId.collectAsStateWithLifecycle(initialValue = null)
     val folders by waypointRepo.folders.collectAsStateWithLifecycle(initialValue = emptyList())
+    val graphicsRepo = remember { GraphicsRepository(context.applicationContext) }
+    val graphics by graphicsRepo.graphics.collectAsStateWithLifecycle(initialValue = emptyList())
 
     // Waypoints in visible ("active") overlays are the ones offered for navigation
     val navigableWaypoints = if (folders.isEmpty()) waypoints else {
@@ -241,6 +244,16 @@ fun GridFixApp() {
                             scope.launch { waypointRepo.select(id) }
                             goTo("navigate")
                         },
+                        graphics = graphics,
+                        onAddGraphic = { name, type, points, folder, affiliation ->
+                            scope.launch {
+                                graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis())
+                            }
+                        },
+                        onUpdateGraphic = { id, name, folder, affiliation ->
+                            scope.launch { graphicsRepo.rename(id, name, folder, affiliation) }
+                        },
+                        onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                     )
                 }
                 composable("waypoints") {

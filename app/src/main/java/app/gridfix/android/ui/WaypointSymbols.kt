@@ -13,6 +13,23 @@ import androidx.compose.material.icons.outlined.WaterDrop
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.ui.graphics.vector.ImageVector
 
+/** Echelon amplifier drawn above a unit frame (MIL-STD-2525 style marks). */
+object Echelons {
+    val all = listOf(
+        "" to "None",
+        "tm" to "Team",
+        "sqd" to "Squad",
+        "sec" to "Section",
+        "plt" to "Platoon",
+        "co" to "Company",
+        "bn" to "Battalion",
+        "rgt" to "Regiment",
+        "bde" to "Brigade",
+    )
+
+    fun label(key: String): String = all.firstOrNull { it.first == key }?.second ?: key
+}
+
 /** Symbols a waypoint can carry. Keys are stored with the waypoint; icons resolve here. */
 object WaypointSymbols {
 

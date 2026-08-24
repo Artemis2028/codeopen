@@ -99,6 +99,8 @@ fun WaypointDialog(
     var folder by remember(initial) { mutableStateOf(initial?.folder ?: DEFAULT_FOLDER) }
     var symbol by remember(initial) { mutableStateOf(initial?.symbol ?: "flag") }
     var affiliation by remember(initial) { mutableStateOf(initial?.affiliation ?: "none") }
+    var echelon by remember(initial) { mutableStateOf(initial?.echelon ?: "") }
+    var designation by remember(initial) { mutableStateOf(initial?.designation ?: "") }
     var usePreset by remember(initial) { mutableStateOf(initial == null && presetLat != null) }
     var gzdSquare by remember(initial) {
         mutableStateOf(baseParts?.let { "${it.gzd} ${it.square}" } ?: "")
@@ -170,6 +172,27 @@ fun WaypointDialog(
                         affiliation = affiliation,
                     ) { symbol = it }
                 }
+
+                Text("Echelon", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Echelons.all.forEach { (key, label) ->
+                        FilterChip(
+                            selected = key == echelon,
+                            onClick = { echelon = key },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = designation,
+                    onValueChange = { designation = it.take(24) },
+                    label = { Text("Unit designation (optional)") },
+                    placeholder = { Text("e.g. A/1-502") },
+                    singleLine = true,
+                )
 
                 Text("Folder", style = MaterialTheme.typography.labelLarge)
                 if (folderNames.isNotEmpty()) {
@@ -274,7 +297,10 @@ fun WaypointDialog(
                 val finalFolder = folder.ifBlank { DEFAULT_FOLDER }
                 if (usePreset && presetLat != null && presetLon != null) {
                     onConfirm(
-                        WaypointDraft(finalName, presetLat, presetLon, finalFolder, symbol, affiliation)
+                        WaypointDraft(
+                            finalName, presetLat, presetLon, finalFolder, symbol, affiliation,
+                            echelon, designation.trim(),
+                        )
                     )
                 } else if (easting.isEmpty() || easting.length != northing.length) {
                     error = "Easting and northing need the same number of digits."
@@ -284,7 +310,10 @@ fun WaypointDialog(
                         error = "Couldn't read that grid — check the zone letters and digits."
                     } else {
                         onConfirm(
-                            WaypointDraft(finalName, parsed.first, parsed.second, finalFolder, symbol, affiliation)
+                            WaypointDraft(
+                                finalName, parsed.first, parsed.second, finalFolder, symbol, affiliation,
+                                echelon, designation.trim(),
+                            )
                         )
                     }
                 }

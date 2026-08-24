@@ -27,16 +27,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.outlined.AddLocationAlt
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Straighten
+import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -71,13 +75,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
+import app.gridfix.android.data.GeoVertex
+import app.gridfix.android.data.GraphicTypes
 import app.gridfix.android.data.MapPrefs
 import app.gridfix.android.data.MapPrefsData
+import app.gridfix.android.data.TacGraphic
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.location.FixData
+import app.gridfix.android.map.ControlMeasuresOverlay
 import app.gridfix.android.map.MapSetup
 import app.gridfix.android.map.MgrsGridOverlay
+import app.gridfix.android.ui.Affiliations
 import app.gridfix.android.ui.WaypointDialog
 import app.gridfix.android.ui.WaypointMarker
 import kotlinx.coroutines.Dispatchers
@@ -104,6 +113,7 @@ import kotlin.math.hypot
 private class MapHolder {
     var map: MapView? = null
     var grid: MgrsGridOverlay? = null
+    var cm: ControlMeasuresOverlay? = null
     var appliedLayer = ""
     var appliedNight: Boolean? = null
     var appliedGrid: Boolean? = null
@@ -120,6 +130,10 @@ fun MapScreen(
     onAdd: (WaypointDraft) -> Unit,
     onUpdate: (id: String, draft: WaypointDraft) -> Unit,
     onNavigateTo: (String) -> Unit,
+    graphics: List<TacGraphic>,
+    onAddGraphic: (name: String, type: String, points: List<GeoVertex>, folder: String, affiliation: String) -> Unit,
+    onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String) -> Unit,
+    onDeleteGraphic: (String) -> Unit,
 ) {
     val context = LocalContext.current
     remember { MapSetup.init(context.applicationContext); true }
@@ -131,17 +145,30 @@ fun MapScreen(
     val density = LocalDensity.current
     val holder = remember { MapHolder() }
 
-    // Waypoints in visible folders are drawn on the map
+    // Waypoints and graphics in visible folders are drawn on the map
     val visibleWaypoints = remember(waypoints, folders) {
         if (folders.isEmpty()) waypoints else {
             val visible = folders.filter { it.visible }.map { it.name }.toSet()
             waypoints.filter { it.folder in visible }
         }
     }
+    val visibleGraphics = remember(graphics, folders) {
+        if (folders.isEmpty()) graphics else {
+            val visible = folders.filter { it.visible }.map { it.name }.toSet()
+            val known = folders.map { it.name }.toSet()
+            graphics.filter { it.folder in visible || it.folder !in known }
+        }
+    }
 
     var cameraTick by remember { mutableIntStateOf(0) }
     var following by remember { mutableStateOf(false) }
     var rulerAnchor by remember { mutableStateOf<GeoPoint?>(null) }
+    var drawType by remember { mutableStateOf<String?>(null) }
+    var drawAffiliation by remember { mutableStateOf("none") }
+    var drawPoints by remember { mutableStateOf<List<GeoVertex>>(emptyList()) }
+    var drawPickerOpen by remember { mutableStateOf(false) }
+    var drawNameOpen by remember { mutableStateOf(false) }
+    var editingGraphic by remember { mutableStateOf<TacGraphic?>(null) }
     var newWpAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var editingWp by remember { mutableStateOf<Waypoint?>(null) }
     var infoWp by remember { mutableStateOf<Waypoint?>(null) }
@@ -209,16 +236,50 @@ fun MapScreen(
                     map.overlays.add(
                         MapEventsOverlay(object : MapEventsReceiver {
                             override fun singleTapConfirmedHelper(gp: GeoPoint?): Boolean {
-                                if (gp != null && rulerAnchor != null) {
+                                if (gp == null) return false
+                                if (drawType != null) {
+                                    drawPoints = drawPoints + GeoVertex(gp.latitude, gp.longitude)
+                                    holder.map?.invalidate()
+                                    return true
+                                }
+                                if (rulerAnchor != null) {
                                     rulerAnchor = gp
                                     return true
+                                }
+                                // Tap near a control-measure graphic opens its editor
+                                val m = holder.map
+                                val cmo = holder.cm
+                                if (m != null && cmo != null) {
+                                    val px = android.graphics.Point()
+                                    m.projection.toPixels(gp, px)
+                                    val thresh = 26f * m.context.resources.displayMetrics.density
+                                    var best: TacGraphic? = null
+                                    var bestD = thresh
+                                    for (g in cmo.graphics) {
+                                        val d = cmo.distanceToGraphic(
+                                            m.projection, g, px.x.toFloat(), px.y.toFloat()
+                                        )
+                                        if (d < bestD) {
+                                            bestD = d
+                                            best = g
+                                        }
+                                    }
+                                    if (best != null) {
+                                        editingGraphic = best
+                                        return true
+                                    }
                                 }
                                 return false
                             }
 
                             override fun longPressHelper(gp: GeoPoint?): Boolean {
                                 if (gp != null) {
-                                    newWpAt = gp.latitude to gp.longitude
+                                    if (drawType != null) {
+                                        drawPoints = drawPoints + GeoVertex(gp.latitude, gp.longitude)
+                                        holder.map?.invalidate()
+                                    } else {
+                                        newWpAt = gp.latitude to gp.longitude
+                                    }
                                     return true
                                 }
                                 return false
@@ -226,6 +287,9 @@ fun MapScreen(
                         })
                     )
                     map.overlays.add(grid)
+                    val cm = ControlMeasuresOverlay(ctx.resources.displayMetrics.density)
+                    holder.cm = cm
+                    map.overlays.add(cm)
                     map.addMapListener(object : MapListener {
                         override fun onScroll(event: ScrollEvent?): Boolean {
                             cameraTick++
@@ -274,6 +338,17 @@ fun MapScreen(
                             map.invalidate()
                         }
                     }
+                    holder.cm?.let { c ->
+                        c.graphics = visibleGraphics
+                        c.selectedId = editingGraphic?.id
+                        c.nightMode = settings.nightMode
+                        c.lightLines = !settings.nightMode && p.baseLayer == "sat" && offlineFile == null
+                        c.draftActive = drawType != null
+                        c.draftType = drawType ?: "phase_line"
+                        c.draftAffiliation = drawAffiliation
+                        c.draftPoints = drawPoints
+                        map.invalidate()
+                    }
                 },
             )
 
@@ -302,6 +377,7 @@ fun MapScreen(
                     holder.map?.onDetach()
                     holder.map = null
                     holder.grid = null
+                    holder.cm = null
                     holder.appliedLayer = ""
                     holder.appliedNight = null
                     holder.appliedGrid = null
@@ -397,7 +473,12 @@ fun MapScreen(
                                         indication = null,
                                     ) { infoWp = w }
                             ) {
-                                WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = markerDp)
+                                WaypointMarker(
+                                    symbol = w.symbol,
+                                    affiliation = w.affiliation,
+                                    size = markerDp,
+                                    echelon = w.echelon,
+                                )
                             }
                             if (showNames) {
                                 Surface(
@@ -405,7 +486,7 @@ fun MapScreen(
                                     shape = MaterialTheme.shapes.extraSmall,
                                 ) {
                                     Text(
-                                        w.name,
+                                        if (w.designation.isEmpty()) w.name else "${w.name} · ${w.designation}",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
@@ -460,6 +541,9 @@ fun MapScreen(
                     holder.map?.mapCenter?.let { GeoPoint(it.latitude, it.longitude) }
                 } else null
             }
+            MapButton(Icons.Outlined.Timeline, "Draw graphic", drawType != null) {
+                if (drawType == null) drawPickerOpen = true
+            }
             MapButton(Icons.Outlined.AddLocationAlt, "Waypoint at crosshair", false) {
                 holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
             }
@@ -484,15 +568,60 @@ fun MapScreen(
             }
         }
 
-        // Bottom readout: crosshair MGRS + range/bearing line
+        // Bottom stack: draw-mode action bar (when drawing) above the crosshair readout
         @Suppress("UNUSED_EXPRESSION")
         cameraTick
         val center = holder.map?.mapCenter
-        Surface(
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onSizeChanged { readoutHeightPx = it.height },
+        ) {
+        drawType?.let { dt ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${GraphicTypes.label(dt)} · ${drawPoints.size} pts",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    TextButton(onClick = {
+                        holder.map?.mapCenter?.let { c ->
+                            drawPoints = drawPoints + GeoVertex(c.latitude, c.longitude)
+                            holder.map?.invalidate()
+                        }
+                    }) { Text("+Point") }
+                    TextButton(
+                        enabled = drawPoints.isNotEmpty(),
+                        onClick = {
+                            drawPoints = drawPoints.dropLast(1)
+                            holder.map?.invalidate()
+                        },
+                    ) { Text("Undo") }
+                    TextButton(
+                        enabled = drawPoints.size >= GraphicTypes.minPoints(dt),
+                        onClick = { drawNameOpen = true },
+                    ) { Text("Done") }
+                    TextButton(onClick = {
+                        drawType = null
+                        drawPoints = emptyList()
+                        holder.map?.invalidate()
+                    }) { Text("✕") }
+                }
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.93f),
         ) {
             Column(
@@ -567,6 +696,7 @@ fun MapScreen(
                     maxLines = 1,
                 )
             }
+        }
         }
     }
 
@@ -711,13 +841,201 @@ fun MapScreen(
         }
     }
 
+    if (drawPickerOpen) {
+        AlertDialog(
+            onDismissRequest = { drawPickerOpen = false },
+            title = { Text("Draw graphic") },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    GraphicTypes.all.forEach { (key, label, _) ->
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    drawType = key
+                                    drawPoints = emptyList()
+                                    drawPickerOpen = false
+                                }
+                                .padding(vertical = 8.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text("Color", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Affiliations.all.forEach { key ->
+                            FilterChip(
+                                selected = key == drawAffiliation,
+                                onClick = { drawAffiliation = key },
+                                label = { Text(Affiliations.label(key)) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Then tap the map (or +Point at the crosshair) to place vertices, and Done to save.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { drawPickerOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (drawNameOpen) {
+        val dt = drawType
+        if (dt == null) {
+            drawNameOpen = false
+        } else {
+            var gName by remember(dt) { mutableStateOf("") }
+            var gFolder by remember(dt) { mutableStateOf(folders.firstOrNull { it.name == "Graphics" }?.name ?: folders.firstOrNull()?.name ?: "Graphics") }
+            var gAff by remember(dt) { mutableStateOf(drawAffiliation) }
+            AlertDialog(
+                onDismissRequest = { drawNameOpen = false },
+                title = { Text("Save ${GraphicTypes.label(dt).lowercase()}") },
+                text = {
+                    Column(
+                        Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = gName,
+                            onValueChange = { gName = it.take(20) },
+                            label = { Text("Name / designation") },
+                            placeholder = { Text(if (dt == "phase_line") "e.g. BLUE" else "e.g. BRAVO") },
+                            singleLine = true,
+                        )
+                        Text("Color", style = MaterialTheme.typography.labelLarge)
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Affiliations.all.forEach { key ->
+                                FilterChip(
+                                    selected = key == gAff,
+                                    onClick = { gAff = key },
+                                    label = { Text(Affiliations.label(key)) },
+                                )
+                            }
+                        }
+                        Text("Folder", style = MaterialTheme.typography.labelLarge)
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            (folders.map { it.name } + "Graphics").distinct().forEach { f ->
+                                FilterChip(
+                                    selected = f == gFolder,
+                                    onClick = { gFolder = f },
+                                    label = { Text(f) },
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val finalName = gName.trim().ifBlank { "${graphics.size + 1}" }
+                        onAddGraphic(finalName, dt, drawPoints, gFolder, gAff)
+                        drawNameOpen = false
+                        drawType = null
+                        drawPoints = emptyList()
+                        holder.map?.invalidate()
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { drawNameOpen = false }) { Text("Keep drawing") }
+                },
+            )
+        }
+    }
+
+    editingGraphic?.let { g ->
+        var gName by remember(g.id) { mutableStateOf(g.name) }
+        var gFolder by remember(g.id) { mutableStateOf(g.folder) }
+        var gAff by remember(g.id) { mutableStateOf(g.affiliation) }
+        AlertDialog(
+            onDismissRequest = { editingGraphic = null },
+            title = { Text(GraphicTypes.label(g.type)) },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedTextField(
+                        value = gName,
+                        onValueChange = { gName = it.take(20) },
+                        label = { Text("Name / designation") },
+                        singleLine = true,
+                    )
+                    Text("Color", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Affiliations.all.forEach { key ->
+                            FilterChip(
+                                selected = key == gAff,
+                                onClick = { gAff = key },
+                                label = { Text(Affiliations.label(key)) },
+                            )
+                        }
+                    }
+                    Text("Folder", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        (folders.map { it.name } + g.folder).distinct().forEach { f ->
+                            FilterChip(
+                                selected = f == gFolder,
+                                onClick = { gFolder = f },
+                                label = { Text(f) },
+                            )
+                        }
+                    }
+                    Text(
+                        "${g.points.size} vertices",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onUpdateGraphic(g.id, gName.trim().ifBlank { g.name }, gFolder, gAff)
+                    editingGraphic = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        onDeleteGraphic(g.id)
+                        editingGraphic = null
+                    }) { Text("Delete") }
+                    TextButton(onClick = { editingGraphic = null }) { Text("Close") }
+                }
+            },
+        )
+    }
+
     infoWp?.let { w ->
         val loc = fix.location
         AlertDialog(
             onDismissRequest = { infoWp = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp)
+                    WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon)
                     Spacer(Modifier.width(10.dp))
                     Text(w.name)
                 }
@@ -729,6 +1047,14 @@ fun MapScreen(
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (w.designation.isNotEmpty()) {
+                        Text(
+                            w.designation,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
                         "Folder: ${w.folder}",
                         style = MaterialTheme.typography.bodySmall,

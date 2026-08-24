@@ -273,7 +273,7 @@ private fun WaypointRow(
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp)
+            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon)
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(w.name, style = MaterialTheme.typography.titleMedium)

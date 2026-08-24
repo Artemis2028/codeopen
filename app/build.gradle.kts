@@ -12,8 +12,8 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.3.0-m3"
+        versionCode = 6
+        versionName = "0.4.0-m3b2"
     }
 
     buildTypes {

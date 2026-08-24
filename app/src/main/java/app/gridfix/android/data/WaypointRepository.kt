@@ -25,6 +25,8 @@ data class Waypoint(
     val folder: String = DEFAULT_FOLDER,
     val symbol: String = DEFAULT_SYMBOL,
     val affiliation: String = "none",
+    val echelon: String = "",       // "", tm, sqd, sec, plt, co, bn, rgt, bde
+    val designation: String = "",   // free-text unit designation amplifier
 )
 
 /** Everything needed to create or update a waypoint. */
@@ -35,6 +37,8 @@ data class WaypointDraft(
     val folder: String,
     val symbol: String,
     val affiliation: String,
+    val echelon: String = "",
+    val designation: String = "",
 )
 
 /** A waypoint folder ("overlay"): can exist empty, and can be toggled visible/hidden. */
@@ -91,6 +95,8 @@ class WaypointRepository(private val context: Context) {
                 folder = draft.folder.ifBlank { DEFAULT_FOLDER },
                 symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                 affiliation = draft.affiliation,
+                echelon = draft.echelon,
+                designation = draft.designation,
             )
             p[listKey] = encode(current + wp)
             p[foldersKey] = encodeFolders(
@@ -114,6 +120,8 @@ class WaypointRepository(private val context: Context) {
                         folder = draft.folder.ifBlank { DEFAULT_FOLDER },
                         symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                         affiliation = draft.affiliation,
+                        echelon = draft.echelon,
+                        designation = draft.designation,
                     ) else it
                 }
             )
@@ -156,6 +164,8 @@ class WaypointRepository(private val context: Context) {
                         folder = o.optString("folder", DEFAULT_FOLDER),
                         symbol = o.optString("symbol", DEFAULT_SYMBOL),
                         affiliation = o.optString("affiliation", "none"),
+                        echelon = o.optString("echelon", ""),
+                        designation = o.optString("designation", ""),
                     )
                 )
             }
@@ -203,6 +213,8 @@ class WaypointRepository(private val context: Context) {
                     .put("folder", w.folder)
                     .put("symbol", w.symbol)
                     .put("affiliation", w.affiliation)
+                    .put("echelon", w.echelon)
+                    .put("designation", w.designation)
             )
         }
         return arr.toString()
