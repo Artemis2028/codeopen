@@ -211,8 +211,15 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
                 for (i in 0 until n) {
                     canvas.drawCircle(xs[i], ys[i], 3f * density, handlePaint)
                 }
-                val mid = n / 2
-                label(canvas, name, xs[mid], ys[mid], color, haloColor, above = true)
+                // leg numbers at each leg midpoint, matching the route card
+                for (i in 0 until n - 1) {
+                    label(
+                        canvas, "${i + 1}",
+                        (xs[i] + xs[i + 1]) / 2f, (ys[i] + ys[i + 1]) / 2f,
+                        color, haloColor, above = true,
+                    )
+                }
+                label(canvas, name, xs[0], ys[0], color, haloColor, above = true)
             }
             else -> if (n >= 2) {          // phase_line, boundary
                 buildPolyline(n, closed = false)

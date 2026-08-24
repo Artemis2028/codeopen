@@ -21,7 +21,9 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -50,17 +52,31 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
 import app.gridfix.android.data.GraphicTypes
+import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.TacGraphic
+import app.gridfix.android.data.TrackInfo
+import app.gridfix.android.data.TrackRepository
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.location.FixData
 import app.gridfix.android.ui.Affiliations
+import app.gridfix.android.ui.Echelons
+import app.gridfix.android.ui.NatoSymbols
 import app.gridfix.android.ui.WaypointDialog
 import app.gridfix.android.ui.WaypointMarker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 @Composable
@@ -78,18 +94,52 @@ fun WaypointsScreen(
     graphics: List<TacGraphic>,
     onDeleteGraphic: (String) -> Unit,
     onClearGraphics: (folder: String) -> Unit,
+    tracks: List<TrackInfo>,
+    viewedTrackId: String?,
+    onViewTrack: (String?) -> Unit,
+    onDeleteTrack: (String) -> Unit,
+    onShowOnMap: (Waypoint) -> Unit,
+    unitNameFor: (symbol: String, echelon: String) -> String,
 )
 {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var dialogOpen by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Waypoint?>(null) }
     var deleteCandidate by remember { mutableStateOf<Waypoint?>(null) }
     var deleteGraphicCandidate by remember { mutableStateOf<TacGraphic?>(null) }
+    var deleteTrackCandidate by remember { mutableStateOf<TrackInfo?>(null) }
     var clearFolderCandidate by remember { mutableStateOf<String?>(null) }
     var newFolderOpen by remember { mutableStateOf(false) }
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     val loc = fix.location
     val byFolder = waypoints.groupBy { it.folder }
     val graphicsByFolder = graphics.groupBy { it.folder }
+
+    fun shareGpx(track: TrackInfo) {
+        scope.launch {
+            runCatching {
+                val points = TrackRepository.readPoints(context, track.id)
+                val gpx = TrackRepository.buildGpx(track.name, points)
+                val safe = track.name.replace(Regex("[^A-Za-z0-9 _-]"), "_").trim().ifBlank { "track" }
+                val file = withContext(Dispatchers.IO) {
+                    val dir = File(context.cacheDir, "share").apply { mkdirs() }
+                    File(dir, "$safe.gpx").apply { writeText(gpx) }
+                }
+                val uri = FileProvider.getUriForFile(
+                    context, "app.gridfix.android.fileprovider", file
+                )
+                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "application/gpx+xml"
+                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    android.content.Intent.createChooser(send, "Share GPX track")
+                )
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
@@ -164,7 +214,8 @@ fun WaypointsScreen(
                     }
                 }
                 if (folder.visible && !isCollapsed) {
-                    items(list, key = { it.id }) { w ->
+                    val (wps, units) = list.partition { it.kind != KIND_UNIT }
+                    items(wps, key = { it.id }) { w ->
                         WaypointRow(
                             w = w,
                             loc = loc,
@@ -172,6 +223,29 @@ fun WaypointsScreen(
                             onClick = { onNavigateTo(w.id) },
                             onEdit = { editing = w; dialogOpen = true },
                             onDelete = { deleteCandidate = w },
+                            onShowOnMap = { onShowOnMap(w) },
+                        )
+                    }
+                    if (units.isNotEmpty()) {
+                        item(key = "units-${folder.name}") {
+                            Text(
+                                "UNITS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                letterSpacing = 2.sp,
+                                modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+                            )
+                        }
+                    }
+                    items(units, key = { it.id }) { w ->
+                        WaypointRow(
+                            w = w,
+                            loc = loc,
+                            settings = settings,
+                            onClick = { onShowOnMap(w) },
+                            onEdit = { editing = w; dialogOpen = true },
+                            onDelete = { deleteCandidate = w },
+                            onShowOnMap = { onShowOnMap(w) },
                         )
                     }
                     items(glist, key = { "g-" + it.id }) { g ->
@@ -188,6 +262,28 @@ fun WaypointsScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (tracks.isNotEmpty()) {
+                item(key = "tracks-header") {
+                    Text(
+                        "TRACKS",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        letterSpacing = 2.sp,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+                items(tracks, key = { "t-" + it.id }) { t ->
+                    TrackRow(
+                        t = t,
+                        settings = settings,
+                        viewed = t.id == viewedTrackId,
+                        onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
+                        onShare = { shareGpx(t) },
+                        onDelete = { deleteTrackCandidate = t },
+                    )
                 }
             }
 
@@ -233,6 +329,7 @@ fun WaypointsScreen(
             },
             onDismiss = { dialogOpen = false },
             night = settings.nightMode,
+            unitNameFor = unitNameFor,
         )
     }
 
@@ -257,6 +354,23 @@ fun WaypointsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { newFolderOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    deleteTrackCandidate?.let { t ->
+        AlertDialog(
+            onDismissRequest = { deleteTrackCandidate = null },
+            title = { Text("Delete ${t.name}?") },
+            text = { Text("The recorded track and its point log will be removed permanently.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteTrack(t.id)
+                    deleteTrackCandidate = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTrackCandidate = null }) { Text("Cancel") }
             },
         )
     }
@@ -315,6 +429,67 @@ fun WaypointsScreen(
 }
 
 @Composable
+private fun TrackRow(
+    t: TrackInfo,
+    settings: AppSettings,
+    viewed: Boolean,
+    onView: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onView),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Map,
+                contentDescription = if (viewed) "Hide from map" else "Show on map",
+                tint = if (viewed) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(Modifier.size(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(t.name, style = MaterialTheme.typography.titleMedium)
+                val sdf = SimpleDateFormat("dd MMM HH:mm", Locale.US)
+                val durMin = if (t.endedAt > t.startedAt) (t.endedAt - t.startedAt) / 60000 else 0
+                Text(
+                    Coordinates.formatDistance(t.distanceM.toFloat(), settings.units) +
+                        "  ·  ${durMin} min  ·  " + sdf.format(Date(t.startedAt)) +
+                        if (viewed) "  ·  ON MAP" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (viewed) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onShare) {
+                Icon(
+                    Icons.Outlined.Share,
+                    contentDescription = "Share GPX",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "Delete track",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun GraphicRow(
     g: TacGraphic,
     night: Boolean,
@@ -368,6 +543,7 @@ private fun WaypointRow(
     onClick: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onShowOnMap: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -393,6 +569,18 @@ private fun WaypointRow(
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (w.kind == KIND_UNIT) {
+                    val ech = Echelons.label(w.echelon).takeIf { w.echelon.isNotEmpty() }
+                    Text(
+                        listOfNotNull(
+                            NatoSymbols.label(w.symbol),
+                            ech,
+                            w.designation.takeIf { it.isNotEmpty() },
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (loc != null) {
                 val nav = Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon)
@@ -421,6 +609,11 @@ private fun WaypointRow(
                     )
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Show on map") },
+                        leadingIcon = { Icon(Icons.Outlined.Map, contentDescription = null) },
+                        onClick = { menuOpen = false; onShowOnMap() },
+                    )
                     DropdownMenuItem(
                         text = { Text("Edit") },
                         leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },

@@ -9,14 +9,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -90,15 +97,44 @@ fun SettingsScreen(repo: SettingsRepository, settings: AppSettings) {
             selected = settings.northRef,
         ) { index -> scope.launch { repo.setNorthRef(index) } }
 
+        PaceSetting(
+            current = settings.pacePer100m,
+            onChange = { v -> scope.launch { repo.setPacePer100m(v) } },
+        )
+
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Text(
-            "GridFix 0.2.2 · Milestone 2\n" +
+            "GridFix 0.5.0 · Milestone 3\n" +
                 "Working title — the public name is decided before launch.\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
                 "GridFix is a training and recreation aid, not a primary means of navigation.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun PaceSetting(current: Int, onChange: (Int) -> Unit) {
+    var text by remember(current) { mutableStateOf(current.toString()) }
+    Column {
+        Text("Pace count per 100 m", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Your paces for 100 m on flat ground — used on route cards. Walk a known 100 m to find it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = text,
+            onValueChange = { v ->
+                text = v.filter { it.isDigit() }.take(3)
+                text.toIntOrNull()?.let { n -> if (n in 30..200) onChange(n) }
+            },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            suffix = { Text("paces") },
         )
     }
 }

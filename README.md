@@ -3,10 +3,9 @@
 MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
 built independently with its own design and code.
 
-**Status: Milestone 3, build 2** — tactical layer: control-measure graphics drawn on the
-map (phase lines, boundaries, axes of advance, direction of attack, objectives, assembly
-areas, routes), echelon marks + unit designations on symbols. (M3b1: map, MGRS grid,
-ruler, offline + MBTiles · M2: compass nav, folders, NATO symbology · M1: position.)
+**Status: Milestone 3, build 4 (navigation pack)** — route cards (per-leg azimuth/distance/
+paces, shareable), track recording with GPX export, go-to-grid, copy/share position, units
+as their own category with auto-naming, transparent unit symbols, night-mode symbology.
 
 ## Roadmap
 

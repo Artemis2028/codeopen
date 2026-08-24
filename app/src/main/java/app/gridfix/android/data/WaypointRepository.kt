@@ -27,7 +27,11 @@ data class Waypoint(
     val affiliation: String = "none",
     val echelon: String = "",       // "", tm, sqd, sec, plt, co, bn, rgt, bde
     val designation: String = "",   // free-text unit designation amplifier
+    val kind: String = KIND_WP,     // KIND_WP (navigation point) or KIND_UNIT (plotted unit)
 )
+
+const val KIND_WP = "wp"
+const val KIND_UNIT = "unit"
 
 /** Everything needed to create or update a waypoint. */
 data class WaypointDraft(
@@ -39,6 +43,7 @@ data class WaypointDraft(
     val affiliation: String,
     val echelon: String = "",
     val designation: String = "",
+    val kind: String = KIND_WP,
 )
 
 /** A waypoint folder ("overlay"): can exist empty, and can be toggled visible/hidden. */
@@ -97,6 +102,7 @@ class WaypointRepository(private val context: Context) {
                 affiliation = draft.affiliation,
                 echelon = draft.echelon,
                 designation = draft.designation,
+                kind = draft.kind,
             )
             p[listKey] = encode(current + wp)
             p[foldersKey] = encodeFolders(
@@ -122,6 +128,7 @@ class WaypointRepository(private val context: Context) {
                         affiliation = draft.affiliation,
                         echelon = draft.echelon,
                         designation = draft.designation,
+                        kind = draft.kind,
                     ) else it
                 }
             )
@@ -166,6 +173,11 @@ class WaypointRepository(private val context: Context) {
                         affiliation = o.optString("affiliation", "none"),
                         echelon = o.optString("echelon", ""),
                         designation = o.optString("designation", ""),
+                        kind = o.optString(
+                            "kind",
+                            // migrate pre-0.5 data: NATO symbols were always units
+                            if (o.optString("symbol", "").startsWith("nato_")) KIND_UNIT else KIND_WP,
+                        ),
                     )
                 )
             }
@@ -215,6 +227,7 @@ class WaypointRepository(private val context: Context) {
                     .put("affiliation", w.affiliation)
                     .put("echelon", w.echelon)
                     .put("designation", w.designation)
+                    .put("kind", w.kind)
             )
         }
         return arr.toString()

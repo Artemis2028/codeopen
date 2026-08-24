@@ -57,8 +57,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.GraphicsRepository
+import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.SettingsRepository
+import app.gridfix.android.data.TrackRepository
 import app.gridfix.android.data.WaypointRepository
+import app.gridfix.android.location.TrackRecorderService
 import app.gridfix.android.location.LocationTracker
 import app.gridfix.android.ui.screens.MapScreen
 import app.gridfix.android.ui.screens.NavigateScreen
@@ -82,6 +85,19 @@ fun GridFixApp() {
     val folders by waypointRepo.folders.collectAsStateWithLifecycle(initialValue = emptyList())
     val graphicsRepo = remember { GraphicsRepository(context.applicationContext) }
     val graphics by graphicsRepo.graphics.collectAsStateWithLifecycle(initialValue = emptyList())
+    val trackRepo = remember { TrackRepository(context.applicationContext) }
+    val tracks by trackRepo.tracks.collectAsStateWithLifecycle(initialValue = emptyList())
+    var viewedTrackId by remember { mutableStateOf<String?>(null) }
+    var mapFocus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+
+    // "Armor Brigade 1"-style automatic unit names from symbol + echelon
+    val unitNameFor: (String, String) -> String = { symbol, echelon ->
+        val func = NatoSymbols.functionLabel(symbol)
+        val ech = if (echelon.isEmpty()) "" else " " + Echelons.label(echelon)
+        val base = (func + ech).trim()
+        val n = waypoints.count { it.kind == KIND_UNIT && it.name.startsWith(base) } + 1
+        "$base $n"
+    }
 
     // Waypoints in visible ("active") overlays are the ones offered for navigation
     val navigableWaypoints = if (folders.isEmpty()) waypoints else {
@@ -258,6 +274,30 @@ fun GridFixApp() {
                             }
                         },
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
+                        viewedTrackId = viewedTrackId,
+                        onRecordStart = {
+                            scope.launch {
+                                val id = trackRepo.startTrack(System.currentTimeMillis())
+                                TrackRecorderService.start(context.applicationContext, id)
+                            }
+                        },
+                        onRecordStop = { name, discard ->
+                            val id = TrackRecorderService.active.value?.trackId
+                            TrackRecorderService.stop(context.applicationContext)
+                            if (id != null) {
+                                scope.launch {
+                                    kotlinx.coroutines.delay(400)
+                                    if (discard) {
+                                        trackRepo.discard(id)
+                                    } else {
+                                        trackRepo.finishTrack(id, name, System.currentTimeMillis())
+                                    }
+                                }
+                            }
+                        },
+                        focusAt = mapFocus,
+                        onFocusConsumed = { mapFocus = null },
+                        unitNameFor = unitNameFor,
                     )
                 }
                 composable("waypoints") {
@@ -284,6 +324,21 @@ fun GridFixApp() {
                         graphics = graphics,
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                         onClearGraphics = { folder -> scope.launch { graphicsRepo.deleteFolder(folder) } },
+                        tracks = tracks,
+                        viewedTrackId = viewedTrackId,
+                        onViewTrack = { id ->
+                            viewedTrackId = id
+                            if (id != null) goTo("map")
+                        },
+                        onDeleteTrack = { id ->
+                            if (viewedTrackId == id) viewedTrackId = null
+                            scope.launch { trackRepo.delete(id) }
+                        },
+                        onShowOnMap = { w ->
+                            mapFocus = w.lat to w.lon
+                            goTo("map")
+                        },
+                        unitNameFor = unitNameFor,
                     )
                 }
                 composable("settings") { SettingsScreen(repo, settings) }

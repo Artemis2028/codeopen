@@ -27,12 +27,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.outlined.AddLocationAlt
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MyLocation
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Straighten
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.AlertDialog
@@ -77,16 +81,21 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
 import app.gridfix.android.data.GeoVertex
 import app.gridfix.android.data.GraphicTypes
+import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.MapPrefs
 import app.gridfix.android.data.MapPrefsData
 import app.gridfix.android.data.TacGraphic
+import app.gridfix.android.data.TrackRepository
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.location.FixData
+import app.gridfix.android.location.TrackRecorderService
 import app.gridfix.android.map.ControlMeasuresOverlay
 import app.gridfix.android.map.MapSetup
 import app.gridfix.android.map.MgrsGridOverlay
+import app.gridfix.android.map.TracksOverlay
 import app.gridfix.android.ui.Affiliations
+import app.gridfix.android.ui.RouteCardDialog
 import app.gridfix.android.ui.WaypointDialog
 import app.gridfix.android.ui.WaypointMarker
 import kotlinx.coroutines.Dispatchers
@@ -114,11 +123,13 @@ private class MapHolder {
     var map: MapView? = null
     var grid: MgrsGridOverlay? = null
     var cm: ControlMeasuresOverlay? = null
+    var tracks: TracksOverlay? = null
     var appliedLayer = ""
     var appliedNight: Boolean? = null
     var appliedGrid: Boolean? = null
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MapScreen(
     fix: FixData,
@@ -134,6 +145,12 @@ fun MapScreen(
     onAddGraphic: (name: String, type: String, points: List<GeoVertex>, folder: String, affiliation: String) -> Unit,
     onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String) -> Unit,
     onDeleteGraphic: (String) -> Unit,
+    viewedTrackId: String?,
+    onRecordStart: () -> Unit,
+    onRecordStop: (name: String?, discard: Boolean) -> Unit,
+    focusAt: Pair<Double, Double>?,
+    onFocusConsumed: () -> Unit,
+    unitNameFor: (symbol: String, echelon: String) -> String,
 ) {
     val context = LocalContext.current
     remember { MapSetup.init(context.applicationContext); true }
@@ -169,6 +186,22 @@ fun MapScreen(
     var drawPickerOpen by remember { mutableStateOf(false) }
     var drawNameOpen by remember { mutableStateOf(false) }
     var editingGraphic by remember { mutableStateOf<TacGraphic?>(null) }
+    var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
+    var gotoOpen by remember { mutableStateOf(false) }
+    var stopTrackOpen by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var viewedPoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
+    val activeTrack by TrackRecorderService.active.collectAsStateWithLifecycle()
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { onRecordStart() }
+
+    LaunchedEffect(viewedTrackId) {
+        viewedPoints = if (viewedTrackId == null) emptyList() else {
+            TrackRepository.readPoints(context, viewedTrackId).map { it.lat to it.lon }
+        }
+    }
     var newWpAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var editingWp by remember { mutableStateOf<Waypoint?>(null) }
     var infoWp by remember { mutableStateOf<Waypoint?>(null) }
@@ -290,6 +323,9 @@ fun MapScreen(
                     val cm = ControlMeasuresOverlay(ctx.resources.displayMetrics.density)
                     holder.cm = cm
                     map.overlays.add(cm)
+                    val trk = TracksOverlay(ctx.resources.displayMetrics.density)
+                    holder.tracks = trk
+                    map.overlays.add(trk)
                     map.addMapListener(object : MapListener {
                         override fun onScroll(event: ScrollEvent?): Boolean {
                             cameraTick++
@@ -347,8 +383,13 @@ fun MapScreen(
                         c.draftType = drawType ?: "phase_line"
                         c.draftAffiliation = drawAffiliation
                         c.draftPoints = drawPoints
-                        map.invalidate()
                     }
+                    holder.tracks?.let { t ->
+                        t.nightMode = settings.nightMode
+                        t.activePoints = activeTrack?.points ?: emptyList()
+                        t.viewedPoints = viewedPoints
+                    }
+                    map.invalidate()
                 },
             )
 
@@ -378,6 +419,7 @@ fun MapScreen(
                     holder.map = null
                     holder.grid = null
                     holder.cm = null
+                    holder.tracks = null
                     holder.appliedLayer = ""
                     holder.appliedNight = null
                     holder.appliedGrid = null
@@ -397,6 +439,17 @@ fun MapScreen(
                 val loc = fix.location
                 if (following && loc != null) {
                     mapView?.controller?.animateTo(GeoPoint(loc.latitude, loc.longitude))
+                }
+            }
+
+            // A list row asked the map to jump somewhere (unit/waypoint "show on map")
+            LaunchedEffect(focusAt, mapView) {
+                val target = focusAt
+                val m = mapView
+                if (target != null && m != null) {
+                    val z = if (m.zoomLevelDouble < 14.0) 15.0 else m.zoomLevelDouble
+                    m.controller.animateTo(GeoPoint(target.first, target.second), z, null)
+                    onFocusConsumed()
                 }
             }
 
@@ -545,6 +598,18 @@ fun MapScreen(
             MapButton(Icons.Outlined.Timeline, "Draw graphic", drawType != null) {
                 if (drawType == null) drawPickerOpen = true
             }
+            MapButton(Icons.Outlined.Search, "Go to grid", false) { gotoOpen = true }
+            MapButton(Icons.Outlined.FiberManualRecord, "Record track", activeTrack != null) {
+                if (activeTrack != null) {
+                    stopTrackOpen = true
+                } else if (!hasPermission) {
+                    onRequestPermission()
+                } else if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    onRecordStart()
+                }
+            }
             MapButton(Icons.Outlined.AddLocationAlt, "Waypoint at crosshair", false) {
                 holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
             }
@@ -563,6 +628,16 @@ fun MapScreen(
             }
             importMessage?.let { msg ->
                 StatusChip(msg) { importMessage = null }
+            }
+            notice?.let { msg ->
+                StatusChip(msg) { notice = null }
+            }
+            activeTrack?.let { at ->
+                val km = at.distanceM / 1000.0
+                StatusChip(
+                    if (km < 1.0) String.format(java.util.Locale.US, "● REC  %.0f m", at.distanceM)
+                    else String.format(java.util.Locale.US, "● REC  %.2f km", km)
+                ) { stopTrackOpen = true }
             }
             if (!hasPermission) {
                 StatusChip("Location off — tap to enable") { onRequestPermission() }
@@ -625,8 +700,39 @@ fun MapScreen(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.93f),
         ) {
+            val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
             Column(
-                Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                Modifier
+                    .combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            val c = holder.map?.mapCenter ?: return@combinedClickable
+                            val full = Coordinates.mgrs(c.latitude, c.longitude, settings.mgrsDigits)?.full
+                            if (full != null) {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(full))
+                                notice = "Copied $full"
+                            }
+                        },
+                        onLongClick = {
+                            val c = holder.map?.mapCenter ?: return@combinedClickable
+                            val full = Coordinates.mgrs(c.latitude, c.longitude, settings.mgrsDigits)?.full
+                                ?: return@combinedClickable
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    android.content.Intent.EXTRA_TEXT,
+                                    "MGRS $full · " + Coordinates.dtg(System.currentTimeMillis()) + " · sent from GridFix",
+                                )
+                            }
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent.createChooser(send, "Share position")
+                                )
+                            }
+                        },
+                    )
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 val parts = center?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
@@ -1020,6 +1126,12 @@ fun MapScreen(
             },
             dismissButton = {
                 Row {
+                    if (g.type == "route") {
+                        TextButton(onClick = {
+                            routeCardFor = g
+                            editingGraphic = null
+                        }) { Text("Route card") }
+                    }
                     TextButton(onClick = {
                         onDeleteGraphic(g.id)
                         editingGraphic = null
@@ -1028,6 +1140,111 @@ fun MapScreen(
                 }
             },
         )
+    }
+
+    routeCardFor?.let { r ->
+        RouteCardDialog(
+            route = r,
+            settings = settings,
+            onDismiss = { routeCardFor = null },
+        )
+    }
+
+    if (gotoOpen) {
+        var gridText by remember { mutableStateOf("") }
+        var gotoError by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { gotoOpen = false },
+            title = { Text("Go to grid") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = gridText,
+                        onValueChange = {
+                            gridText = it.uppercase(java.util.Locale.US).take(20)
+                            gotoError = false
+                        },
+                        label = { Text("MGRS") },
+                        placeholder = { Text("39R TM 32565 76254") },
+                        singleLine = true,
+                        isError = gotoError,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 18.sp,
+                        ),
+                    )
+                    if (gotoError) {
+                        Text(
+                            "Couldn't read that grid — check the zone letters and digits.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val parsed = Coordinates.parseMgrs(gridText)
+                    if (parsed == null) {
+                        gotoError = true
+                    } else {
+                        val m = holder.map
+                        if (m != null) {
+                            val z = if (m.zoomLevelDouble < 14.0) 15.0 else m.zoomLevelDouble
+                            m.controller.animateTo(GeoPoint(parsed.first, parsed.second), z, null)
+                        }
+                        following = false
+                        gotoOpen = false
+                    }
+                }) { Text("Go") }
+            },
+            dismissButton = {
+                TextButton(onClick = { gotoOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (stopTrackOpen) {
+        val at = activeTrack
+        if (at == null) {
+            stopTrackOpen = false
+        } else {
+            var trackName by remember(at.trackId) { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { stopTrackOpen = false },
+                title = { Text("Stop recording?") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            Coordinates.formatDistance(at.distanceM.toFloat(), settings.units) +
+                                " recorded so far.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        OutlinedTextField(
+                            value = trackName,
+                            onValueChange = { trackName = it.take(30) },
+                            label = { Text("Track name (optional)") },
+                            singleLine = true,
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onRecordStop(trackName.trim().ifBlank { null }, false)
+                        stopTrackOpen = false
+                    }) { Text("Save track") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            onRecordStop(null, true)
+                            stopTrackOpen = false
+                        }) { Text("Discard") }
+                        TextButton(onClick = { stopTrackOpen = false }) { Text("Keep going") }
+                    }
+                },
+            )
+        }
     }
 
     infoWp?.let { w ->
@@ -1102,6 +1319,7 @@ fun MapScreen(
             },
             onDismiss = { newWpAt = null },
             night = settings.nightMode,
+            unitNameFor = unitNameFor,
         )
     }
 
@@ -1119,7 +1337,17 @@ fun MapScreen(
             },
             onDismiss = { editingWp = null },
             night = settings.nightMode,
+            unitNameFor = unitNameFor,
         )
+    }
+
+    // Auto-clear the copy/share notice
+    LaunchedEffect(notice) {
+        val n = notice
+        if (n != null) {
+            delay(3000)
+            if (notice == n) notice = null
+        }
     }
 
     // Auto-clear finished download status

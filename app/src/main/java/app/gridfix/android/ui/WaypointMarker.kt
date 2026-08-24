@@ -17,11 +17,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -85,12 +86,14 @@ fun WaypointMarker(
     if (NatoSymbols.isNato(symbol)) {
         val res = NatoSymbols.resId(symbol)
         if (res != null) {
+            val context = LocalContext.current
             Box(modifier.size(size)) {
                 Image(
-                    painter = painterResource(res),
+                    bitmap = NatoSymbols.bitmap(context, res),
                     contentDescription = NatoSymbols.label(symbol),
                     modifier = Modifier.fillMaxSize(),
                     colorFilter = if (night) NightImageFilter else null,
+                    filterQuality = FilterQuality.High,
                 )
                 EchelonMarks(
                     echelon = echelon,
@@ -283,8 +286,8 @@ private fun EchelonMarks(echelon: String, color: Color, halo: Color) {
     if (echelon.isEmpty()) return
     Canvas(Modifier.fillMaxSize()) {
         val w = this.size.width
-        val cy = w * 0.085f
-        val s = w * 0.13f
+        val cy = w * 0.10f
+        val s = w * 0.19f
         val stroke = s * 0.30f
 
         fun marks(count: Int, dot: Boolean) {

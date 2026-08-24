@@ -1,5 +1,10 @@
 package app.gridfix.android.ui
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import app.gridfix.android.R
 
 /**
@@ -107,4 +112,30 @@ object NatoSymbols {
     )
 
     fun resId(key: String): Int? = resMap[key]
+
+    // The bundled renders have opaque black backgrounds; strip them to
+    // transparent once per symbol so units sit directly on the map.
+    private val bitmapCache = HashMap<Int, ImageBitmap>()
+
+    fun bitmap(context: Context, resId: Int): ImageBitmap =
+        bitmapCache.getOrPut(resId) {
+            val src = BitmapFactory.decodeResource(context.resources, resId)
+            val out = src.copy(Bitmap.Config.ARGB_8888, true)
+            if (src !== out) src.recycle()
+            val w = out.width
+            val h = out.height
+            val pixels = IntArray(w * h)
+            out.getPixels(pixels, 0, w, 0, 0, w, h)
+            for (i in pixels.indices) {
+                val p = pixels[i]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                if (r < 40 && g < 40 && b < 40) {
+                    pixels[i] = 0x00000000
+                }
+            }
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out.asImageBitmap()
+        }
 }

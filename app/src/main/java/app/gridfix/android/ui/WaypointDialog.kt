@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.DEFAULT_FOLDER
+import app.gridfix.android.data.KIND_UNIT
+import app.gridfix.android.data.KIND_WP
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import java.util.Locale
@@ -104,6 +106,7 @@ fun WaypointDialog(
     onConfirm: (WaypointDraft) -> Unit,
     onDismiss: () -> Unit,
     night: Boolean = false,
+    unitNameFor: (symbol: String, echelon: String) -> String = { _, _ -> defaultName },
 ) {
     val baseParts = remember(initial) {
         when {
@@ -119,6 +122,7 @@ fun WaypointDialog(
     var affiliation by remember(initial) { mutableStateOf(initial?.affiliation ?: "none") }
     var echelon by remember(initial) { mutableStateOf(initial?.echelon ?: "") }
     var designation by remember(initial) { mutableStateOf(initial?.designation ?: "") }
+    var kind by remember(initial) { mutableStateOf(initial?.kind ?: KIND_WP) }
     var usePreset by remember(initial) { mutableStateOf(initial == null && presetLat != null) }
     var gzdSquare by remember(initial) {
         mutableStateOf(baseParts?.let { "${it.gzd} ${it.square}" } ?: "")
@@ -135,88 +139,120 @@ fun WaypointDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "New waypoint" else "Edit waypoint") },
+        title = {
+            Text(
+                when {
+                    initial == null && kind == KIND_UNIT -> "New unit"
+                    initial == null -> "New waypoint"
+                    kind == KIND_UNIT -> "Edit unit"
+                    else -> "Edit waypoint"
+                }
+            )
+        },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = kind == KIND_WP,
+                        onClick = {
+                            kind = KIND_WP
+                            if (symbol.startsWith("nato_")) symbol = "flag"
+                        },
+                        label = { Text("Waypoint") },
+                    )
+                    FilterChip(
+                        selected = kind == KIND_UNIT,
+                        onClick = {
+                            kind = KIND_UNIT
+                            if (!symbol.startsWith("nato_")) symbol = "nato_f_unit"
+                        },
+                        label = { Text("Unit") },
+                    )
+                }
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Name") },
-                    placeholder = { Text(defaultName) },
+                    placeholder = {
+                        Text(if (kind == KIND_UNIT) unitNameFor(symbol, echelon) else defaultName)
+                    },
                     singleLine = true,
                 )
 
-                Text("Affiliation", style = MaterialTheme.typography.labelLarge)
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Affiliations.all.forEach { key ->
-                        FilterChip(
-                            selected = key == affiliation,
-                            onClick = { affiliation = key },
-                            label = { Text(Affiliations.label(key)) },
-                        )
+                if (kind == KIND_WP) {
+                    Text("Affiliation", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Affiliations.all.forEach { key ->
+                            FilterChip(
+                                selected = key == affiliation,
+                                onClick = { affiliation = key },
+                                label = { Text(Affiliations.label(key)) },
+                            )
+                        }
                     }
-                }
 
-                Text("Symbol", style = MaterialTheme.typography.labelLarge)
-                SymbolRow(
-                    keys = WaypointSymbols.all,
-                    selected = symbol,
-                    affiliation = affiliation,
-                    labelFor = { WaypointSymbols.label(it) },
-                    night = night,
-                ) { symbol = it }
-
-                Text("Tactical task", style = MaterialTheme.typography.labelLarge)
-                SymbolRow(
-                    keys = WaypointSymbols.tasks,
-                    selected = symbol,
-                    affiliation = affiliation,
-                    labelFor = { WaypointSymbols.taskLabel(it) },
-                    night = night,
-                ) { symbol = it }
-
-                Text("NATO units", style = MaterialTheme.typography.labelLarge)
-                NatoSymbols.affiliations.forEach { (aff, affLabel) ->
-                    Text(
-                        affLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("Symbol", style = MaterialTheme.typography.labelLarge)
                     SymbolRow(
-                        keys = NatoSymbols.keysFor(aff),
+                        keys = WaypointSymbols.all,
                         selected = symbol,
                         affiliation = affiliation,
-                        labelFor = { NatoSymbols.functionLabel(it) },
+                        labelFor = { WaypointSymbols.label(it) },
                         night = night,
                     ) { symbol = it }
-                }
 
-                Text("Echelon", style = MaterialTheme.typography.labelLarge)
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Echelons.all.forEach { (key, label) ->
-                        FilterChip(
-                            selected = key == echelon,
-                            onClick = { echelon = key },
-                            label = { Text(label) },
+                    Text("Tactical task", style = MaterialTheme.typography.labelLarge)
+                    SymbolRow(
+                        keys = WaypointSymbols.tasks,
+                        selected = symbol,
+                        affiliation = affiliation,
+                        labelFor = { WaypointSymbols.taskLabel(it) },
+                        night = night,
+                    ) { symbol = it }
+                } else {
+                    Text("Unit symbol", style = MaterialTheme.typography.labelLarge)
+                    NatoSymbols.affiliations.forEach { (aff, affLabel) ->
+                        Text(
+                            affLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        SymbolRow(
+                            keys = NatoSymbols.keysFor(aff),
+                            selected = symbol,
+                            affiliation = affiliation,
+                            labelFor = { NatoSymbols.functionLabel(it) },
+                            night = night,
+                        ) { symbol = it }
                     }
+
+                    Text("Echelon", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Echelons.all.forEach { (key, label) ->
+                            FilterChip(
+                                selected = key == echelon,
+                                onClick = { echelon = key },
+                                label = { Text(label) },
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = designation,
+                        onValueChange = { designation = it.take(24) },
+                        label = { Text("Unit designation (optional)") },
+                        placeholder = { Text("e.g. A/1-502") },
+                        singleLine = true,
+                    )
                 }
-                OutlinedTextField(
-                    value = designation,
-                    onValueChange = { designation = it.take(24) },
-                    label = { Text("Unit designation (optional)") },
-                    placeholder = { Text("e.g. A/1-502") },
-                    singleLine = true,
-                )
 
                 Text("Folder", style = MaterialTheme.typography.labelLarge)
                 if (folderNames.isNotEmpty()) {
@@ -317,13 +353,24 @@ fun WaypointDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val finalName = name.ifBlank { defaultName }
+                val finalName = name.ifBlank { if (kind == KIND_UNIT) unitNameFor(symbol, echelon) else defaultName }
                 val finalFolder = folder.ifBlank { DEFAULT_FOLDER }
+                // A unit's affiliation comes from its chosen symbol frame
+                val finalAffiliation = if (kind == KIND_UNIT) {
+                    when (symbol.split("_").getOrNull(1)) {
+                        "f" -> "friendly"
+                        "h" -> "hostile"
+                        "n" -> "neutral"
+                        else -> "unknown"
+                    }
+                } else affiliation
+                val finalEchelon = if (kind == KIND_UNIT) echelon else ""
+                val finalDesignation = if (kind == KIND_UNIT) designation.trim() else ""
                 if (usePreset && presetLat != null && presetLon != null) {
                     onConfirm(
                         WaypointDraft(
-                            finalName, presetLat, presetLon, finalFolder, symbol, affiliation,
-                            echelon, designation.trim(),
+                            finalName, presetLat, presetLon, finalFolder, symbol, finalAffiliation,
+                            finalEchelon, finalDesignation, kind,
                         )
                     )
                 } else if (easting.isEmpty() || easting.length != northing.length) {
@@ -335,8 +382,8 @@ fun WaypointDialog(
                     } else {
                         onConfirm(
                             WaypointDraft(
-                                finalName, parsed.first, parsed.second, finalFolder, symbol, affiliation,
-                                echelon, designation.trim(),
+                                finalName, parsed.first, parsed.second, finalFolder, symbol, finalAffiliation,
+                                finalEchelon, finalDesignation, kind,
                             )
                         )
                     }
