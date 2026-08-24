@@ -8,6 +8,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.pow
@@ -53,19 +54,7 @@ object Coordinates {
     fun utm(lat: Double, lon: Double): UtmCoord? {
         if (lat < -80.0 || lat > 84.0) return null
 
-        var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
-        // Norway exception
-        if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
-        // Svalbard exceptions
-        if (lat in 72.0..84.0) {
-            zone = when {
-                lon in 0.0..9.0 -> 31
-                lon in 9.0..21.0 -> 33
-                lon in 21.0..33.0 -> 35
-                lon in 33.0..42.0 -> 37
-                else -> zone
-            }
-        }
+        val zone = utmZone(lat, lon)
 
         val a = 6378137.0
         val f = 1.0 / 298.257223563
@@ -160,4 +149,70 @@ object Coordinates {
         2 -> String.format(Locale.US, "%.1f kn", metersPerSecond * 1.94384)
         else -> String.format(Locale.US, "%.1f km/h", metersPerSecond * 3.6)
     }
+
+    private fun utmZone(lat: Double, lon: Double): Int {
+        var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
+        // Norway exception
+        if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
+        // Svalbard exceptions
+        if (lat in 72.0..84.0) {
+            zone = when {
+                lon in 0.0..9.0 -> 31
+                lon in 9.0..21.0 -> 33
+                lon in 21.0..33.0 -> 35
+                lon in 33.0..42.0 -> 37
+                else -> zone
+            }
+        }
+        return zone
+    }
+
+    /** Grid convergence angle (degrees): grid north minus true north for this UTM zone. */
+    fun gridConvergence(lat: Double, lon: Double): Double {
+        val zone = utmZone(lat, lon)
+        val lonOrigin = ((zone - 1) * 6 - 180 + 3).toDouble()
+        return Math.toDegrees(
+            atan(tan(Math.toRadians(lon - lonOrigin)) * sin(Math.toRadians(lat)))
+        )
+    }
+
+    data class NavInfo(val distanceMeters: Float, val bearingTrue: Float)
+
+    /** Geodesic distance and initial true bearing between two points. */
+    fun navInfo(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): NavInfo {
+        val results = FloatArray(2)
+        android.location.Location.distanceBetween(fromLat, fromLon, toLat, toLon, results)
+        return NavInfo(results[0], (results[1] + 360f) % 360f)
+    }
+
+    fun formatDistance(meters: Float, units: Int): String = when (units) {
+        1 -> {
+            val feet = meters * 3.28084f
+            if (feet < 1000f) String.format(Locale.US, "%.0f ft", feet)
+            else String.format(Locale.US, "%.2f mi", meters / 1609.344f)
+        }
+        2 -> {
+            if (meters < 1852f) String.format(Locale.US, "%.0f m", meters)
+            else String.format(Locale.US, "%.2f NM", meters / 1852f)
+        }
+        else -> {
+            if (meters < 1000f) String.format(Locale.US, "%.0f m", meters)
+            else if (meters < 10000f) String.format(Locale.US, "%.2f km", meters / 1000f)
+            else String.format(Locale.US, "%.1f km", meters / 1000f)
+        }
+    }
+
+    /** Format an angle in degrees (0..360) as degrees or NATO mils per the angle-unit setting. */
+    fun formatAngle(degrees: Float, angleUnit: Int): String = when (angleUnit) {
+        1 -> String.format(Locale.US, "%.0f mils", (degrees * 6400f / 360f + 6400f) % 6400f)
+        else -> String.format(Locale.US, "%03.0f°", (degrees + 360f) % 360f)
+    }
+
+    /** Parse an MGRS string (spaces allowed, case-insensitive) to lat/lon. Null if invalid. */
+    fun parseMgrs(text: String): Pair<Double, Double>? = runCatching {
+        val cleaned = text.trim().uppercase(Locale.US).replace(" ", "")
+        if (cleaned.isEmpty()) return null
+        val point = MGRS.parse(cleaned).toPoint()
+        point.latitude to point.longitude
+    }.getOrNull()
 }

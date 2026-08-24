@@ -16,6 +16,8 @@ data class AppSettings(
     val mgrsDigits: Int = 8,      // 4, 6, 8, or 10
     val latLonFormat: Int = 1,    // 0 = DD, 1 = DDM, 2 = DMS
     val units: Int = 0,           // 0 = metric, 1 = imperial, 2 = nautical
+    val angleUnit: Int = 0,       // 0 = degrees, 1 = NATO mils (6400)
+    val northRef: Int = 0,        // 0 = true, 1 = magnetic, 2 = grid
 )
 
 class SettingsRepository(private val context: Context) {
@@ -26,6 +28,8 @@ class SettingsRepository(private val context: Context) {
         val MGRS_DIGITS = intPreferencesKey("mgrs_digits")
         val LATLON_FORMAT = intPreferencesKey("latlon_format")
         val UNITS = intPreferencesKey("units")
+        val ANGLE_UNIT = intPreferencesKey("angle_unit")
+        val NORTH_REF = intPreferencesKey("north_ref")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -35,6 +39,8 @@ class SettingsRepository(private val context: Context) {
             mgrsDigits = p[Keys.MGRS_DIGITS] ?: 8,
             latLonFormat = p[Keys.LATLON_FORMAT] ?: 1,
             units = p[Keys.UNITS] ?: 0,
+            angleUnit = p[Keys.ANGLE_UNIT] ?: 0,
+            northRef = p[Keys.NORTH_REF] ?: 0,
         )
     }
 
@@ -56,5 +62,13 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setUnits(value: Int) {
         context.dataStore.edit { it[Keys.UNITS] = value }
+    }
+
+    suspend fun setAngleUnit(value: Int) {
+        context.dataStore.edit { it[Keys.ANGLE_UNIT] = value }
+    }
+
+    suspend fun setNorthRef(value: Int) {
+        context.dataStore.edit { it[Keys.NORTH_REF] = value }
     }
 }

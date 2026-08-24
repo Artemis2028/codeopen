@@ -78,10 +78,22 @@ fun SettingsScreen(repo: SettingsRepository, settings: AppSettings) {
             selected = settings.units,
         ) { index -> scope.launch { repo.setUnits(index) } }
 
+        ChipGroup(
+            title = "Angle unit",
+            options = listOf("Degrees", "Mils"),
+            selected = settings.angleUnit,
+        ) { index -> scope.launch { repo.setAngleUnit(index) } }
+
+        ChipGroup(
+            title = "North reference",
+            options = listOf("True", "Magnetic", "Grid"),
+            selected = settings.northRef,
+        ) { index -> scope.launch { repo.setNorthRef(index) } }
+
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Text(
-            "GridFix 0.1.0 · Milestone 1\n" +
+            "GridFix 0.2.0 · Milestone 2\n" +
                 "Working title — the public name is decided before launch.\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
                 "GridFix is a training and recreation aid, not a primary means of navigation.",
