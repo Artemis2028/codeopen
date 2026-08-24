@@ -1,0 +1,1422 @@
+name: Build GridFix
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Write source files (plain text, auditable below)
+        run: |
+          cat > '.gitignore' <<'EOF_GRIDFIX'
+          .gradle/
+          build/
+          local.properties
+          *.iml
+          .idea/
+          .DS_Store
+          captures/
+          *.keystore
+          !debug.keystore
+          EOF_GRIDFIX
+          cat > 'README.md' <<'EOF_GRIDFIX'
+          # GridFix (working title)
+
+          MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
+          built independently with its own design and code.
+
+          **Status: Milestone 1** — app shell, live MGRS/UTM/Lat-Lon position readout, night mode, settings.
+
+          ## Roadmap
+
+          - **M1** — Shell + live position readout *(this build)*
+          - **M2** — Waypoints + compass navigation (bearing arrow, distance, back-azimuth, mils)
+          - **M3** — Map view with MGRS grid overlay, offline maps, MBTiles import
+          - **M4** — GPX import/export, waypoint projection, Play Billing (3-day trial → subscription), store launch
+
+          ## Tech
+
+          Kotlin · Jetpack Compose · Material 3 · platform LocationManager + GNSS status ·
+          [NGA MGRS library](https://github.com/ngageoint/mgrs-java) (MIT) · DataStore · GitHub Actions CI
+
+          ## Build
+
+          Pushes to `main` build a debug APK automatically (Actions tab → latest run → `gridfix-debug-apk` artifact).
+
+          Local build: `gradle assembleDebug` with JDK 17 and the Android SDK installed.
+
+          ## Principles
+
+          Offline-first. No accounts, no analytics, no data collection. Not a primary means of navigation.
+          EOF_GRIDFIX
+          mkdir -p 'app'
+          cat > 'app/build.gradle.kts' <<'EOF_GRIDFIX'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+
+          android {
+              namespace = "app.gridfix.android"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "app.gridfix.android"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1.0-m1"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+
+              buildFeatures {
+                  compose = true
+              }
+          }
+
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
+              implementation(composeBom)
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("androidx.activity:activity-compose:1.9.0")
+              implementation("androidx.navigation:navigation-compose:2.7.7")
+              implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.2")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+              // NGA (National Geospatial-Intelligence Agency) MGRS library, MIT licensed
+              implementation("mil.nga:mgrs:2.1.3")
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main'
+          cat > 'app/src/main/AndroidManifest.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+              <uses-feature
+                  android:name="android.hardware.location.gps"
+                  android:required="false" />
+
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.GridFix">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android'
+          cat > 'app/src/main/java/app/gridfix/android/MainActivity.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import app.gridfix.android.ui.GridFixApp
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      GridFixApp()
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/coords'
+          cat > 'app/src/main/java/app/gridfix/android/coords/Coordinates.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.coords
+
+          import mil.nga.grid.features.Point
+          import mil.nga.mgrs.MGRS
+          import mil.nga.mgrs.grid.GridType
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import java.util.TimeZone
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.floor
+          import kotlin.math.pow
+          import kotlin.math.roundToLong
+          import kotlin.math.sin
+          import kotlin.math.sqrt
+          import kotlin.math.tan
+
+          object Coordinates {
+
+              data class MgrsParts(
+                  val gzd: String,
+                  val square: String,
+                  val easting: String,
+                  val northing: String,
+                  val full: String,
+              )
+
+              /** Lat/lon (WGS84) to MGRS at the requested precision (4/6/8/10 digits). */
+              fun mgrs(lat: Double, lon: Double, digits: Int): MgrsParts? = runCatching {
+                  val mgrs = MGRS.from(Point.point(lon, lat))
+                  val gridType = when (digits) {
+                      4 -> GridType.KILOMETER
+                      6 -> GridType.HUNDRED_METER
+                      8 -> GridType.TEN_METER
+                      else -> GridType.METER
+                  }
+                  val full = mgrs.coordinate(gridType).uppercase(Locale.US)
+                  val match = Regex("^(\\d{1,2}[A-Z])([A-Z]{2})(\\d*)$").find(full)
+                  if (match != null) {
+                      val (gzd, square, num) = match.destructured
+                      val half = num.length / 2
+                      MgrsParts(gzd, square, num.substring(0, half), num.substring(half), full)
+                  } else {
+                      // Polar regions (no zone number) or unexpected shape: show as-is
+                      MgrsParts(full, "", "", "", full)
+                  }
+              }.getOrNull()
+
+              data class UtmCoord(val zone: Int, val hemisphere: Char, val easting: Long, val northing: Long)
+
+              /** Lat/lon (WGS84) to standard UTM. Valid for lat -80..84. */
+              fun utm(lat: Double, lon: Double): UtmCoord? {
+                  if (lat < -80.0 || lat > 84.0) return null
+
+                  var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
+                  // Norway exception
+                  if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
+                  // Svalbard exceptions
+                  if (lat in 72.0..84.0) {
+                      zone = when {
+                          lon in 0.0..9.0 -> 31
+                          lon in 9.0..21.0 -> 33
+                          lon in 21.0..33.0 -> 35
+                          lon in 33.0..42.0 -> 37
+                          else -> zone
+                      }
+                  }
+
+                  val a = 6378137.0
+                  val f = 1.0 / 298.257223563
+                  val k0 = 0.9996
+                  val e2 = f * (2.0 - f)
+                  val ep2 = e2 / (1.0 - e2)
+
+                  val latRad = Math.toRadians(lat)
+                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
+                  val lonRad = Math.toRadians(lon)
+
+                  val n = a / sqrt(1.0 - e2 * sin(latRad).pow(2))
+                  val t = tan(latRad).pow(2)
+                  val c = ep2 * cos(latRad).pow(2)
+                  val bigA = cos(latRad) * (lonRad - lonOrigin)
+
+                  val m = a * (
+                      (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0) * latRad -
+                          (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(2.0 * latRad) +
+                          (15.0 * e2 * e2 / 256.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(4.0 * latRad) -
+                          (35.0 * e2 * e2 * e2 / 3072.0) * sin(6.0 * latRad)
+                      )
+
+                  val easting = k0 * n * (
+                      bigA + (1.0 - t + c) * bigA.pow(3) / 6.0 +
+                          (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * bigA.pow(5) / 120.0
+                      ) + 500000.0
+
+                  var northing = k0 * (
+                      m + n * tan(latRad) * (
+                          bigA.pow(2) / 2.0 +
+                              (5.0 - t + 9.0 * c + 4.0 * c * c) * bigA.pow(4) / 24.0 +
+                              (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * bigA.pow(6) / 720.0
+                          )
+                      )
+                  if (lat < 0) northing += 10000000.0
+
+                  return UtmCoord(
+                      zone = zone,
+                      hemisphere = if (lat >= 0) 'N' else 'S',
+                      easting = easting.roundToLong(),
+                      northing = northing.roundToLong(),
+                  )
+              }
+
+              fun formatUtm(u: UtmCoord?): String =
+                  if (u == null) "—" else "${u.zone}${u.hemisphere} ${u.easting}E ${u.northing}N"
+
+              /** Lat/lon in the chosen format: 0 = DD, 1 = DDM, 2 = DMS. */
+              fun formatLatLon(lat: Double, lon: Double, format: Int): String {
+                  fun one(value: Double, positive: Char, negative: Char): String {
+                      val hemi = if (value >= 0) positive else negative
+                      val v = abs(value)
+                      return when (format) {
+                          0 -> String.format(Locale.US, "%.5f° %c", v, hemi)
+                          2 -> {
+                              val d = v.toInt()
+                              val mFull = (v - d) * 60.0
+                              val mm = mFull.toInt()
+                              val s = (mFull - mm) * 60.0
+                              String.format(Locale.US, "%d° %02d' %04.1f\" %c", d, mm, s, hemi)
+                          }
+                          else -> {
+                              val d = v.toInt()
+                              val mFull = (v - d) * 60.0
+                              String.format(Locale.US, "%d° %06.3f' %c", d, mFull, hemi)
+                          }
+                      }
+                  }
+                  return one(lat, 'N', 'S') + "   " + one(lon, 'E', 'W')
+              }
+
+              /** Military date-time group in Zulu, e.g. 241435Z AUG 26 */
+              fun dtg(timeMillis: Long): String {
+                  val sdf = SimpleDateFormat("ddHHmm'Z' MMM yy", Locale.US)
+                  sdf.timeZone = TimeZone.getTimeZone("UTC")
+                  return sdf.format(Date(timeMillis)).uppercase(Locale.US)
+              }
+
+              fun formatAltitude(meters: Double, units: Int): String = when (units) {
+                  1 -> "${(meters * 3.28084).roundToLong()} ft"
+                  else -> "${meters.roundToLong()} m"
+              }
+
+              fun formatAccuracy(meters: Float, units: Int): String = when (units) {
+                  1 -> "±${(meters * 3.28084).roundToLong()} ft"
+                  else -> "±${meters.roundToLong()} m"
+              }
+
+              fun formatSpeed(metersPerSecond: Float, units: Int): String = when (units) {
+                  1 -> String.format(Locale.US, "%.1f mph", metersPerSecond * 2.23694)
+                  2 -> String.format(Locale.US, "%.1f kn", metersPerSecond * 1.94384)
+                  else -> String.format(Locale.US, "%.1f km/h", metersPerSecond * 3.6)
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/data'
+          cat > 'app/src/main/java/app/gridfix/android/data/SettingsRepository.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.data
+
+          import android.content.Context
+          import androidx.datastore.preferences.core.booleanPreferencesKey
+          import androidx.datastore.preferences.core.edit
+          import androidx.datastore.preferences.core.intPreferencesKey
+          import androidx.datastore.preferences.preferencesDataStore
+          import kotlinx.coroutines.flow.Flow
+          import kotlinx.coroutines.flow.map
+
+          private val Context.dataStore by preferencesDataStore(name = "settings")
+
+          data class AppSettings(
+              val nightMode: Boolean = false,
+              val keepScreenOn: Boolean = true,
+              val mgrsDigits: Int = 8,      // 4, 6, 8, or 10
+              val latLonFormat: Int = 1,    // 0 = DD, 1 = DDM, 2 = DMS
+              val units: Int = 0,           // 0 = metric, 1 = imperial, 2 = nautical
+          )
+
+          class SettingsRepository(private val context: Context) {
+
+              private object Keys {
+                  val NIGHT_MODE = booleanPreferencesKey("night_mode")
+                  val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
+                  val MGRS_DIGITS = intPreferencesKey("mgrs_digits")
+                  val LATLON_FORMAT = intPreferencesKey("latlon_format")
+                  val UNITS = intPreferencesKey("units")
+              }
+
+              val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
+                  AppSettings(
+                      nightMode = p[Keys.NIGHT_MODE] ?: false,
+                      keepScreenOn = p[Keys.KEEP_SCREEN_ON] ?: true,
+                      mgrsDigits = p[Keys.MGRS_DIGITS] ?: 8,
+                      latLonFormat = p[Keys.LATLON_FORMAT] ?: 1,
+                      units = p[Keys.UNITS] ?: 0,
+                  )
+              }
+
+              suspend fun setNightMode(value: Boolean) {
+                  context.dataStore.edit { it[Keys.NIGHT_MODE] = value }
+              }
+
+              suspend fun setKeepScreenOn(value: Boolean) {
+                  context.dataStore.edit { it[Keys.KEEP_SCREEN_ON] = value }
+              }
+
+              suspend fun setMgrsDigits(value: Int) {
+                  context.dataStore.edit { it[Keys.MGRS_DIGITS] = value }
+              }
+
+              suspend fun setLatLonFormat(value: Int) {
+                  context.dataStore.edit { it[Keys.LATLON_FORMAT] = value }
+              }
+
+              suspend fun setUnits(value: Int) {
+                  context.dataStore.edit { it[Keys.UNITS] = value }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/location'
+          cat > 'app/src/main/java/app/gridfix/android/location/LocationTracker.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.location
+
+          import android.annotation.SuppressLint
+          import android.content.Context
+          import android.location.GnssStatus
+          import android.location.Location
+          import android.location.LocationListener
+          import android.location.LocationManager
+          import android.os.Handler
+          import android.os.Looper
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.flow.update
+
+          data class FixData(
+              val location: Location? = null,
+              val satellitesUsed: Int = 0,
+              val satellitesVisible: Int = 0,
+              val gpsEnabled: Boolean = true,
+          )
+
+          /**
+           * Thin wrapper over the platform LocationManager.
+           * Uses GPS as the primary provider with a network-location fallback,
+           * and reports GNSS satellite counts.
+           */
+          class LocationTracker(context: Context) {
+
+              private val locationManager =
+                  context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+              private val _fix = MutableStateFlow(FixData())
+              val fix: StateFlow<FixData> = _fix.asStateFlow()
+
+              private var started = false
+
+              // Full interface implementation (not a SAM lambda): on API 26–29 devices the
+              // framework still calls the legacy callbacks, which have no platform defaults there.
+              private val listener = object : LocationListener {
+                  override fun onLocationChanged(loc: Location) {
+                      _fix.update { current ->
+                          val old = current.location
+                          val accept = old == null ||
+                              loc.provider == LocationManager.GPS_PROVIDER ||
+                              old.provider != LocationManager.GPS_PROVIDER ||
+                              loc.elapsedRealtimeNanos - old.elapsedRealtimeNanos > 10_000_000_000L
+                          if (accept) current.copy(location = loc) else current
+                      }
+                  }
+
+                  @Deprecated("Legacy callback, required for API 26-29 devices")
+                  override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {
+                  }
+
+                  override fun onProviderEnabled(provider: String) {
+                      if (provider == LocationManager.GPS_PROVIDER) {
+                          _fix.update { it.copy(gpsEnabled = true) }
+                      }
+                  }
+
+                  override fun onProviderDisabled(provider: String) {
+                      if (provider == LocationManager.GPS_PROVIDER) {
+                          _fix.update { it.copy(gpsEnabled = false) }
+                      }
+                  }
+              }
+
+              private val gnssCallback = object : GnssStatus.Callback() {
+                  override fun onSatelliteStatusChanged(status: GnssStatus) {
+                      var used = 0
+                      for (i in 0 until status.satelliteCount) {
+                          if (status.usedInFix(i)) used++
+                      }
+                      _fix.update { it.copy(satellitesUsed = used, satellitesVisible = status.satelliteCount) }
+                  }
+              }
+
+              @SuppressLint("MissingPermission")
+              fun start() {
+                  if (started) return
+                  started = true
+                  val looper = Looper.getMainLooper()
+                  try {
+                      val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                      if (gpsEnabled) {
+                          locationManager.requestLocationUpdates(
+                              LocationManager.GPS_PROVIDER, 1000L, 0f, listener, looper
+                          )
+                      }
+                      if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                          locationManager.requestLocationUpdates(
+                              LocationManager.NETWORK_PROVIDER, 5000L, 0f, listener, looper
+                          )
+                      }
+                      locationManager.registerGnssStatusCallback(gnssCallback, Handler(looper))
+
+                      val last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                          ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                      _fix.update { it.copy(location = last ?: it.location, gpsEnabled = gpsEnabled) }
+                  } catch (_: SecurityException) {
+                      started = false
+                  } catch (_: IllegalArgumentException) {
+                      // A provider does not exist on this device; ignore
+                  }
+              }
+
+              fun stop() {
+                  if (!started) return
+                  started = false
+                  try {
+                      locationManager.removeUpdates(listener)
+                      locationManager.unregisterGnssStatusCallback(gnssCallback)
+                  } catch (_: SecurityException) {
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
+          cat > 'app/src/main/java/app/gridfix/android/ui/GridFixApp.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui
+
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.automirrored.filled.ArrowBack
+          import androidx.compose.material.icons.outlined.DarkMode
+          import androidx.compose.material.icons.outlined.Explore
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material.icons.outlined.LightMode
+          import androidx.compose.material.icons.outlined.Map
+          import androidx.compose.material.icons.outlined.MyLocation
+          import androidx.compose.material.icons.outlined.Settings
+          import androidx.compose.material3.CenterAlignedTopAppBar
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.NavigationBar
+          import androidx.compose.material3.NavigationBarItem
+          import androidx.compose.material3.NavigationBarItemDefaults
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBarDefaults
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.vector.ImageVector
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalView
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.sp
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import androidx.navigation.compose.NavHost
+          import androidx.navigation.compose.composable
+          import androidx.navigation.compose.currentBackStackEntryAsState
+          import androidx.navigation.compose.rememberNavController
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.SettingsRepository
+          import app.gridfix.android.ui.screens.PlaceholderScreen
+          import app.gridfix.android.ui.screens.PositionScreen
+          import app.gridfix.android.ui.screens.SettingsScreen
+          import app.gridfix.android.ui.theme.GridFixTheme
+          import kotlinx.coroutines.launch
+
+          private data class NavItem(val route: String, val label: String, val icon: ImageVector)
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun GridFixApp() {
+              val context = LocalContext.current
+              val repo = remember { SettingsRepository(context.applicationContext) }
+              val settings by repo.settings.collectAsStateWithLifecycle(initialValue = AppSettings())
+              val scope = rememberCoroutineScope()
+
+              val navController = rememberNavController()
+              val backStackEntry by navController.currentBackStackEntryAsState()
+              val currentRoute = backStackEntry?.destination?.route
+
+              val view = LocalView.current
+              DisposableEffect(settings.keepScreenOn) {
+                  view.keepScreenOn = settings.keepScreenOn
+                  onDispose { view.keepScreenOn = false }
+              }
+
+              val items = listOf(
+                  NavItem("position", "Position", Icons.Outlined.MyLocation),
+                  NavItem("navigate", "Navigate", Icons.Outlined.Explore),
+                  NavItem("map", "Map", Icons.Outlined.Map),
+                  NavItem("waypoints", "Waypoints", Icons.Outlined.Flag),
+              )
+
+              GridFixTheme(nightMode = settings.nightMode) {
+                  Scaffold(
+                      containerColor = MaterialTheme.colorScheme.background,
+                      topBar = {
+                          CenterAlignedTopAppBar(
+                              title = {
+                                  Text(
+                                      "GRIDFIX",
+                                      fontFamily = FontFamily.Monospace,
+                                      fontWeight = FontWeight.Bold,
+                                      letterSpacing = 4.sp,
+                                  )
+                              },
+                              navigationIcon = {
+                                  if (currentRoute == "settings") {
+                                      IconButton(onClick = { navController.popBackStack() }) {
+                                          Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                      }
+                                  }
+                              },
+                              actions = {
+                                  IconButton(onClick = { scope.launch { repo.setNightMode(!settings.nightMode) } }) {
+                                      Icon(
+                                          if (settings.nightMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+                                          contentDescription = "Toggle night mode",
+                                      )
+                                  }
+                                  if (currentRoute != "settings") {
+                                      IconButton(onClick = {
+                                          navController.navigate("settings") { launchSingleTop = true }
+                                      }) {
+                                          Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                                      }
+                                  }
+                              },
+                              colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                                  containerColor = MaterialTheme.colorScheme.background,
+                                  titleContentColor = MaterialTheme.colorScheme.primary,
+                                  actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                              ),
+                          )
+                      },
+                      bottomBar = {
+                          NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                              items.forEach { item ->
+                                  NavigationBarItem(
+                                      selected = currentRoute == item.route,
+                                      onClick = {
+                                          navController.navigate(item.route) {
+                                              popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                              launchSingleTop = true
+                                              restoreState = true
+                                          }
+                                      },
+                                      icon = { Icon(item.icon, contentDescription = item.label) },
+                                      label = { Text(item.label) },
+                                      colors = NavigationBarItemDefaults.colors(
+                                          selectedIconColor = MaterialTheme.colorScheme.primary,
+                                          selectedTextColor = MaterialTheme.colorScheme.primary,
+                                          unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          indicatorColor = MaterialTheme.colorScheme.surfaceVariant,
+                                      ),
+                                  )
+                              }
+                          }
+                      },
+                  ) { innerPadding ->
+                      NavHost(
+                          navController = navController,
+                          startDestination = "position",
+                          modifier = Modifier.padding(innerPadding),
+                      ) {
+                          composable("position") { PositionScreen(repo, settings) }
+                          composable("navigate") {
+                              PlaceholderScreen(
+                                  icon = Icons.Outlined.Explore,
+                                  title = "Navigate",
+                                  message = "Compass navigation to your waypoints — bearing arrow, distance, and back-azimuth — arrives in Milestone 2.",
+                              )
+                          }
+                          composable("map") {
+                              PlaceholderScreen(
+                                  icon = Icons.Outlined.Map,
+                                  title = "Map",
+                                  message = "Map view with a scrolling MGRS grid overlay and offline maps arrives in Milestone 3.",
+                              )
+                          }
+                          composable("waypoints") {
+                              PlaceholderScreen(
+                                  icon = Icons.Outlined.Flag,
+                                  title = "Waypoints",
+                                  message = "Waypoint creation, groups, and GPX import/export arrive in Milestone 2.",
+                              )
+                          }
+                          composable("settings") { SettingsScreen(repo, settings) }
+                      }
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/PlaceholderScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.vector.ImageVector
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+
+          @Composable
+          fun PlaceholderScreen(icon: ImageVector, title: String, message: String) {
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .padding(32.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.Center,
+              ) {
+                  Icon(
+                      icon,
+                      contentDescription = null,
+                      modifier = Modifier.size(64.dp),
+                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                  Spacer(Modifier.height(16.dp))
+                  Text(title, style = MaterialTheme.typography.headlineSmall)
+                  Spacer(Modifier.height(8.dp))
+                  Text(
+                      message,
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      textAlign = TextAlign.Center,
+                  )
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/PositionScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import android.Manifest
+          import android.content.pm.PackageManager
+          import android.location.Location
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.MyLocation
+          import androidx.compose.material3.AssistChip
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.produceState
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.SettingsRepository
+          import app.gridfix.android.location.LocationTracker
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import kotlin.math.roundToInt
+
+          @Composable
+          fun PositionScreen(repo: SettingsRepository, settings: AppSettings) {
+              val context = LocalContext.current
+              val scope = rememberCoroutineScope()
+
+              var hasPermission by remember {
+                  mutableStateOf(
+                      ContextCompat.checkSelfPermission(
+                          context, Manifest.permission.ACCESS_FINE_LOCATION
+                      ) == PackageManager.PERMISSION_GRANTED
+                  )
+              }
+              val permissionLauncher = rememberLauncherForActivityResult(
+                  ActivityResultContracts.RequestMultiplePermissions()
+              ) { result ->
+                  hasPermission = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                      result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+              }
+
+              val tracker = remember { LocationTracker(context.applicationContext) }
+              DisposableEffect(hasPermission) {
+                  if (hasPermission) tracker.start()
+                  onDispose { tracker.stop() }
+              }
+              val fix by tracker.fix.collectAsStateWithLifecycle()
+
+              // 1 Hz ticker for the clock and fix age
+              val now by produceState(initialValue = System.currentTimeMillis()) {
+                  while (true) {
+                      value = System.currentTimeMillis()
+                      delay(1000)
+                  }
+              }
+
+              if (!hasPermission) {
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(32.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.Center,
+                  ) {
+                      Icon(
+                          Icons.Outlined.MyLocation,
+                          contentDescription = null,
+                          modifier = Modifier.size(56.dp),
+                          tint = MaterialTheme.colorScheme.primary,
+                      )
+                      Spacer(Modifier.height(16.dp))
+                      Text("Location access needed", style = MaterialTheme.typography.titleLarge)
+                      Spacer(Modifier.height(8.dp))
+                      Text(
+                          "GridFix reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          textAlign = TextAlign.Center,
+                      )
+                      Spacer(Modifier.height(24.dp))
+                      Button(onClick = {
+                          permissionLauncher.launch(
+                              arrayOf(
+                                  Manifest.permission.ACCESS_FINE_LOCATION,
+                                  Manifest.permission.ACCESS_COARSE_LOCATION,
+                              )
+                          )
+                      }) {
+                          Text("Grant location access")
+                      }
+                  }
+                  return
+              }
+
+              val loc = fix.location
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(16.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+              ) {
+                  // ---- Main MGRS card ----
+                  Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                      Column(
+                          Modifier
+                              .fillMaxWidth()
+                              .padding(20.dp)
+                      ) {
+                          Row(
+                              Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.SpaceBetween,
+                              verticalAlignment = Alignment.CenterVertically,
+                          ) {
+                              Text(
+                                  "MGRS · WGS84",
+                                  style = MaterialTheme.typography.labelMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  letterSpacing = 1.5.sp,
+                              )
+                              AssistChip(
+                                  onClick = {
+                                      val next = when (settings.mgrsDigits) {
+                                          4 -> 6
+                                          6 -> 8
+                                          8 -> 10
+                                          else -> 4
+                                      }
+                                      scope.launch { repo.setMgrsDigits(next) }
+                                  },
+                                  label = { Text("${settings.mgrsDigits}-DIGIT") },
+                              )
+                          }
+                          Spacer(Modifier.height(10.dp))
+
+                          if (loc == null) {
+                              Text(
+                                  "ACQUIRING SIGNAL",
+                                  style = MaterialTheme.typography.headlineSmall,
+                                  fontFamily = FontFamily.Monospace,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                              Spacer(Modifier.height(6.dp))
+                              Text(
+                                  "${fix.satellitesUsed}/${fix.satellitesVisible} satellites",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                              if (!fix.gpsEnabled) {
+                                  Spacer(Modifier.height(6.dp))
+                                  Text(
+                                      "GPS is off — enable Location in your phone's settings.",
+                                      style = MaterialTheme.typography.bodyMedium,
+                                      color = MaterialTheme.colorScheme.error,
+                                  )
+                              }
+                          } else {
+                              val parts = Coordinates.mgrs(loc.latitude, loc.longitude, settings.mgrsDigits)
+                              when {
+                                  parts == null -> Text(
+                                      "—",
+                                      style = MaterialTheme.typography.headlineLarge,
+                                      fontFamily = FontFamily.Monospace,
+                                  )
+                                  parts.square.isEmpty() -> Text(
+                                      parts.full,
+                                      style = MaterialTheme.typography.headlineMedium,
+                                      fontFamily = FontFamily.Monospace,
+                                      fontWeight = FontWeight.Bold,
+                                      color = MaterialTheme.colorScheme.primary,
+                                  )
+                                  else -> {
+                                      Text(
+                                          "${parts.gzd} ${parts.square}",
+                                          style = MaterialTheme.typography.headlineSmall,
+                                          fontFamily = FontFamily.Monospace,
+                                          color = MaterialTheme.colorScheme.onSurface,
+                                      )
+                                      Spacer(Modifier.height(2.dp))
+                                      Text(
+                                          "${parts.easting} ${parts.northing}",
+                                          fontSize = 38.sp,
+                                          lineHeight = 44.sp,
+                                          fontFamily = FontFamily.Monospace,
+                                          fontWeight = FontWeight.Bold,
+                                          color = MaterialTheme.colorScheme.primary,
+                                      )
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  // ---- Secondary readouts ----
+                  InfoCard(
+                      label = "LAT / LON",
+                      value = loc?.let { Coordinates.formatLatLon(it.latitude, it.longitude, settings.latLonFormat) } ?: "—",
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+                  InfoCard(
+                      label = "UTM",
+                      value = loc?.let { Coordinates.formatUtm(Coordinates.utm(it.latitude, it.longitude)) } ?: "—",
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      InfoCard(
+                          label = "ALTITUDE MSL",
+                          value = if (loc != null && loc.hasAltitude()) {
+                              Coordinates.formatAltitude(loc.altitude, settings.units)
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      InfoCard(
+                          label = "ACCURACY",
+                          value = if (loc != null && loc.hasAccuracy()) {
+                              Coordinates.formatAccuracy(loc.accuracy, settings.units)
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      InfoCard(
+                          label = "SPEED",
+                          value = if (loc != null && loc.hasSpeed()) {
+                              Coordinates.formatSpeed(loc.speed, settings.units)
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      InfoCard(
+                          label = "HEADING",
+                          value = if (loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f) {
+                              "${loc.bearing.roundToInt()}° T"
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      InfoCard(
+                          label = "DTG ZULU",
+                          value = Coordinates.dtg(now),
+                          modifier = Modifier.weight(1f),
+                      )
+                      InfoCard(
+                          label = "FIX AGE",
+                          value = loc?.let { fixAge(it, now) } ?: "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Text(
+                      "GNSS ${fix.satellitesUsed}/${fix.satellitesVisible} SATELLITES IN FIX",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      letterSpacing = 1.2.sp,
+                      textAlign = TextAlign.Center,
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+              }
+          }
+
+          private fun fixAge(loc: Location, now: Long): String {
+              val s = ((now - loc.time) / 1000).coerceAtLeast(0)
+              return when {
+                  s < 60 -> "${s}s"
+                  s < 3600 -> "${s / 60}m ${s % 60}s"
+                  else -> ">1h"
+              }
+          }
+
+          @Composable
+          private fun InfoCard(label: String, value: String, modifier: Modifier = Modifier) {
+              Card(
+                  modifier = modifier,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Column(Modifier.padding(14.dp)) {
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          letterSpacing = 1.2.sp,
+                      )
+                      Spacer(Modifier.height(6.dp))
+                      Text(
+                          value,
+                          style = MaterialTheme.typography.titleMedium,
+                          fontFamily = FontFamily.Monospace,
+                          color = MaterialTheme.colorScheme.onSurface,
+                      )
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/SettingsScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.FilterChip
+          import androidx.compose.material3.HorizontalDivider
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Switch
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.SettingsRepository
+          import kotlinx.coroutines.launch
+
+          @Composable
+          fun SettingsScreen(repo: SettingsRepository, settings: AppSettings) {
+              val scope = rememberCoroutineScope()
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(20.dp),
+                  verticalArrangement = Arrangement.spacedBy(20.dp),
+              ) {
+                  Text(
+                      "SETTINGS",
+                      style = MaterialTheme.typography.labelMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      letterSpacing = 2.sp,
+                  )
+
+                  SettingSwitch(
+                      title = "Night mode",
+                      subtitle = "Red-on-black display to preserve night vision",
+                      checked = settings.nightMode,
+                  ) { scope.launch { repo.setNightMode(it) } }
+
+                  SettingSwitch(
+                      title = "Keep screen on",
+                      subtitle = "Prevent the display from sleeping while GridFix is open",
+                      checked = settings.keepScreenOn,
+                  ) { scope.launch { repo.setKeepScreenOn(it) } }
+
+                  ChipGroup(
+                      title = "MGRS precision",
+                      options = listOf("4-digit", "6-digit", "8-digit", "10-digit"),
+                      selected = when (settings.mgrsDigits) {
+                          4 -> 0
+                          6 -> 1
+                          8 -> 2
+                          else -> 3
+                      },
+                  ) { index -> scope.launch { repo.setMgrsDigits(listOf(4, 6, 8, 10)[index]) } }
+
+                  ChipGroup(
+                      title = "Lat/Lon format",
+                      options = listOf("DD", "DDM", "DMS"),
+                      selected = settings.latLonFormat,
+                  ) { index -> scope.launch { repo.setLatLonFormat(index) } }
+
+                  ChipGroup(
+                      title = "Units",
+                      options = listOf("Metric", "Imperial", "Nautical"),
+                      selected = settings.units,
+                  ) { index -> scope.launch { repo.setUnits(index) } }
+
+                  HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                  Text(
+                      "GridFix 0.1.0 · Milestone 1\n" +
+                          "Working title — the public name is decided before launch.\n" +
+                          "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
+                          "GridFix is a training and recreation aid, not a primary means of navigation.",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+              }
+          }
+
+          @Composable
+          private fun SettingSwitch(
+              title: String,
+              subtitle: String,
+              checked: Boolean,
+              onChange: (Boolean) -> Unit,
+          ) {
+              Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                  Column(Modifier.weight(1f)) {
+                      Text(title, style = MaterialTheme.typography.titleMedium)
+                      Text(
+                          subtitle,
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                  }
+                  Switch(checked = checked, onCheckedChange = onChange)
+              }
+          }
+
+          @Composable
+          private fun ChipGroup(
+              title: String,
+              options: List<String>,
+              selected: Int,
+              onSelect: (Int) -> Unit,
+          ) {
+              Column {
+                  Text(title, style = MaterialTheme.typography.titleMedium)
+                  Spacer(Modifier.height(8.dp))
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      options.forEachIndexed { index, label ->
+                          FilterChip(
+                              selected = index == selected,
+                              onClick = { onSelect(index) },
+                              label = { Text(label) },
+                          )
+                      }
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/theme'
+          cat > 'app/src/main/java/app/gridfix/android/ui/theme/Theme.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.theme
+
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.graphics.Color
+
+          // Tactical dark palette (default)
+          private val TacticalColors = darkColorScheme(
+              primary = Color(0xFF7BC67E),
+              onPrimary = Color(0xFF0B0E13),
+              secondary = Color(0xFFE0B458),
+              onSecondary = Color(0xFF0B0E13),
+              background = Color(0xFF0B0E13),
+              onBackground = Color(0xFFE8EDF2),
+              surface = Color(0xFF151B24),
+              onSurface = Color(0xFFE8EDF2),
+              surfaceVariant = Color(0xFF1D2530),
+              onSurfaceVariant = Color(0xFF9AA7B5),
+              outline = Color(0xFF3A4654),
+              error = Color(0xFFE57373),
+              onError = Color(0xFF0B0E13),
+          )
+
+          // Night-vision palette: red on black to preserve dark adaptation
+          private val NightColors = darkColorScheme(
+              primary = Color(0xFFFF3B30),
+              onPrimary = Color(0xFF000000),
+              secondary = Color(0xFFB3251C),
+              onSecondary = Color(0xFF000000),
+              background = Color(0xFF000000),
+              onBackground = Color(0xFFFF3B30),
+              surface = Color(0xFF120000),
+              onSurface = Color(0xFFFF3B30),
+              surfaceVariant = Color(0xFF1C0300),
+              onSurfaceVariant = Color(0xFFB3251C),
+              outline = Color(0xFF5A100A),
+              error = Color(0xFFFF3B30),
+              onError = Color(0xFF000000),
+          )
+
+          @Composable
+          fun GridFixTheme(
+              nightMode: Boolean,
+              content: @Composable () -> Unit,
+          ) {
+              MaterialTheme(
+                  colorScheme = if (nightMode) NightColors else TacticalColors,
+                  content = content,
+              )
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_launcher_foreground.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+
+              <!-- Outer circle -->
+              <path
+                  android:pathData="M30,54 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0"
+                  android:strokeColor="#7BC67E"
+                  android:strokeWidth="4"
+                  android:fillColor="#00000000" />
+
+              <!-- Crosshair ticks -->
+              <path
+                  android:pathData="M54,22 L54,38 M54,70 L54,86 M22,54 L38,54 M70,54 L86,54"
+                  android:strokeColor="#7BC67E"
+                  android:strokeWidth="4"
+                  android:strokeLineCap="round"
+                  android:fillColor="#00000000" />
+
+              <!-- Center dot -->
+              <path
+                  android:pathData="M54,54 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0"
+                  android:fillColor="#7BC67E" />
+          </vector>
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/res/mipmap-anydpi-v26'
+          cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/res/values'
+          cat > 'app/src/main/res/values/colors.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#0B0E13</color>
+          </resources>
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/res/values'
+          cat > 'app/src/main/res/values/strings.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">GridFix</string>
+          </resources>
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/res/values'
+          cat > 'app/src/main/res/values/themes.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.GridFix" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:statusBarColor">#0B0E13</item>
+                  <item name="android:navigationBarColor">#0B0E13</item>
+                  <item name="android:windowBackground">#0B0E13</item>
+              </style>
+          </resources>
+          EOF_GRIDFIX
+          cat > 'build.gradle.kts' <<'EOF_GRIDFIX'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.0" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.0" apply false
+          }
+          EOF_GRIDFIX
+          cat > 'gradle.properties' <<'EOF_GRIDFIX'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          EOF_GRIDFIX
+          cat > 'settings.gradle.kts' <<'EOF_GRIDFIX'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "GridFix"
+          include(":app")
+          EOF_GRIDFIX
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync source from bootstrap workflow'
+            git push origin HEAD:main
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        id: gradle
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Publish build status branch
+        if: always()
+        env:
+          OUTCOME: ${{ steps.gradle.outcome }}
+        run: |
+          mkdir -p /tmp/ci-status
+          cd /tmp/ci-status
+          git init -q -b ci-status
+          {
+            echo "outcome=$OUTCOME"
+            echo "run=${{ github.run_number }}"
+            echo "sha=${{ github.sha }}"
+            echo "finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > outcome.txt
+          tail -n 400 "$GITHUB_WORKSPACE/build.log" > buildlog.txt 2>/dev/null || echo "no log" > buildlog.txt
+          if [ "$OUTCOME" = "success" ]; then
+            cp "$GITHUB_WORKSPACE/app/build/outputs/apk/debug/app-debug.apk" gridfix-debug.apk
+          fi
+          git add -A
+          git -c user.email='ci@gridfix.local' -c user.name='GridFix CI' commit -qm "build ${{ github.run_number }}: $OUTCOME"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" ci-status
+
+      - name: Upload APK artifact
+        if: steps.gradle.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gridfix-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Publish latest release for phone install
+        if: steps.gradle.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk gridfix-debug.apk
+          gh release delete latest --yes || true
+          git push --delete origin refs/tags/latest || true
+          gh release create latest gridfix-debug.apk \
+            --title "GridFix debug build ${{ github.run_number }}" \
+            --notes 'On your Android phone: tap gridfix-debug.apk below, allow the install when prompted, open GridFix.'
+
+      - name: Fail the job if the build failed
+        if: steps.gradle.outcome != 'success'
+        run: exit 1
