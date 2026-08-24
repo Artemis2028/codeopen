@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -69,6 +70,7 @@ import app.gridfix.android.location.FixData
 import app.gridfix.android.ui.Affiliations
 import app.gridfix.android.ui.Echelons
 import app.gridfix.android.ui.NatoSymbols
+import app.gridfix.android.ui.RouteCardDialog
 import app.gridfix.android.ui.WaypointDialog
 import app.gridfix.android.ui.WaypointMarker
 import kotlinx.coroutines.Dispatchers
@@ -99,6 +101,7 @@ fun WaypointsScreen(
     onViewTrack: (String?) -> Unit,
     onDeleteTrack: (String) -> Unit,
     onShowOnMap: (Waypoint) -> Unit,
+    onShowGraphicOnMap: (TacGraphic) -> Unit,
     unitNameFor: (symbol: String, echelon: String) -> String,
 )
 {
@@ -110,6 +113,7 @@ fun WaypointsScreen(
     var deleteGraphicCandidate by remember { mutableStateOf<TacGraphic?>(null) }
     var deleteTrackCandidate by remember { mutableStateOf<TrackInfo?>(null) }
     var clearFolderCandidate by remember { mutableStateOf<String?>(null) }
+    var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
     var newFolderOpen by remember { mutableStateOf(false) }
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     val loc = fix.location
@@ -252,6 +256,10 @@ fun WaypointsScreen(
                         GraphicRow(
                             g = g,
                             night = settings.nightMode,
+                            onClick = { onShowGraphicOnMap(g) },
+                            onCard = if (g.type == "route") {
+                                { routeCardFor = g }
+                            } else null,
                             onDelete = { deleteGraphicCandidate = g },
                         )
                     }
@@ -355,6 +363,14 @@ fun WaypointsScreen(
             dismissButton = {
                 TextButton(onClick = { newFolderOpen = false }) { Text("Cancel") }
             },
+        )
+    }
+
+    routeCardFor?.let { r ->
+        RouteCardDialog(
+            route = r,
+            settings = settings,
+            onDismiss = { routeCardFor = null },
         )
     }
 
@@ -493,10 +509,14 @@ private fun TrackRow(
 private fun GraphicRow(
     g: TacGraphic,
     night: Boolean,
+    onClick: () -> Unit,
+    onCard: (() -> Unit)?,
     onDelete: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(
@@ -523,6 +543,15 @@ private fun GraphicRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (onCard != null) {
+                IconButton(onClick = onCard) {
+                    Icon(
+                        Icons.Outlined.Description,
+                        contentDescription = "Route card",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             IconButton(onClick = onDelete) {
                 Icon(

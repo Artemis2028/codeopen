@@ -124,6 +124,7 @@ private class MapHolder {
     var grid: MgrsGridOverlay? = null
     var cm: ControlMeasuresOverlay? = null
     var tracks: TracksOverlay? = null
+    var visibleWps: List<Waypoint> = emptyList()
     var appliedLayer = ""
     var appliedNight: Boolean? = null
     var appliedGrid: Boolean? = null
@@ -268,10 +269,36 @@ fun MapScreen(
                     holder.grid = grid
                     map.overlays.add(
                         MapEventsOverlay(object : MapEventsReceiver {
+                            /** Route vertices snap onto nearby visible waypoints. */
+                            fun snappedVertex(gp: GeoPoint): GeoVertex {
+                                if (drawType != "route") return GeoVertex(gp.latitude, gp.longitude)
+                                val m = holder.map ?: return GeoVertex(gp.latitude, gp.longitude)
+                                val tapPx = android.graphics.Point()
+                                val wpPx = android.graphics.Point()
+                                m.projection.toPixels(gp, tapPx)
+                                val thresh = 30f * m.context.resources.displayMetrics.density
+                                var best: Waypoint? = null
+                                var bestD = thresh
+                                for (w in holder.visibleWps) {
+                                    m.projection.toPixels(GeoPoint(w.lat, w.lon), wpPx)
+                                    val d = hypot(
+                                        (tapPx.x - wpPx.x).toFloat(),
+                                        (tapPx.y - wpPx.y).toFloat(),
+                                    )
+                                    if (d < bestD) {
+                                        bestD = d
+                                        best = w
+                                    }
+                                }
+                                val hit = best ?: return GeoVertex(gp.latitude, gp.longitude)
+                                notice = "Added ${hit.name} to route"
+                                return GeoVertex(hit.lat, hit.lon)
+                            }
+
                             override fun singleTapConfirmedHelper(gp: GeoPoint?): Boolean {
                                 if (gp == null) return false
                                 if (drawType != null) {
-                                    drawPoints = drawPoints + GeoVertex(gp.latitude, gp.longitude)
+                                    drawPoints = drawPoints + snappedVertex(gp)
                                     holder.map?.invalidate()
                                     return true
                                 }
@@ -308,7 +335,7 @@ fun MapScreen(
                             override fun longPressHelper(gp: GeoPoint?): Boolean {
                                 if (gp != null) {
                                     if (drawType != null) {
-                                        drawPoints = drawPoints + GeoVertex(gp.latitude, gp.longitude)
+                                        drawPoints = drawPoints + snappedVertex(gp)
                                         holder.map?.invalidate()
                                     } else {
                                         newWpAt = gp.latitude to gp.longitude
@@ -389,6 +416,7 @@ fun MapScreen(
                         t.activePoints = activeTrack?.points ?: emptyList()
                         t.viewedPoints = viewedPoints
                     }
+                    holder.visibleWps = visibleWaypoints
                     map.invalidate()
                 },
             )
@@ -1040,13 +1068,16 @@ fun MapScreen(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            (folders.map { it.name } + "Graphics").distinct().forEach { f ->
-                                FilterChip(
-                                    selected = f == gFolder,
-                                    onClick = { gFolder = f },
-                                    label = { Text(f) },
-                                )
-                            }
+                            (folders.map { it.name } + "Graphics")
+                                .distinct()
+                                .filter { it != app.gridfix.android.data.DEFAULT_FOLDER }
+                                .forEach { f ->
+                                    FilterChip(
+                                        selected = f == gFolder,
+                                        onClick = { gFolder = f },
+                                        label = { Text(f) },
+                                    )
+                                }
                         }
                     }
                 },
@@ -1103,13 +1134,16 @@ fun MapScreen(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        (folders.map { it.name } + g.folder).distinct().forEach { f ->
-                            FilterChip(
-                                selected = f == gFolder,
-                                onClick = { gFolder = f },
-                                label = { Text(f) },
-                            )
-                        }
+                        (folders.map { it.name } + g.folder + "Graphics")
+                            .distinct()
+                            .filter { it != app.gridfix.android.data.DEFAULT_FOLDER || it == g.folder }
+                            .forEach { f ->
+                                FilterChip(
+                                    selected = f == gFolder,
+                                    onClick = { gFolder = f },
+                                    label = { Text(f) },
+                                )
+                            }
                     }
                     Text(
                         "${g.points.size} vertices",

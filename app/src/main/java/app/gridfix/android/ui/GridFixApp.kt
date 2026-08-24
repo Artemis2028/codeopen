@@ -338,6 +338,13 @@ fun GridFixApp() {
                             mapFocus = w.lat to w.lon
                             goTo("map")
                         },
+                        onShowGraphicOnMap = { g ->
+                            if (g.points.isNotEmpty()) {
+                                mapFocus = g.points.map { it.lat }.average() to
+                                    g.points.map { it.lon }.average()
+                                goTo("map")
+                            }
+                        },
                         unitNameFor = unitNameFor,
                     )
                 }
