@@ -16,10 +16,46 @@ import androidx.compose.ui.graphics.vector.ImageVector
 /** Symbols a waypoint can carry. Keys are stored with the waypoint; icons resolve here. */
 object WaypointSymbols {
 
+    /** Plain drawn shapes (rendered by WaypointMarker, not material icons). */
+    val shapes = listOf("dot", "triangle", "square", "diamond", "cross")
+
     val all = listOf(
+        "dot", "triangle", "square", "diamond", "cross",
         "flag", "target", "star", "home", "danger",
         "water", "camp", "vehicle", "antenna", "medic",
     )
+
+    fun isShape(key: String): Boolean = key in shapes
+
+    /** Tactical mission task symbols (drawn by WaypointMarker). */
+    val tasks = listOf(
+        "task_block", "task_ambush", "task_sbf", "task_fix", "task_secure",
+        "task_occupy", "task_retain", "task_screen", "task_guard", "task_cover",
+    )
+
+    fun isTask(key: String): Boolean = key.startsWith("task_")
+
+    fun taskLabel(key: String): String = when (key) {
+        "task_block" -> "Block"
+        "task_ambush" -> "Ambush"
+        "task_sbf" -> "Support by fire"
+        "task_fix" -> "Fix"
+        "task_secure" -> "Secure"
+        "task_occupy" -> "Occupy"
+        "task_retain" -> "Retain"
+        "task_screen" -> "Screen"
+        "task_guard" -> "Guard"
+        "task_cover" -> "Cover"
+        else -> key
+    }
+
+    /** Letter-badge tasks render as a letter instead of a glyph. */
+    fun taskLetter(key: String): String? = when (key) {
+        "task_screen" -> "S"
+        "task_guard" -> "G"
+        "task_cover" -> "C"
+        else -> null
+    }
 
     fun icon(key: String): ImageVector = when (key) {
         "target" -> Icons.Outlined.Adjust

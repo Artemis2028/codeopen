@@ -78,6 +78,13 @@ fun GridFixApp() {
     val waypointRepo = remember { WaypointRepository(context.applicationContext) }
     val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
     val selectedId by waypointRepo.selectedId.collectAsStateWithLifecycle(initialValue = null)
+    val folders by waypointRepo.folders.collectAsStateWithLifecycle(initialValue = emptyList())
+
+    // Waypoints in visible ("active") overlays are the ones offered for navigation
+    val navigableWaypoints = if (folders.isEmpty()) waypoints else {
+        val visibleNames = folders.filter { it.visible }.map { it.name }.toSet()
+        waypoints.filter { it.folder in visibleNames }
+    }
     val scope = rememberCoroutineScope()
 
     // Location permission + shared tracker, hoisted so every screen can use the fix
@@ -211,7 +218,7 @@ fun GridFixApp() {
                     else NavigateScreen(
                         fix = fix,
                         settings = settings,
-                        waypoints = waypoints,
+                        waypoints = navigableWaypoints,
                         selectedId = selectedId,
                         onSelect = { id -> scope.launch { waypointRepo.select(id) } },
                     )
@@ -228,15 +235,18 @@ fun GridFixApp() {
                         fix = fix,
                         settings = settings,
                         waypoints = waypoints,
-                        onAdd = { name, lat, lon, folder, symbol ->
-                            scope.launch {
-                                waypointRepo.add(name, lat, lon, folder, symbol, System.currentTimeMillis())
-                            }
+                        folders = folders,
+                        onAdd = { draft ->
+                            scope.launch { waypointRepo.add(draft, System.currentTimeMillis()) }
                         },
-                        onUpdate = { id, name, lat, lon, folder, symbol ->
-                            scope.launch { waypointRepo.update(id, name, lat, lon, folder, symbol) }
+                        onUpdate = { id, draft ->
+                            scope.launch { waypointRepo.update(id, draft) }
                         },
                         onDelete = { id -> scope.launch { waypointRepo.delete(id) } },
+                        onAddFolder = { name -> scope.launch { waypointRepo.addFolder(name) } },
+                        onSetFolderVisible = { name, visible ->
+                            scope.launch { waypointRepo.setFolderVisible(name, visible) }
+                        },
                         onNavigateTo = { id ->
                             scope.launch { waypointRepo.select(id) }
                             goTo("navigate")

@@ -93,7 +93,7 @@ fun SettingsScreen(repo: SettingsRepository, settings: AppSettings) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Text(
-            "GridFix 0.2.1 · Milestone 2\n" +
+            "GridFix 0.2.2 · Milestone 2\n" +
                 "Working title — the public name is decided before launch.\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
                 "GridFix is a training and recreation aid, not a primary means of navigation.",

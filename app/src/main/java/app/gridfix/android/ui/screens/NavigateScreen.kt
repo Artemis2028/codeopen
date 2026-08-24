@@ -55,7 +55,7 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.location.CompassTracker
 import app.gridfix.android.location.FixData
-import app.gridfix.android.ui.WaypointSymbols
+import app.gridfix.android.ui.WaypointMarker
 
 @Composable
 fun NavigateScreen(
@@ -169,10 +169,10 @@ fun NavigateScreen(
                 modifier = Modifier.clickable { menuOpen = true },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    WaypointSymbols.icon(target?.symbol ?: "flag"),
-                    contentDescription = null,
-                    tint = primary,
+                WaypointMarker(
+                    symbol = target?.symbol ?: "flag",
+                    affiliation = target?.affiliation ?: "none",
+                    size = 32.dp,
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
@@ -183,7 +183,7 @@ fun NavigateScreen(
                     DropdownMenuItem(
                         text = { Text(w.name) },
                         leadingIcon = {
-                            Icon(WaypointSymbols.icon(w.symbol), contentDescription = null)
+                            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp)
                         },
                         onClick = {
                             onSelect(w.id)
