@@ -74,8 +74,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "0.1.0-m1"
+                  versionCode = 2
+                  versionName = "0.2.0-m2"
               }
 
               buildTypes {
@@ -174,6 +174,7 @@ jobs:
           import java.util.Locale
           import java.util.TimeZone
           import kotlin.math.abs
+          import kotlin.math.atan
           import kotlin.math.cos
           import kotlin.math.floor
           import kotlin.math.pow
@@ -219,19 +220,7 @@ jobs:
               fun utm(lat: Double, lon: Double): UtmCoord? {
                   if (lat < -80.0 || lat > 84.0) return null
 
-                  var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
-                  // Norway exception
-                  if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
-                  // Svalbard exceptions
-                  if (lat in 72.0..84.0) {
-                      zone = when {
-                          lon in 0.0..9.0 -> 31
-                          lon in 9.0..21.0 -> 33
-                          lon in 21.0..33.0 -> 35
-                          lon in 33.0..42.0 -> 37
-                          else -> zone
-                      }
-                  }
+                  val zone = utmZone(lat, lon)
 
                   val a = 6378137.0
                   val f = 1.0 / 298.257223563
@@ -326,6 +315,72 @@ jobs:
                   2 -> String.format(Locale.US, "%.1f kn", metersPerSecond * 1.94384)
                   else -> String.format(Locale.US, "%.1f km/h", metersPerSecond * 3.6)
               }
+
+              private fun utmZone(lat: Double, lon: Double): Int {
+                  var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
+                  // Norway exception
+                  if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
+                  // Svalbard exceptions
+                  if (lat in 72.0..84.0) {
+                      zone = when {
+                          lon in 0.0..9.0 -> 31
+                          lon in 9.0..21.0 -> 33
+                          lon in 21.0..33.0 -> 35
+                          lon in 33.0..42.0 -> 37
+                          else -> zone
+                      }
+                  }
+                  return zone
+              }
+
+              /** Grid convergence angle (degrees): grid north minus true north for this UTM zone. */
+              fun gridConvergence(lat: Double, lon: Double): Double {
+                  val zone = utmZone(lat, lon)
+                  val lonOrigin = ((zone - 1) * 6 - 180 + 3).toDouble()
+                  return Math.toDegrees(
+                      atan(tan(Math.toRadians(lon - lonOrigin)) * sin(Math.toRadians(lat)))
+                  )
+              }
+
+              data class NavInfo(val distanceMeters: Float, val bearingTrue: Float)
+
+              /** Geodesic distance and initial true bearing between two points. */
+              fun navInfo(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): NavInfo {
+                  val results = FloatArray(2)
+                  android.location.Location.distanceBetween(fromLat, fromLon, toLat, toLon, results)
+                  return NavInfo(results[0], (results[1] + 360f) % 360f)
+              }
+
+              fun formatDistance(meters: Float, units: Int): String = when (units) {
+                  1 -> {
+                      val feet = meters * 3.28084f
+                      if (feet < 1000f) String.format(Locale.US, "%.0f ft", feet)
+                      else String.format(Locale.US, "%.2f mi", meters / 1609.344f)
+                  }
+                  2 -> {
+                      if (meters < 1852f) String.format(Locale.US, "%.0f m", meters)
+                      else String.format(Locale.US, "%.2f NM", meters / 1852f)
+                  }
+                  else -> {
+                      if (meters < 1000f) String.format(Locale.US, "%.0f m", meters)
+                      else if (meters < 10000f) String.format(Locale.US, "%.2f km", meters / 1000f)
+                      else String.format(Locale.US, "%.1f km", meters / 1000f)
+                  }
+              }
+
+              /** Format an angle in degrees (0..360) as degrees or NATO mils per the angle-unit setting. */
+              fun formatAngle(degrees: Float, angleUnit: Int): String = when (angleUnit) {
+                  1 -> String.format(Locale.US, "%.0f mils", (degrees * 6400f / 360f + 6400f) % 6400f)
+                  else -> String.format(Locale.US, "%03.0f°", (degrees + 360f) % 360f)
+              }
+
+              /** Parse an MGRS string (spaces allowed, case-insensitive) to lat/lon. Null if invalid. */
+              fun parseMgrs(text: String): Pair<Double, Double>? = runCatching {
+                  val cleaned = text.trim().uppercase(Locale.US).replace(" ", "")
+                  if (cleaned.isEmpty()) return null
+                  val point = MGRS.parse(cleaned).toPoint()
+                  point.latitude to point.longitude
+              }.getOrNull()
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/data'
@@ -348,6 +403,8 @@ jobs:
               val mgrsDigits: Int = 8,      // 4, 6, 8, or 10
               val latLonFormat: Int = 1,    // 0 = DD, 1 = DDM, 2 = DMS
               val units: Int = 0,           // 0 = metric, 1 = imperial, 2 = nautical
+              val angleUnit: Int = 0,       // 0 = degrees, 1 = NATO mils (6400)
+              val northRef: Int = 0,        // 0 = true, 1 = magnetic, 2 = grid
           )
 
           class SettingsRepository(private val context: Context) {
@@ -358,6 +415,8 @@ jobs:
                   val MGRS_DIGITS = intPreferencesKey("mgrs_digits")
                   val LATLON_FORMAT = intPreferencesKey("latlon_format")
                   val UNITS = intPreferencesKey("units")
+                  val ANGLE_UNIT = intPreferencesKey("angle_unit")
+                  val NORTH_REF = intPreferencesKey("north_ref")
               }
 
               val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -367,6 +426,8 @@ jobs:
                       mgrsDigits = p[Keys.MGRS_DIGITS] ?: 8,
                       latLonFormat = p[Keys.LATLON_FORMAT] ?: 1,
                       units = p[Keys.UNITS] ?: 0,
+                      angleUnit = p[Keys.ANGLE_UNIT] ?: 0,
+                      northRef = p[Keys.NORTH_REF] ?: 0,
                   )
               }
 
@@ -388,6 +449,202 @@ jobs:
 
               suspend fun setUnits(value: Int) {
                   context.dataStore.edit { it[Keys.UNITS] = value }
+              }
+
+              suspend fun setAngleUnit(value: Int) {
+                  context.dataStore.edit { it[Keys.ANGLE_UNIT] = value }
+              }
+
+              suspend fun setNorthRef(value: Int) {
+                  context.dataStore.edit { it[Keys.NORTH_REF] = value }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/data'
+          cat > 'app/src/main/java/app/gridfix/android/data/WaypointRepository.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.data
+
+          import android.content.Context
+          import androidx.datastore.preferences.core.edit
+          import androidx.datastore.preferences.core.stringPreferencesKey
+          import androidx.datastore.preferences.preferencesDataStore
+          import kotlinx.coroutines.flow.Flow
+          import kotlinx.coroutines.flow.map
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.UUID
+
+          private val Context.wpStore by preferencesDataStore(name = "waypoints")
+
+          data class Waypoint(
+              val id: String,
+              val name: String,
+              val lat: Double,
+              val lon: Double,
+              val createdAt: Long,
+          )
+
+          class WaypointRepository(private val context: Context) {
+
+              private val listKey = stringPreferencesKey("list")
+              private val selectedKey = stringPreferencesKey("selected")
+
+              val waypoints: Flow<List<Waypoint>> = context.wpStore.data.map { p ->
+                  decode(p[listKey] ?: "[]")
+              }
+
+              val selectedId: Flow<String?> = context.wpStore.data.map { p -> p[selectedKey] }
+
+              suspend fun add(name: String, lat: Double, lon: Double, nowMillis: Long) {
+                  context.wpStore.edit { p ->
+                      val current = decode(p[listKey] ?: "[]")
+                      val wp = Waypoint(
+                          id = UUID.randomUUID().toString(),
+                          name = name,
+                          lat = lat,
+                          lon = lon,
+                          createdAt = nowMillis,
+                      )
+                      p[listKey] = encode(current + wp)
+                      // Auto-select the new waypoint if nothing is selected yet
+                      if (p[selectedKey] == null) {
+                          p[selectedKey] = wp.id
+                      }
+                  }
+              }
+
+              suspend fun delete(id: String) {
+                  context.wpStore.edit { p ->
+                      val current = decode(p[listKey] ?: "[]")
+                      p[listKey] = encode(current.filterNot { it.id == id })
+                      if (p[selectedKey] == id) {
+                          p.remove(selectedKey)
+                      }
+                  }
+              }
+
+              suspend fun select(id: String) {
+                  context.wpStore.edit { p -> p[selectedKey] = id }
+              }
+
+              private fun decode(json: String): List<Waypoint> = runCatching {
+                  val arr = JSONArray(json)
+                  buildList {
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          add(
+                              Waypoint(
+                                  id = o.getString("id"),
+                                  name = o.getString("name"),
+                                  lat = o.getDouble("lat"),
+                                  lon = o.getDouble("lon"),
+                                  createdAt = o.optLong("createdAt"),
+                              )
+                          )
+                      }
+                  }
+              }.getOrDefault(emptyList())
+
+              private fun encode(list: List<Waypoint>): String {
+                  val arr = JSONArray()
+                  for (w in list) {
+                      arr.put(
+                          JSONObject()
+                              .put("id", w.id)
+                              .put("name", w.name)
+                              .put("lat", w.lat)
+                              .put("lon", w.lon)
+                              .put("createdAt", w.createdAt)
+                      )
+                  }
+                  return arr.toString()
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/location'
+          cat > 'app/src/main/java/app/gridfix/android/location/CompassTracker.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.location
+
+          import android.content.Context
+          import android.hardware.Sensor
+          import android.hardware.SensorEvent
+          import android.hardware.SensorEventListener
+          import android.hardware.SensorManager
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.flow.update
+          import kotlin.math.atan2
+          import kotlin.math.cos
+          import kotlin.math.sin
+
+          data class CompassData(
+              val azimuthMagnetic: Float = 0f,   // degrees, 0..360, magnetic north
+              val accuracy: Int = SensorManager.SENSOR_STATUS_ACCURACY_HIGH,
+              val hasSensor: Boolean = true,
+              val hasReading: Boolean = false,
+          )
+
+          /**
+           * Compass heading from the rotation-vector sensor with circular low-pass smoothing.
+           * Azimuth is referenced to MAGNETIC north; callers apply declination for true north.
+           */
+          class CompassTracker(context: Context) : SensorEventListener {
+
+              private val sensorManager =
+                  context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+              private val rotationSensor: Sensor? =
+                  sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+
+              private val _data = MutableStateFlow(CompassData(hasSensor = rotationSensor != null))
+              val data: StateFlow<CompassData> = _data.asStateFlow()
+
+              private val rotationMatrix = FloatArray(9)
+              private val orientationAngles = FloatArray(3)
+
+              // Smoothing state on the unit circle (avoids the 359->0 wraparound problem)
+              private var smoothSin = 0.0
+              private var smoothCos = 0.0
+              private var initialized = false
+
+              fun start() {
+                  rotationSensor?.let {
+                      sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                  }
+              }
+
+              fun stop() {
+                  sensorManager.unregisterListener(this)
+                  initialized = false
+              }
+
+              override fun onSensorChanged(event: SensorEvent) {
+                  if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+                  SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                  SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                  val azimuth = Math.toDegrees(orientationAngles[0].toDouble())
+                  val rad = Math.toRadians(azimuth)
+
+                  val alpha = 0.25
+                  if (!initialized) {
+                      smoothSin = sin(rad)
+                      smoothCos = cos(rad)
+                      initialized = true
+                  } else {
+                      smoothSin = (1 - alpha) * smoothSin + alpha * sin(rad)
+                      smoothCos = (1 - alpha) * smoothCos + alpha * cos(rad)
+                  }
+                  val smoothed = (Math.toDegrees(atan2(smoothSin, smoothCos)) + 360.0) % 360.0
+
+                  _data.update {
+                      it.copy(azimuthMagnetic = smoothed.toFloat(), hasReading = true)
+                  }
+              }
+
+              override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+                  if (sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
+                      _data.update { it.copy(accuracy = accuracy) }
+                  }
               }
           }
           EOF_GRIDFIX
@@ -515,7 +772,17 @@ jobs:
           cat > 'app/src/main/java/app/gridfix/android/ui/GridFixApp.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.ui
 
+          import android.Manifest
+          import android.content.pm.PackageManager
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.height
           import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.automirrored.filled.ArrowBack
           import androidx.compose.material.icons.outlined.DarkMode
@@ -525,6 +792,7 @@ jobs:
           import androidx.compose.material.icons.outlined.Map
           import androidx.compose.material.icons.outlined.MyLocation
           import androidx.compose.material.icons.outlined.Settings
+          import androidx.compose.material3.Button
           import androidx.compose.material3.CenterAlignedTopAppBar
           import androidx.compose.material3.ExperimentalMaterial3Api
           import androidx.compose.material3.Icon
@@ -539,15 +807,21 @@ jobs:
           import androidx.compose.runtime.Composable
           import androidx.compose.runtime.DisposableEffect
           import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
           import androidx.compose.runtime.remember
           import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
           import androidx.compose.ui.graphics.vector.ImageVector
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.platform.LocalView
           import androidx.compose.ui.text.font.FontFamily
           import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
           import androidx.lifecycle.compose.collectAsStateWithLifecycle
           import androidx.navigation.compose.NavHost
           import androidx.navigation.compose.composable
@@ -555,9 +829,13 @@ jobs:
           import androidx.navigation.compose.rememberNavController
           import app.gridfix.android.data.AppSettings
           import app.gridfix.android.data.SettingsRepository
+          import app.gridfix.android.data.WaypointRepository
+          import app.gridfix.android.location.LocationTracker
+          import app.gridfix.android.ui.screens.NavigateScreen
           import app.gridfix.android.ui.screens.PlaceholderScreen
           import app.gridfix.android.ui.screens.PositionScreen
           import app.gridfix.android.ui.screens.SettingsScreen
+          import app.gridfix.android.ui.screens.WaypointsScreen
           import app.gridfix.android.ui.theme.GridFixTheme
           import kotlinx.coroutines.launch
 
@@ -569,7 +847,39 @@ jobs:
               val context = LocalContext.current
               val repo = remember { SettingsRepository(context.applicationContext) }
               val settings by repo.settings.collectAsStateWithLifecycle(initialValue = AppSettings())
+              val waypointRepo = remember { WaypointRepository(context.applicationContext) }
+              val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
+              val selectedId by waypointRepo.selectedId.collectAsStateWithLifecycle(initialValue = null)
               val scope = rememberCoroutineScope()
+
+              // Location permission + shared tracker, hoisted so every screen can use the fix
+              var hasPermission by remember {
+                  mutableStateOf(
+                      ContextCompat.checkSelfPermission(
+                          context, Manifest.permission.ACCESS_FINE_LOCATION
+                      ) == PackageManager.PERMISSION_GRANTED
+                  )
+              }
+              val permissionLauncher = rememberLauncherForActivityResult(
+                  ActivityResultContracts.RequestMultiplePermissions()
+              ) { result ->
+                  hasPermission = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                      result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+              }
+              val requestPermission = {
+                  permissionLauncher.launch(
+                      arrayOf(
+                          Manifest.permission.ACCESS_FINE_LOCATION,
+                          Manifest.permission.ACCESS_COARSE_LOCATION,
+                      )
+                  )
+              }
+              val tracker = remember { LocationTracker(context.applicationContext) }
+              DisposableEffect(hasPermission) {
+                  if (hasPermission) tracker.start()
+                  onDispose { tracker.stop() }
+              }
+              val fix by tracker.fix.collectAsStateWithLifecycle()
 
               val navController = rememberNavController()
               val backStackEntry by navController.currentBackStackEntryAsState()
@@ -587,6 +897,14 @@ jobs:
                   NavItem("map", "Map", Icons.Outlined.Map),
                   NavItem("waypoints", "Waypoints", Icons.Outlined.Flag),
               )
+
+              fun goTo(route: String) {
+                  navController.navigate(route) {
+                      popUpTo(navController.graph.startDestinationId) { saveState = true }
+                      launchSingleTop = true
+                      restoreState = true
+                  }
+              }
 
               GridFixTheme(nightMode = settings.nightMode) {
                   Scaffold(
@@ -636,13 +954,7 @@ jobs:
                               items.forEach { item ->
                                   NavigationBarItem(
                                       selected = currentRoute == item.route,
-                                      onClick = {
-                                          navController.navigate(item.route) {
-                                              popUpTo(navController.graph.startDestinationId) { saveState = true }
-                                              launchSingleTop = true
-                                              restoreState = true
-                                          }
-                                      },
+                                      onClick = { goTo(item.route) },
                                       icon = { Icon(item.icon, contentDescription = item.label) },
                                       label = { Text(item.label) },
                                       colors = NavigationBarItemDefaults.colors(
@@ -662,12 +974,18 @@ jobs:
                           startDestination = "position",
                           modifier = Modifier.padding(innerPadding),
                       ) {
-                          composable("position") { PositionScreen(repo, settings) }
+                          composable("position") {
+                              if (!hasPermission) PermissionGate(requestPermission)
+                              else PositionScreen(fix = fix, settings = settings, repo = repo)
+                          }
                           composable("navigate") {
-                              PlaceholderScreen(
-                                  icon = Icons.Outlined.Explore,
-                                  title = "Navigate",
-                                  message = "Compass navigation to your waypoints — bearing arrow, distance, and back-azimuth — arrives in Milestone 2.",
+                              if (!hasPermission) PermissionGate(requestPermission)
+                              else NavigateScreen(
+                                  fix = fix,
+                                  settings = settings,
+                                  waypoints = waypoints,
+                                  selectedId = selectedId,
+                                  onSelect = { id -> scope.launch { waypointRepo.select(id) } },
                               )
                           }
                           composable("map") {
@@ -678,14 +996,413 @@ jobs:
                               )
                           }
                           composable("waypoints") {
-                              PlaceholderScreen(
-                                  icon = Icons.Outlined.Flag,
-                                  title = "Waypoints",
-                                  message = "Waypoint creation, groups, and GPX import/export arrive in Milestone 2.",
+                              WaypointsScreen(
+                                  fix = fix,
+                                  settings = settings,
+                                  waypoints = waypoints,
+                                  onAdd = { name, lat, lon ->
+                                      scope.launch { waypointRepo.add(name, lat, lon, System.currentTimeMillis()) }
+                                  },
+                                  onDelete = { id -> scope.launch { waypointRepo.delete(id) } },
+                                  onNavigateTo = { id ->
+                                      scope.launch { waypointRepo.select(id) }
+                                      goTo("navigate")
+                                  },
                               )
                           }
                           composable("settings") { SettingsScreen(repo, settings) }
                       }
+                  }
+              }
+          }
+
+          @Composable
+          private fun PermissionGate(onRequest: () -> Unit) {
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .padding(32.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.Center,
+              ) {
+                  Icon(
+                      Icons.Outlined.MyLocation,
+                      contentDescription = null,
+                      modifier = Modifier.size(56.dp),
+                      tint = MaterialTheme.colorScheme.primary,
+                  )
+                  Spacer(Modifier.height(16.dp))
+                  Text("Location access needed", style = MaterialTheme.typography.titleLarge)
+                  Spacer(Modifier.height(8.dp))
+                  Text(
+                      "GridFix reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      textAlign = TextAlign.Center,
+                  )
+                  Spacer(Modifier.height(24.dp))
+                  Button(onClick = onRequest) {
+                      Text("Grant location access")
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/NavigateScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import android.hardware.GeomagneticField
+          import android.hardware.SensorManager
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.ArrowDropDown
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.DropdownMenu
+          import androidx.compose.material3.DropdownMenuItem
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.drawText
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.rememberTextMeasurer
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.Waypoint
+          import app.gridfix.android.location.CompassTracker
+          import app.gridfix.android.location.FixData
+
+          @Composable
+          fun NavigateScreen(
+              fix: FixData,
+              settings: AppSettings,
+              waypoints: List<Waypoint>,
+              selectedId: String?,
+              onSelect: (String) -> Unit,
+          ) {
+              val context = LocalContext.current
+              val compass = remember { CompassTracker(context.applicationContext) }
+              DisposableEffect(Unit) {
+                  compass.start()
+                  onDispose { compass.stop() }
+              }
+              val compassData by compass.data.collectAsStateWithLifecycle()
+
+              val loc = fix.location
+              val target = waypoints.firstOrNull { it.id == selectedId } ?: waypoints.firstOrNull()
+
+              // Magnetic declination from the World Magnetic Model, refreshed when we move ~10 km
+              val declination = remember(
+                  loc?.latitude?.let { (it * 10).toInt() },
+                  loc?.longitude?.let { (it * 10).toInt() },
+              ) {
+                  if (loc == null) 0f else GeomagneticField(
+                      loc.latitude.toFloat(),
+                      loc.longitude.toFloat(),
+                      if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
+                      loc.time,
+                  ).declination
+              }
+              val convergence = if (loc == null) 0f else {
+                  Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
+              }
+
+              // Heading: compass sensor preferred, GPS course as fallback while moving
+              val headingTrue: Float? = when {
+                  compassData.hasSensor && compassData.hasReading ->
+                      (compassData.azimuthMagnetic + declination + 360f) % 360f
+                  loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f ->
+                      (loc.bearing + 360f) % 360f
+                  else -> null
+              }
+
+              fun toRef(angleTrue: Float): Float = when (settings.northRef) {
+                  1 -> (angleTrue - declination + 360f) % 360f
+                  2 -> (angleTrue - convergence + 360f) % 360f
+                  else -> angleTrue
+              }
+              val refLetter = when (settings.northRef) {
+                  1 -> "M"
+                  2 -> "G"
+                  else -> "T"
+              }
+
+              val nav = if (loc != null && target != null) {
+                  Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
+              } else null
+
+              if (waypoints.isEmpty()) {
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(32.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.Center,
+                  ) {
+                      Icon(
+                          Icons.Outlined.Flag,
+                          contentDescription = null,
+                          modifier = Modifier.size(56.dp),
+                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                      Spacer(Modifier.height(16.dp))
+                      Text("No waypoints yet", style = MaterialTheme.typography.titleLarge)
+                      Spacer(Modifier.height(8.dp))
+                      Text(
+                          "Create your first waypoint in the Waypoints tab, then come back here to navigate to it.",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          textAlign = TextAlign.Center,
+                      )
+                  }
+                  return
+              }
+
+              // Colors captured outside the Canvas draw scope
+              val ringColor = MaterialTheme.colorScheme.outline
+              val onSurface = MaterialTheme.colorScheme.onSurface
+              val subtle = MaterialTheme.colorScheme.onSurfaceVariant
+              val primary = MaterialTheme.colorScheme.primary
+              val textMeasurer = rememberTextMeasurer()
+              val cardinalStyle = TextStyle(
+                  fontSize = 15.sp,
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.Bold,
+              )
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(16.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                  // Target selector
+                  var menuOpen by remember { mutableStateOf(false) }
+                  Box {
+                      Row(
+                          modifier = Modifier.clickable { menuOpen = true },
+                          verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                          Icon(Icons.Outlined.Flag, contentDescription = null, tint = primary)
+                          Spacer(Modifier.width(8.dp))
+                          Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
+                          Icon(Icons.Outlined.ArrowDropDown, contentDescription = "Change target", tint = subtle)
+                      }
+                      DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                          waypoints.forEach { w ->
+                              DropdownMenuItem(
+                                  text = { Text(w.name) },
+                                  onClick = {
+                                      onSelect(w.id)
+                                      menuOpen = false
+                                  },
+                              )
+                          }
+                      }
+                  }
+                  target?.let { t ->
+                      val parts = Coordinates.mgrs(t.lat, t.lon, 8)
+                      Text(
+                          parts?.full ?: "",
+                          style = MaterialTheme.typography.bodySmall,
+                          fontFamily = FontFamily.Monospace,
+                          color = subtle,
+                      )
+                  }
+
+                  Spacer(Modifier.height(12.dp))
+
+                  // Compass rose with target arrow
+                  Canvas(Modifier.size(280.dp)) {
+                      val c = center
+                      val r = size.minDimension / 2f - 8.dp.toPx()
+                      drawCircle(ringColor, radius = r, center = c, style = Stroke(width = 2.dp.toPx()))
+
+                      val ringHeading = headingTrue?.let { toRef(it) } ?: 0f
+                      rotate(-ringHeading, pivot = c) {
+                          for (i in 0 until 72) {
+                              val major = i % 18 == 0
+                              val medium = i % 6 == 0
+                              rotate(i * 5f, pivot = c) {
+                                  drawLine(
+                                      color = if (major) onSurface else subtle,
+                                      start = Offset(c.x, c.y - r),
+                                      end = Offset(
+                                          c.x,
+                                          c.y - r + (if (major) 14.dp else if (medium) 10.dp else 5.dp).toPx(),
+                                      ),
+                                      strokeWidth = if (major) 3f else 1.5f,
+                                  )
+                              }
+                          }
+                          listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f).forEach { (label, ang) ->
+                              rotate(ang, pivot = c) {
+                                  val layout = textMeasurer.measure(AnnotatedString(label), style = cardinalStyle)
+                                  drawText(
+                                      layout,
+                                      color = if (label == "N") primary else subtle,
+                                      topLeft = Offset(
+                                          c.x - layout.size.width / 2f,
+                                          c.y - r + 18.dp.toPx(),
+                                      ),
+                                  )
+                              }
+                          }
+                      }
+
+                      if (nav != null && headingTrue != null) {
+                          rotate((nav.bearingTrue - headingTrue + 360f) % 360f, pivot = c) {
+                              val path = Path().apply {
+                                  moveTo(c.x, c.y - r + 34.dp.toPx())
+                                  lineTo(c.x - 16.dp.toPx(), c.y + 12.dp.toPx())
+                                  lineTo(c.x, c.y - 4.dp.toPx())
+                                  lineTo(c.x + 16.dp.toPx(), c.y + 12.dp.toPx())
+                                  close()
+                              }
+                              drawPath(path, primary)
+                          }
+                      }
+                      drawCircle(onSurface, radius = 3.dp.toPx(), center = c)
+                  }
+
+                  Spacer(Modifier.height(8.dp))
+
+                  // Distance
+                  Text(
+                      if (nav != null) Coordinates.formatDistance(nav.distanceMeters, settings.units) else "—",
+                      fontSize = 44.sp,
+                      lineHeight = 50.sp,
+                      fontFamily = FontFamily.Monospace,
+                      fontWeight = FontWeight.Bold,
+                      color = primary,
+                  )
+                  Text(
+                      "DISTANCE",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = subtle,
+                      letterSpacing = 1.5.sp,
+                  )
+
+                  Spacer(Modifier.height(14.dp))
+
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      MiniStat(
+                          label = "BEARING",
+                          value = if (nav != null) {
+                              Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      MiniStat(
+                          label = "BACK-AZ",
+                          value = if (nav != null) {
+                              Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Spacer(Modifier.height(12.dp))
+                  MiniStat(
+                      label = "YOUR HEADING",
+                      value = if (headingTrue != null) {
+                          Coordinates.formatAngle(toRef(headingTrue), settings.angleUnit) + " " + refLetter
+                      } else "—",
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+
+                  // Status hints
+                  if (loc == null) {
+                      Spacer(Modifier.height(12.dp))
+                      Text(
+                          "Acquiring GPS signal…",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = subtle,
+                      )
+                  }
+                  if (!compassData.hasSensor) {
+                      Spacer(Modifier.height(12.dp))
+                      Text(
+                          "No compass sensor on this device — heading uses your direction of travel while moving.",
+                          style = MaterialTheme.typography.bodySmall,
+                          color = subtle,
+                          textAlign = TextAlign.Center,
+                      )
+                  } else if (compassData.accuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW) {
+                      Spacer(Modifier.height(12.dp))
+                      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                          Text(
+                              "Compass needs calibration — move your phone in a figure-8 a few times.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurface,
+                              modifier = Modifier.padding(12.dp),
+                              textAlign = TextAlign.Center,
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {
+              Card(
+                  modifier = modifier,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Column(
+                      Modifier
+                          .fillMaxWidth()
+                          .padding(14.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                      Text(
+                          value,
+                          style = MaterialTheme.typography.titleLarge,
+                          fontFamily = FontFamily.Monospace,
+                          color = MaterialTheme.colorScheme.onSurface,
+                      )
+                      Spacer(Modifier.height(4.dp))
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          letterSpacing = 1.2.sp,
+                      )
                   }
               }
           }
@@ -742,11 +1459,7 @@ jobs:
           cat > 'app/src/main/java/app/gridfix/android/ui/screens/PositionScreen.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.ui.screens
 
-          import android.Manifest
-          import android.content.pm.PackageManager
           import android.location.Location
-          import androidx.activity.compose.rememberLauncherForActivityResult
-          import androidx.activity.result.contract.ActivityResultContracts
           import androidx.compose.foundation.layout.Arrangement
           import androidx.compose.foundation.layout.Column
           import androidx.compose.foundation.layout.Row
@@ -755,69 +1468,35 @@ jobs:
           import androidx.compose.foundation.layout.fillMaxWidth
           import androidx.compose.foundation.layout.height
           import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.size
           import androidx.compose.foundation.rememberScrollState
           import androidx.compose.foundation.verticalScroll
-          import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.outlined.MyLocation
           import androidx.compose.material3.AssistChip
-          import androidx.compose.material3.Button
           import androidx.compose.material3.Card
           import androidx.compose.material3.CardDefaults
-          import androidx.compose.material3.Icon
           import androidx.compose.material3.MaterialTheme
           import androidx.compose.material3.Text
           import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.DisposableEffect
           import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.mutableStateOf
           import androidx.compose.runtime.produceState
-          import androidx.compose.runtime.remember
           import androidx.compose.runtime.rememberCoroutineScope
-          import androidx.compose.runtime.setValue
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
-          import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.text.font.FontFamily
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
-          import androidx.core.content.ContextCompat
-          import androidx.lifecycle.compose.collectAsStateWithLifecycle
           import app.gridfix.android.coords.Coordinates
           import app.gridfix.android.data.AppSettings
           import app.gridfix.android.data.SettingsRepository
-          import app.gridfix.android.location.LocationTracker
+          import app.gridfix.android.location.FixData
           import kotlinx.coroutines.delay
           import kotlinx.coroutines.launch
           import kotlin.math.roundToInt
 
           @Composable
-          fun PositionScreen(repo: SettingsRepository, settings: AppSettings) {
-              val context = LocalContext.current
+          fun PositionScreen(fix: FixData, settings: AppSettings, repo: SettingsRepository) {
               val scope = rememberCoroutineScope()
-
-              var hasPermission by remember {
-                  mutableStateOf(
-                      ContextCompat.checkSelfPermission(
-                          context, Manifest.permission.ACCESS_FINE_LOCATION
-                      ) == PackageManager.PERMISSION_GRANTED
-                  )
-              }
-              val permissionLauncher = rememberLauncherForActivityResult(
-                  ActivityResultContracts.RequestMultiplePermissions()
-              ) { result ->
-                  hasPermission = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                      result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-              }
-
-              val tracker = remember { LocationTracker(context.applicationContext) }
-              DisposableEffect(hasPermission) {
-                  if (hasPermission) tracker.start()
-                  onDispose { tracker.stop() }
-              }
-              val fix by tracker.fix.collectAsStateWithLifecycle()
 
               // 1 Hz ticker for the clock and fix age
               val now by produceState(initialValue = System.currentTimeMillis()) {
@@ -825,44 +1504,6 @@ jobs:
                       value = System.currentTimeMillis()
                       delay(1000)
                   }
-              }
-
-              if (!hasPermission) {
-                  Column(
-                      modifier = Modifier
-                          .fillMaxSize()
-                          .padding(32.dp),
-                      horizontalAlignment = Alignment.CenterHorizontally,
-                      verticalArrangement = Arrangement.Center,
-                  ) {
-                      Icon(
-                          Icons.Outlined.MyLocation,
-                          contentDescription = null,
-                          modifier = Modifier.size(56.dp),
-                          tint = MaterialTheme.colorScheme.primary,
-                      )
-                      Spacer(Modifier.height(16.dp))
-                      Text("Location access needed", style = MaterialTheme.typography.titleLarge)
-                      Spacer(Modifier.height(8.dp))
-                      Text(
-                          "GridFix reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
-                          style = MaterialTheme.typography.bodyMedium,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant,
-                          textAlign = TextAlign.Center,
-                      )
-                      Spacer(Modifier.height(24.dp))
-                      Button(onClick = {
-                          permissionLauncher.launch(
-                              arrayOf(
-                                  Manifest.permission.ACCESS_FINE_LOCATION,
-                                  Manifest.permission.ACCESS_COARSE_LOCATION,
-                              )
-                          )
-                      }) {
-                          Text("Grant location access")
-                      }
-                  }
-                  return
               }
 
               val loc = fix.location
@@ -1146,10 +1787,22 @@ jobs:
                       selected = settings.units,
                   ) { index -> scope.launch { repo.setUnits(index) } }
 
+                  ChipGroup(
+                      title = "Angle unit",
+                      options = listOf("Degrees", "Mils"),
+                      selected = settings.angleUnit,
+                  ) { index -> scope.launch { repo.setAngleUnit(index) } }
+
+                  ChipGroup(
+                      title = "North reference",
+                      options = listOf("True", "Magnetic", "Grid"),
+                      selected = settings.northRef,
+                  ) { index -> scope.launch { repo.setNorthRef(index) } }
+
                   HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
                   Text(
-                      "GridFix 0.1.0 · Milestone 1\n" +
+                      "GridFix 0.2.0 · Milestone 2\n" +
                           "Working title — the public name is decided before launch.\n" +
                           "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
                           "GridFix is a training and recreation aid, not a primary means of navigation.",
@@ -1198,6 +1851,265 @@ jobs:
                           )
                       }
                   }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/WaypointsScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Add
+          import androidx.compose.material.icons.outlined.Delete
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material3.AlertDialog
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.FilterChip
+          import androidx.compose.material3.FloatingActionButton
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TextButton
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.Waypoint
+          import app.gridfix.android.location.FixData
+          import java.util.Locale
+
+          @Composable
+          fun WaypointsScreen(
+              fix: FixData,
+              settings: AppSettings,
+              waypoints: List<Waypoint>,
+              onAdd: (name: String, lat: Double, lon: Double) -> Unit,
+              onDelete: (String) -> Unit,
+              onNavigateTo: (String) -> Unit,
+          ) {
+              var showAdd by remember { mutableStateOf(false) }
+              var deleteCandidate by remember { mutableStateOf<Waypoint?>(null) }
+              val loc = fix.location
+
+              Box(Modifier.fillMaxSize()) {
+                  if (waypoints.isEmpty()) {
+                      Column(
+                          modifier = Modifier
+                              .fillMaxSize()
+                              .padding(32.dp),
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                          verticalArrangement = Arrangement.Center,
+                      ) {
+                          Icon(
+                              Icons.Outlined.Flag,
+                              contentDescription = null,
+                              modifier = Modifier.size(56.dp),
+                              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                          Spacer(Modifier.height(16.dp))
+                          Text("No waypoints yet", style = MaterialTheme.typography.titleLarge)
+                          Spacer(Modifier.height(8.dp))
+                          Text(
+                              "Tap + to mark your current position or enter an MGRS grid.",
+                              style = MaterialTheme.typography.bodyMedium,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              textAlign = TextAlign.Center,
+                          )
+                      }
+                  } else {
+                      LazyColumn(
+                          modifier = Modifier.fillMaxSize(),
+                          contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                              start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp,
+                          ),
+                          verticalArrangement = Arrangement.spacedBy(10.dp),
+                      ) {
+                          items(waypoints, key = { it.id }) { w ->
+                              Card(
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .clickable { onNavigateTo(w.id) },
+                                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                              ) {
+                                  Row(
+                                      Modifier
+                                          .fillMaxWidth()
+                                          .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+                                      verticalAlignment = Alignment.CenterVertically,
+                                  ) {
+                                      Column(Modifier.weight(1f)) {
+                                          Text(w.name, style = MaterialTheme.typography.titleMedium)
+                                          Spacer(Modifier.height(2.dp))
+                                          Text(
+                                              Coordinates.mgrs(w.lat, w.lon, 8)?.full ?: String.format(
+                                                  Locale.US, "%.5f, %.5f", w.lat, w.lon,
+                                              ),
+                                              style = MaterialTheme.typography.bodySmall,
+                                              fontFamily = FontFamily.Monospace,
+                                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          )
+                                      }
+                                      if (loc != null) {
+                                          val nav = Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon)
+                                          Column(horizontalAlignment = Alignment.End) {
+                                              Text(
+                                                  Coordinates.formatDistance(nav.distanceMeters, settings.units),
+                                                  style = MaterialTheme.typography.titleMedium,
+                                                  fontFamily = FontFamily.Monospace,
+                                                  color = MaterialTheme.colorScheme.primary,
+                                              )
+                                              Text(
+                                                  Coordinates.formatAngle(nav.bearingTrue, settings.angleUnit) + " T",
+                                                  style = MaterialTheme.typography.bodySmall,
+                                                  fontFamily = FontFamily.Monospace,
+                                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                              )
+                                          }
+                                      }
+                                      IconButton(onClick = { deleteCandidate = w }) {
+                                          Icon(
+                                              Icons.Outlined.Delete,
+                                              contentDescription = "Delete ${w.name}",
+                                              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          )
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  FloatingActionButton(
+                      onClick = { showAdd = true },
+                      modifier = Modifier
+                          .align(Alignment.BottomEnd)
+                          .padding(20.dp),
+                      containerColor = MaterialTheme.colorScheme.primary,
+                      contentColor = MaterialTheme.colorScheme.onPrimary,
+                  ) {
+                      Icon(Icons.Filled.Add, contentDescription = "Add waypoint")
+                  }
+              }
+
+              if (showAdd) {
+                  var name by remember { mutableStateOf("") }
+                  var coord by remember { mutableStateOf("") }
+                  var useCurrent by remember { mutableStateOf(loc != null) }
+                  var error by remember { mutableStateOf<String?>(null) }
+
+                  AlertDialog(
+                      onDismissRequest = { showAdd = false },
+                      title = { Text("New waypoint") },
+                      text = {
+                          Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                              OutlinedTextField(
+                                  value = name,
+                                  onValueChange = { name = it },
+                                  label = { Text("Name") },
+                                  singleLine = true,
+                              )
+                              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                  FilterChip(
+                                      selected = useCurrent,
+                                      onClick = { useCurrent = true },
+                                      label = { Text("Current position") },
+                                      enabled = loc != null,
+                                  )
+                                  FilterChip(
+                                      selected = !useCurrent,
+                                      onClick = { useCurrent = false },
+                                      label = { Text("Enter MGRS") },
+                                  )
+                              }
+                              if (!useCurrent) {
+                                  OutlinedTextField(
+                                      value = coord,
+                                      onValueChange = { coord = it.uppercase(Locale.US); error = null },
+                                      label = { Text("MGRS grid") },
+                                      placeholder = { Text("40R CN 12345 67890") },
+                                      singleLine = true,
+                                  )
+                              } else if (loc != null) {
+                                  Text(
+                                      "Position: " + (Coordinates.mgrs(loc.latitude, loc.longitude, 8)?.full ?: "—"),
+                                      style = MaterialTheme.typography.bodySmall,
+                                      fontFamily = FontFamily.Monospace,
+                                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  )
+                              }
+                              error?.let {
+                                  Text(
+                                      it,
+                                      style = MaterialTheme.typography.bodySmall,
+                                      color = MaterialTheme.colorScheme.error,
+                                  )
+                              }
+                          }
+                      },
+                      confirmButton = {
+                          TextButton(onClick = {
+                              val fallbackName = "WP " + (waypoints.size + 1)
+                              if (useCurrent && loc != null) {
+                                  onAdd(name.ifBlank { fallbackName }, loc.latitude, loc.longitude)
+                                  showAdd = false
+                              } else {
+                                  val parsed = Coordinates.parseMgrs(coord)
+                                  if (parsed == null) {
+                                      error = "Couldn't read that grid — check it and try again."
+                                  } else {
+                                      onAdd(name.ifBlank { fallbackName }, parsed.first, parsed.second)
+                                      showAdd = false
+                                  }
+                              }
+                          }) { Text("Add") }
+                      },
+                      dismissButton = {
+                          TextButton(onClick = { showAdd = false }) { Text("Cancel") }
+                      },
+                  )
+              }
+
+              deleteCandidate?.let { w ->
+                  AlertDialog(
+                      onDismissRequest = { deleteCandidate = null },
+                      title = { Text("Delete ${w.name}?") },
+                      text = { Text("This waypoint will be removed permanently.") },
+                      confirmButton = {
+                          TextButton(onClick = {
+                              onDelete(w.id)
+                              deleteCandidate = null
+                          }) { Text("Delete") }
+                      },
+                      dismissButton = {
+                          TextButton(onClick = { deleteCandidate = null }) { Text("Cancel") }
+                      },
+                  )
               }
           }
           EOF_GRIDFIX
