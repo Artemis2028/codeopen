@@ -228,8 +228,13 @@ fun GridFixApp() {
                         fix = fix,
                         settings = settings,
                         waypoints = waypoints,
-                        onAdd = { name, lat, lon ->
-                            scope.launch { waypointRepo.add(name, lat, lon, System.currentTimeMillis()) }
+                        onAdd = { name, lat, lon, folder, symbol ->
+                            scope.launch {
+                                waypointRepo.add(name, lat, lon, folder, symbol, System.currentTimeMillis())
+                            }
+                        },
+                        onUpdate = { id, name, lat, lon, folder, symbol ->
+                            scope.launch { waypointRepo.update(id, name, lat, lon, folder, symbol) }
                         },
                         onDelete = { id -> scope.launch { waypointRepo.delete(id) } },
                         onNavigateTo = { id ->

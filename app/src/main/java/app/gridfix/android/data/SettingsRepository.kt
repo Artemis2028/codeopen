@@ -13,7 +13,7 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 data class AppSettings(
     val nightMode: Boolean = false,
     val keepScreenOn: Boolean = true,
-    val mgrsDigits: Int = 8,      // 4, 6, 8, or 10
+    val mgrsDigits: Int = 10,     // 4, 6, 8, or 10
     val latLonFormat: Int = 1,    // 0 = DD, 1 = DDM, 2 = DMS
     val units: Int = 0,           // 0 = metric, 1 = imperial, 2 = nautical
     val angleUnit: Int = 0,       // 0 = degrees, 1 = NATO mils (6400)
@@ -36,7 +36,7 @@ class SettingsRepository(private val context: Context) {
         AppSettings(
             nightMode = p[Keys.NIGHT_MODE] ?: false,
             keepScreenOn = p[Keys.KEEP_SCREEN_ON] ?: true,
-            mgrsDigits = p[Keys.MGRS_DIGITS] ?: 8,
+            mgrsDigits = p[Keys.MGRS_DIGITS] ?: 10,
             latLonFormat = p[Keys.LATLON_FORMAT] ?: 1,
             units = p[Keys.UNITS] ?: 0,
             angleUnit = p[Keys.ANGLE_UNIT] ?: 0,

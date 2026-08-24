@@ -12,12 +12,17 @@ import java.util.UUID
 
 private val Context.wpStore by preferencesDataStore(name = "waypoints")
 
+const val DEFAULT_FOLDER = "Waypoints"
+const val DEFAULT_SYMBOL = "flag"
+
 data class Waypoint(
     val id: String,
     val name: String,
     val lat: Double,
     val lon: Double,
     val createdAt: Long,
+    val folder: String = DEFAULT_FOLDER,
+    val symbol: String = DEFAULT_SYMBOL,
 )
 
 class WaypointRepository(private val context: Context) {
@@ -31,7 +36,14 @@ class WaypointRepository(private val context: Context) {
 
     val selectedId: Flow<String?> = context.wpStore.data.map { p -> p[selectedKey] }
 
-    suspend fun add(name: String, lat: Double, lon: Double, nowMillis: Long) {
+    suspend fun add(
+        name: String,
+        lat: Double,
+        lon: Double,
+        folder: String,
+        symbol: String,
+        nowMillis: Long,
+    ) {
         context.wpStore.edit { p ->
             val current = decode(p[listKey] ?: "[]")
             val wp = Waypoint(
@@ -40,12 +52,37 @@ class WaypointRepository(private val context: Context) {
                 lat = lat,
                 lon = lon,
                 createdAt = nowMillis,
+                folder = folder.ifBlank { DEFAULT_FOLDER },
+                symbol = symbol.ifBlank { DEFAULT_SYMBOL },
             )
             p[listKey] = encode(current + wp)
-            // Auto-select the new waypoint if nothing is selected yet
             if (p[selectedKey] == null) {
                 p[selectedKey] = wp.id
             }
+        }
+    }
+
+    suspend fun update(
+        id: String,
+        name: String,
+        lat: Double,
+        lon: Double,
+        folder: String,
+        symbol: String,
+    ) {
+        context.wpStore.edit { p ->
+            val current = decode(p[listKey] ?: "[]")
+            p[listKey] = encode(
+                current.map {
+                    if (it.id == id) it.copy(
+                        name = name,
+                        lat = lat,
+                        lon = lon,
+                        folder = folder.ifBlank { DEFAULT_FOLDER },
+                        symbol = symbol.ifBlank { DEFAULT_SYMBOL },
+                    ) else it
+                }
+            )
         }
     }
 
@@ -75,6 +112,8 @@ class WaypointRepository(private val context: Context) {
                         lat = o.getDouble("lat"),
                         lon = o.getDouble("lon"),
                         createdAt = o.optLong("createdAt"),
+                        folder = o.optString("folder", DEFAULT_FOLDER),
+                        symbol = o.optString("symbol", DEFAULT_SYMBOL),
                     )
                 )
             }
@@ -91,6 +130,8 @@ class WaypointRepository(private val context: Context) {
                     .put("lat", w.lat)
                     .put("lon", w.lon)
                     .put("createdAt", w.createdAt)
+                    .put("folder", w.folder)
+                    .put("symbol", w.symbol)
             )
         }
         return arr.toString()

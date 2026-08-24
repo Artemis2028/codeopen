@@ -126,19 +126,33 @@ fun PositionScreen(fix: FixData, settings: AppSettings, repo: SettingsRepository
                             color = MaterialTheme.colorScheme.primary,
                         )
                         else -> {
+                            // Stacked land-nav layout: grid zone line, then easting
+                            // and northing on their own big lines
                             Text(
                                 "${parts.gzd} ${parts.square}",
-                                style = MaterialTheme.typography.headlineSmall,
+                                style = MaterialTheme.typography.headlineMedium,
                                 fontFamily = FontFamily.Monospace,
+                                letterSpacing = 3.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(10.dp))
                             Text(
-                                "${parts.easting} ${parts.northing}",
-                                fontSize = 38.sp,
-                                lineHeight = 44.sp,
+                                parts.easting,
+                                fontSize = 54.sp,
+                                lineHeight = 58.sp,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
+                                letterSpacing = 6.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                parts.northing,
+                                fontSize = 54.sp,
+                                lineHeight = 58.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 6.sp,
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         }
