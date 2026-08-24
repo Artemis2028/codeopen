@@ -15,46 +15,8 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Write source files (v0.4.0 (M3 tactical layer) delta, plain text, auditable below)
+      - name: Write source files (v0.4.1 (night symbology + graphics folders) delta, plain text, auditable below)
         run: |
-          mkdir -p '.'
-          cat > 'README.md' <<'EOF_GRIDFIX'
-          # GridFix (working title)
-
-          MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
-          built independently with its own design and code.
-
-          **Status: Milestone 3, build 2** — tactical layer: control-measure graphics drawn on the
-          map (phase lines, boundaries, axes of advance, direction of attack, objectives, assembly
-          areas, routes), echelon marks + unit designations on symbols. (M3b1: map, MGRS grid,
-          ruler, offline + MBTiles · M2: compass nav, folders, NATO symbology · M1: position.)
-
-          ## Roadmap
-
-          - **M1** — Shell + live position readout *(done)*
-          - **M2** — Waypoints + compass navigation (bearing arrow, distance, back-azimuth, mils) *(done)*
-          - **M3** — Map view with MGRS grid overlay, offline maps, MBTiles import *(this build)*
-          - **M4** — GPX import/export, waypoint projection, Play Billing (3-day trial → subscription), store launch
-
-          ## Tech
-
-          Kotlin · Jetpack Compose · Material 3 · platform LocationManager + GNSS status ·
-          [NGA MGRS library](https://github.com/ngageoint/mgrs-java) (MIT) ·
-          [osmdroid](https://github.com/osmdroid/osmdroid) (Apache 2.0) · DataStore · GitHub Actions CI
-
-          Basemaps: OpenStreetMap (streets), OpenTopoMap (topo), Esri World Imagery (satellite) —
-          attribution shown in-app. Tile sources may need commercial-use review before store launch.
-
-          ## Build
-
-          Pushes to `main` build a debug APK automatically (Actions tab → latest run → `gridfix-debug-apk` artifact).
-
-          Local build: `gradle assembleDebug` with JDK 17 and the Android SDK installed.
-
-          ## Principles
-
-          Offline-first. No accounts, no analytics, no data collection. Not a primary means of navigation.
-          EOF_GRIDFIX
           mkdir -p 'app'
           cat > 'app/build.gradle.kts' <<'EOF_GRIDFIX'
           plugins {
@@ -71,8 +33,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 6
-                  versionName = "0.4.0-m3b2"
+                  versionCode = 7
+                  versionName = "0.4.1-m3b2"
               }
 
               buildTypes {
@@ -226,6 +188,13 @@ jobs:
                   }
               }
 
+              /** Remove every graphic in [folder] — "clear the sketch" in one go. */
+              suspend fun deleteFolder(folder: String) {
+                  context.graphicsStore.edit { p ->
+                      p[listKey] = encode(decode(p[listKey] ?: "[]").filterNot { it.folder == folder })
+                  }
+              }
+
               private fun decode(json: String): List<TacGraphic> = runCatching {
                   val arr = JSONArray(json)
                   buildList {
@@ -269,231 +238,6 @@ jobs:
                               .put("folder", g.folder)
                               .put("affiliation", g.affiliation)
                               .put("createdAt", g.createdAt)
-                      )
-                  }
-                  return arr.toString()
-              }
-          }
-          EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/data'
-          cat > 'app/src/main/java/app/gridfix/android/data/WaypointRepository.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.data
-
-          import android.content.Context
-          import androidx.datastore.preferences.core.edit
-          import androidx.datastore.preferences.core.stringPreferencesKey
-          import androidx.datastore.preferences.preferencesDataStore
-          import kotlinx.coroutines.flow.Flow
-          import kotlinx.coroutines.flow.map
-          import org.json.JSONArray
-          import org.json.JSONObject
-          import java.util.Locale
-          import java.util.UUID
-
-          private val Context.wpStore by preferencesDataStore(name = "waypoints")
-
-          const val DEFAULT_FOLDER = "Waypoints"
-          const val DEFAULT_SYMBOL = "flag"
-
-          data class Waypoint(
-              val id: String,
-              val name: String,
-              val lat: Double,
-              val lon: Double,
-              val createdAt: Long,
-              val folder: String = DEFAULT_FOLDER,
-              val symbol: String = DEFAULT_SYMBOL,
-              val affiliation: String = "none",
-              val echelon: String = "",       // "", tm, sqd, sec, plt, co, bn, rgt, bde
-              val designation: String = "",   // free-text unit designation amplifier
-          )
-
-          /** Everything needed to create or update a waypoint. */
-          data class WaypointDraft(
-              val name: String,
-              val lat: Double,
-              val lon: Double,
-              val folder: String,
-              val symbol: String,
-              val affiliation: String,
-              val echelon: String = "",
-              val designation: String = "",
-          )
-
-          /** A waypoint folder ("overlay"): can exist empty, and can be toggled visible/hidden. */
-          data class FolderInfo(val name: String, val visible: Boolean = true)
-
-          class WaypointRepository(private val context: Context) {
-
-              private val listKey = stringPreferencesKey("list")
-              private val selectedKey = stringPreferencesKey("selected")
-              private val foldersKey = stringPreferencesKey("folders")
-
-              val waypoints: Flow<List<Waypoint>> = context.wpStore.data.map { p ->
-                  decode(p[listKey] ?: "[]")
-              }
-
-              val selectedId: Flow<String?> = context.wpStore.data.map { p -> p[selectedKey] }
-
-              /** Stored folders unioned with any folder referenced by a waypoint, sorted by name. */
-              val folders: Flow<List<FolderInfo>> = context.wpStore.data.map { p ->
-                  val stored = decodeFolders(p[foldersKey] ?: "[]")
-                  val referenced = decode(p[listKey] ?: "[]").map { it.folder }
-                  val names = (stored.map { it.name } + referenced + DEFAULT_FOLDER).distinct()
-                  names.map { n -> stored.firstOrNull { it.name == n } ?: FolderInfo(n) }
-                      .sortedBy { it.name.lowercase(Locale.US) }
-              }
-
-              suspend fun addFolder(name: String) {
-                  val clean = name.trim()
-                  if (clean.isEmpty()) return
-                  context.wpStore.edit { p ->
-                      p[foldersKey] = encodeFolders(
-                          upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), clean, null)
-                      )
-                  }
-              }
-
-              suspend fun setFolderVisible(name: String, visible: Boolean) {
-                  context.wpStore.edit { p ->
-                      p[foldersKey] = encodeFolders(
-                          upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), name, visible)
-                      )
-                  }
-              }
-
-              suspend fun add(draft: WaypointDraft, nowMillis: Long) {
-                  context.wpStore.edit { p ->
-                      val current = decode(p[listKey] ?: "[]")
-                      val wp = Waypoint(
-                          id = UUID.randomUUID().toString(),
-                          name = draft.name,
-                          lat = draft.lat,
-                          lon = draft.lon,
-                          createdAt = nowMillis,
-                          folder = draft.folder.ifBlank { DEFAULT_FOLDER },
-                          symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
-                          affiliation = draft.affiliation,
-                          echelon = draft.echelon,
-                          designation = draft.designation,
-                      )
-                      p[listKey] = encode(current + wp)
-                      p[foldersKey] = encodeFolders(
-                          upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), wp.folder, null)
-                      )
-                      if (p[selectedKey] == null) {
-                          p[selectedKey] = wp.id
-                      }
-                  }
-              }
-
-              suspend fun update(id: String, draft: WaypointDraft) {
-                  context.wpStore.edit { p ->
-                      val current = decode(p[listKey] ?: "[]")
-                      p[listKey] = encode(
-                          current.map {
-                              if (it.id == id) it.copy(
-                                  name = draft.name,
-                                  lat = draft.lat,
-                                  lon = draft.lon,
-                                  folder = draft.folder.ifBlank { DEFAULT_FOLDER },
-                                  symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
-                                  affiliation = draft.affiliation,
-                                  echelon = draft.echelon,
-                                  designation = draft.designation,
-                              ) else it
-                          }
-                      )
-                      p[foldersKey] = encodeFolders(
-                          upsertFolder(
-                              decodeFolders(p[foldersKey] ?: "[]"),
-                              draft.folder.ifBlank { DEFAULT_FOLDER },
-                              null,
-                          )
-                      )
-                  }
-              }
-
-              suspend fun delete(id: String) {
-                  context.wpStore.edit { p ->
-                      val current = decode(p[listKey] ?: "[]")
-                      p[listKey] = encode(current.filterNot { it.id == id })
-                      if (p[selectedKey] == id) {
-                          p.remove(selectedKey)
-                      }
-                  }
-              }
-
-              suspend fun select(id: String) {
-                  context.wpStore.edit { p -> p[selectedKey] = id }
-              }
-
-              private fun decode(json: String): List<Waypoint> = runCatching {
-                  val arr = JSONArray(json)
-                  buildList {
-                      for (i in 0 until arr.length()) {
-                          val o = arr.getJSONObject(i)
-                          add(
-                              Waypoint(
-                                  id = o.getString("id"),
-                                  name = o.getString("name"),
-                                  lat = o.getDouble("lat"),
-                                  lon = o.getDouble("lon"),
-                                  createdAt = o.optLong("createdAt"),
-                                  folder = o.optString("folder", DEFAULT_FOLDER),
-                                  symbol = o.optString("symbol", DEFAULT_SYMBOL),
-                                  affiliation = o.optString("affiliation", "none"),
-                                  echelon = o.optString("echelon", ""),
-                                  designation = o.optString("designation", ""),
-                              )
-                          )
-                      }
-                  }
-              }.getOrDefault(emptyList())
-
-              /** Add or update a folder entry; visible == null keeps the existing visibility. */
-              private fun upsertFolder(list: List<FolderInfo>, name: String, visible: Boolean?): List<FolderInfo> {
-                  val existing = list.firstOrNull { it.name == name }
-                  return when {
-                      existing == null -> list + FolderInfo(name, visible ?: true)
-                      visible == null -> list
-                      else -> list.map { if (it.name == name) it.copy(visible = visible) else it }
-                  }
-              }
-
-              private fun decodeFolders(json: String): List<FolderInfo> = runCatching {
-                  val arr = JSONArray(json)
-                  buildList {
-                      for (i in 0 until arr.length()) {
-                          val o = arr.getJSONObject(i)
-                          add(FolderInfo(o.getString("name"), o.optBoolean("visible", true)))
-                      }
-                  }
-              }.getOrDefault(emptyList())
-
-              private fun encodeFolders(list: List<FolderInfo>): String {
-                  val arr = JSONArray()
-                  for (f in list) {
-                      arr.put(JSONObject().put("name", f.name).put("visible", f.visible))
-                  }
-                  return arr.toString()
-              }
-
-              private fun encode(list: List<Waypoint>): String {
-                  val arr = JSONArray()
-                  for (w in list) {
-                      arr.put(
-                          JSONObject()
-                              .put("id", w.id)
-                              .put("name", w.name)
-                              .put("lat", w.lat)
-                              .put("lon", w.lon)
-                              .put("createdAt", w.createdAt)
-                              .put("folder", w.folder)
-                              .put("symbol", w.symbol)
-                              .put("affiliation", w.affiliation)
-                              .put("echelon", w.echelon)
-                              .put("designation", w.designation)
                       )
                   }
                   return arr.toString()
@@ -587,7 +331,10 @@ jobs:
                   for (g in graphics) {
                       val n = project(projection, g.points)
                       if (n == 0) continue
-                      drawGraphic(canvas, g.type, colorFor(g.affiliation), haloColor, n, g.name, g.id == selectedId, dashed = false)
+                      drawGraphic(
+                          canvas, g.type, colorFor(g.affiliation), haloColor, n,
+                          nightName(g.name, g.affiliation), g.id == selectedId, dashed = false,
+                      )
                   }
                   if (draftActive && draftPoints.isNotEmpty()) {
                       val n = project(projection, draftPoints)
@@ -619,8 +366,18 @@ jobs:
                   return best
               }
 
+              /**
+               * On a single-color (night) display, enemy graphics are marked "ENY" per
+               * FM 1-02.2 / MIL-STD-2525 practice, since color no longer distinguishes them.
+               */
+              private fun nightName(name: String, affiliation: String): String =
+                  if (nightMode && affiliation == "hostile") "$name ENY" else name
+
               private fun colorFor(affiliation: String): Int {
-                  if (nightMode) return Color.rgb(255, 59, 48)
+                  if (nightMode) {
+                      // Two-tone red: hostile stays at full intensity, everything else dimmer
+                      return if (affiliation == "hostile") Color.rgb(255, 59, 48) else Color.rgb(196, 45, 36)
+                  }
                   return when (affiliation) {
                       "friendly" -> Color.rgb(45, 120, 200)
                       "hostile" -> Color.rgb(210, 50, 40)
@@ -1119,11 +876,15 @@ jobs:
                                   graphics = graphics,
                                   onAddGraphic = { name, type, points, folder, affiliation ->
                                       scope.launch {
+                                          waypointRepo.addFolder(folder)   // so the overlay eye toggle exists
                                           graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis())
                                       }
                                   },
                                   onUpdateGraphic = { id, name, folder, affiliation ->
-                                      scope.launch { graphicsRepo.rename(id, name, folder, affiliation) }
+                                      scope.launch {
+                                          waypointRepo.addFolder(folder)
+                                          graphicsRepo.rename(id, name, folder, affiliation)
+                                      }
                                   },
                                   onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                               )
@@ -1149,6 +910,9 @@ jobs:
                                       scope.launch { waypointRepo.select(id) }
                                       goTo("navigate")
                                   },
+                                  graphics = graphics,
+                                  onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
+                                  onClearGraphics = { folder -> scope.launch { graphicsRepo.deleteFolder(folder) } },
                               )
                           }
                           composable("settings") { SettingsScreen(repo, settings) }
@@ -1186,6 +950,119 @@ jobs:
                       Text("Grant location access")
                   }
               }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
+          cat > 'app/src/main/java/app/gridfix/android/ui/NatoSymbols.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui
+
+          import app.gridfix.android.R
+
+          /**
+           * Curated MIL-STD-2525B land unit symbols, bundled as 32px renders
+           * (from the standard symbol set) in res/drawable-nodpi.
+           * Key format: nato_<affiliation>_<function>, e.g. nato_h_armor.
+           */
+          object NatoSymbols {
+
+              val functions = listOf(
+                  "inf" to "Infantry",
+                  "mechinf" to "Mech infantry",
+                  "armor" to "Armor",
+                  "recon" to "Recon",
+                  "arty" to "Artillery",
+                  "airdef" to "Air defense",
+                  "antiarmor" to "Anti-armor",
+                  "engineer" to "Engineer",
+                  "avn" to "Aviation",
+                  "medical" to "Medical",
+                  "supply" to "Supply",
+                  "signal" to "Signal",
+                  "unit" to "Unit",
+              )
+
+              val affiliations = listOf(
+                  "f" to "Friendly",
+                  "h" to "Hostile",
+                  "n" to "Neutral",
+                  "u" to "Unknown",
+              )
+
+              fun isNato(key: String): Boolean = key.startsWith("nato_")
+
+              fun keysFor(aff: String): List<String> = functions.map { "nato_${aff}_${it.first}" }
+
+              fun label(key: String): String {
+                  val parts = key.split("_")
+                  if (parts.size != 3) return key
+                  val aff = affiliations.firstOrNull { it.first == parts[1] }?.second ?: parts[1]
+                  val func = functions.firstOrNull { it.first == parts[2] }?.second ?: parts[2]
+                  return "$aff $func"
+              }
+
+              /** Function-only label ("Infantry", "Air defense") for compact picker captions. */
+              fun functionLabel(key: String): String {
+                  val parts = key.split("_")
+                  if (parts.size != 3) return key
+                  return functions.firstOrNull { it.first == parts[2] }?.second ?: parts[2]
+              }
+
+              private val resMap: Map<String, Int> = mapOf(
+                  "nato_f_inf" to R.drawable.nato_f_inf,
+                  "nato_f_mechinf" to R.drawable.nato_f_mechinf,
+                  "nato_f_armor" to R.drawable.nato_f_armor,
+                  "nato_f_recon" to R.drawable.nato_f_recon,
+                  "nato_f_arty" to R.drawable.nato_f_arty,
+                  "nato_f_airdef" to R.drawable.nato_f_airdef,
+                  "nato_f_antiarmor" to R.drawable.nato_f_antiarmor,
+                  "nato_f_engineer" to R.drawable.nato_f_engineer,
+                  "nato_f_avn" to R.drawable.nato_f_avn,
+                  "nato_f_medical" to R.drawable.nato_f_medical,
+                  "nato_f_supply" to R.drawable.nato_f_supply,
+                  "nato_f_signal" to R.drawable.nato_f_signal,
+                  "nato_f_unit" to R.drawable.nato_f_unit,
+                  "nato_h_inf" to R.drawable.nato_h_inf,
+                  "nato_h_mechinf" to R.drawable.nato_h_mechinf,
+                  "nato_h_armor" to R.drawable.nato_h_armor,
+                  "nato_h_recon" to R.drawable.nato_h_recon,
+                  "nato_h_arty" to R.drawable.nato_h_arty,
+                  "nato_h_airdef" to R.drawable.nato_h_airdef,
+                  "nato_h_antiarmor" to R.drawable.nato_h_antiarmor,
+                  "nato_h_engineer" to R.drawable.nato_h_engineer,
+                  "nato_h_avn" to R.drawable.nato_h_avn,
+                  "nato_h_medical" to R.drawable.nato_h_medical,
+                  "nato_h_supply" to R.drawable.nato_h_supply,
+                  "nato_h_signal" to R.drawable.nato_h_signal,
+                  "nato_h_unit" to R.drawable.nato_h_unit,
+                  "nato_n_inf" to R.drawable.nato_n_inf,
+                  "nato_n_mechinf" to R.drawable.nato_n_mechinf,
+                  "nato_n_armor" to R.drawable.nato_n_armor,
+                  "nato_n_recon" to R.drawable.nato_n_recon,
+                  "nato_n_arty" to R.drawable.nato_n_arty,
+                  "nato_n_airdef" to R.drawable.nato_n_airdef,
+                  "nato_n_antiarmor" to R.drawable.nato_n_antiarmor,
+                  "nato_n_engineer" to R.drawable.nato_n_engineer,
+                  "nato_n_avn" to R.drawable.nato_n_avn,
+                  "nato_n_medical" to R.drawable.nato_n_medical,
+                  "nato_n_supply" to R.drawable.nato_n_supply,
+                  "nato_n_signal" to R.drawable.nato_n_signal,
+                  "nato_n_unit" to R.drawable.nato_n_unit,
+                  "nato_u_inf" to R.drawable.nato_u_inf,
+                  "nato_u_mechinf" to R.drawable.nato_u_mechinf,
+                  "nato_u_armor" to R.drawable.nato_u_armor,
+                  "nato_u_recon" to R.drawable.nato_u_recon,
+                  "nato_u_arty" to R.drawable.nato_u_arty,
+                  "nato_u_airdef" to R.drawable.nato_u_airdef,
+                  "nato_u_antiarmor" to R.drawable.nato_u_antiarmor,
+                  "nato_u_engineer" to R.drawable.nato_u_engineer,
+                  "nato_u_avn" to R.drawable.nato_u_avn,
+                  "nato_u_medical" to R.drawable.nato_u_medical,
+                  "nato_u_supply" to R.drawable.nato_u_supply,
+                  "nato_u_signal" to R.drawable.nato_u_signal,
+                  "nato_u_unit" to R.drawable.nato_u_unit,
+              )
+
+              fun resId(key: String): Int? = resMap[key]
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui'
@@ -1237,6 +1114,8 @@ jobs:
               keys: List<String>,
               selected: String,
               affiliation: String,
+              labelFor: ((String) -> String)? = null,
+              night: Boolean = false,
               onSelect: (String) -> Unit,
           ) {
               Row(
@@ -1245,20 +1124,35 @@ jobs:
               ) {
                   keys.forEach { key ->
                       val isSelected = key == selected
-                      Box(
-                          modifier = Modifier
-                              .size(46.dp)
-                              .clip(CircleShape)
-                              .border(
-                                  width = if (isSelected) 2.dp else 1.dp,
-                                  color = if (isSelected) MaterialTheme.colorScheme.primary
-                                  else MaterialTheme.colorScheme.outline,
-                                  shape = CircleShape,
-                              )
-                              .clickable { onSelect(key) },
-                          contentAlignment = Alignment.Center,
+                      Column(
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                          verticalArrangement = Arrangement.spacedBy(2.dp),
                       ) {
-                          WaypointMarker(symbol = key, affiliation = affiliation, size = 32.dp)
+                          Box(
+                              modifier = Modifier
+                                  .size(46.dp)
+                                  .clip(CircleShape)
+                                  .border(
+                                      width = if (isSelected) 2.dp else 1.dp,
+                                      color = if (isSelected) MaterialTheme.colorScheme.primary
+                                      else MaterialTheme.colorScheme.outline,
+                                      shape = CircleShape,
+                                  )
+                                  .clickable { onSelect(key) },
+                              contentAlignment = Alignment.Center,
+                          ) {
+                              WaypointMarker(symbol = key, affiliation = affiliation, size = 32.dp, night = night)
+                          }
+                          labelFor?.let { f ->
+                              Text(
+                                  f(key),
+                                  style = MaterialTheme.typography.labelSmall,
+                                  fontSize = 9.sp,
+                                  maxLines = 1,
+                                  color = if (isSelected) MaterialTheme.colorScheme.primary
+                                  else MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          }
                       }
                   }
               }
@@ -1278,6 +1172,7 @@ jobs:
               defaultName: String,
               onConfirm: (WaypointDraft) -> Unit,
               onDismiss: () -> Unit,
+              night: Boolean = false,
           ) {
               val baseParts = remember(initial) {
                   when {
@@ -1342,6 +1237,8 @@ jobs:
                               keys = WaypointSymbols.all,
                               selected = symbol,
                               affiliation = affiliation,
+                              labelFor = { WaypointSymbols.label(it) },
+                              night = night,
                           ) { symbol = it }
 
                           Text("Tactical task", style = MaterialTheme.typography.labelLarge)
@@ -1349,6 +1246,8 @@ jobs:
                               keys = WaypointSymbols.tasks,
                               selected = symbol,
                               affiliation = affiliation,
+                              labelFor = { WaypointSymbols.taskLabel(it) },
+                              night = night,
                           ) { symbol = it }
 
                           Text("NATO units", style = MaterialTheme.typography.labelLarge)
@@ -1362,6 +1261,8 @@ jobs:
                                   keys = NatoSymbols.keysFor(aff),
                                   selected = symbol,
                                   affiliation = affiliation,
+                                  labelFor = { NatoSymbols.functionLabel(it) },
+                                  night = night,
                               ) { symbol = it }
                           }
 
@@ -1536,6 +1437,8 @@ jobs:
           import androidx.compose.ui.geometry.Offset
           import androidx.compose.ui.geometry.Size
           import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.ColorFilter
+          import androidx.compose.ui.graphics.ColorMatrix
           import androidx.compose.ui.graphics.Path
           import androidx.compose.ui.graphics.drawscope.DrawScope
           import androidx.compose.ui.graphics.drawscope.Stroke
@@ -1579,6 +1482,19 @@ jobs:
            * Non-NATO markers get an affiliation frame (friendly rectangle, hostile diamond,
            * neutral square, unknown circle) except tasks, which stand alone per doctrine.
            */
+          /** Night-vision red: luminance mapped onto the red channel, green/blue dropped. */
+          private val NightImageFilter = ColorFilter.colorMatrix(
+              ColorMatrix(
+                  floatArrayOf(
+                      0.35f, 0.50f, 0.15f, 0f, 30f,
+                      0f, 0f, 0f, 0f, 0f,
+                      0f, 0f, 0f, 0f, 0f,
+                      0f, 0f, 0f, 1f, 0f,
+                  )
+              )
+          )
+          private val NightRed = Color(0xFFFF3B30)
+
           @Composable
           fun WaypointMarker(
               symbol: String,
@@ -1586,6 +1502,7 @@ jobs:
               modifier: Modifier = Modifier,
               size: Dp = 30.dp,
               echelon: String = "",
+              night: Boolean = false,
           ) {
               if (NatoSymbols.isNato(symbol)) {
                   val res = NatoSymbols.resId(symbol)
@@ -1595,10 +1512,12 @@ jobs:
                               painter = painterResource(res),
                               contentDescription = NatoSymbols.label(symbol),
                               modifier = Modifier.fillMaxSize(),
+                              colorFilter = if (night) NightImageFilter else null,
                           )
                           EchelonMarks(
                               echelon = echelon,
-                              color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
+                              color = if (night) NightRed
+                              else Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
                               halo = MaterialTheme.colorScheme.background,
                           )
                       }
@@ -1606,7 +1525,8 @@ jobs:
                   }
               }
 
-              val color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary)
+              val color = if (night) NightRed
+              else Affiliations.color(affiliation, MaterialTheme.colorScheme.primary)
               val isShape = WaypointSymbols.isShape(symbol)
               val isTask = WaypointSymbols.isTask(symbol)
               val taskLetter = if (isTask) WaypointSymbols.taskLetter(symbol) else null
@@ -1898,6 +1818,26 @@ jobs:
               )
 
               fun isShape(key: String): Boolean = key in shapes
+
+              /** Short display label for a basic symbol or shape (pickers). */
+              fun label(key: String): String = when (key) {
+                  "dot" -> "Dot"
+                  "triangle" -> "Triangle"
+                  "square" -> "Square"
+                  "diamond" -> "Diamond"
+                  "cross" -> "Cross"
+                  "flag" -> "Flag"
+                  "target" -> "Target"
+                  "star" -> "Star"
+                  "home" -> "Home"
+                  "danger" -> "Danger"
+                  "water" -> "Water"
+                  "camp" -> "Camp"
+                  "vehicle" -> "Vehicle"
+                  "antenna" -> "Antenna"
+                  "medic" -> "Medic"
+                  else -> key
+              }
 
               /** Tactical mission task symbols (drawn by WaypointMarker). */
               val tasks = listOf(
@@ -2425,6 +2365,7 @@ jobs:
                                               affiliation = w.affiliation,
                                               size = markerDp,
                                               echelon = w.echelon,
+                                              night = settings.nightMode,
                                           )
                                       }
                                       if (showNames) {
@@ -2845,7 +2786,7 @@ jobs:
                       drawNameOpen = false
                   } else {
                       var gName by remember(dt) { mutableStateOf("") }
-                      var gFolder by remember(dt) { mutableStateOf(folders.firstOrNull { it.name == "Graphics" }?.name ?: folders.firstOrNull()?.name ?: "Graphics") }
+                      var gFolder by remember(dt) { mutableStateOf("Graphics") }
                       var gAff by remember(dt) { mutableStateOf(drawAffiliation) }
                       AlertDialog(
                           onDismissRequest = { drawNameOpen = false },
@@ -2982,7 +2923,7 @@ jobs:
                       onDismissRequest = { infoWp = null },
                       title = {
                           Row(verticalAlignment = Alignment.CenterVertically) {
-                              WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon)
+                              WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon, night = settings.nightMode)
                               Spacer(Modifier.width(10.dp))
                               Text(w.name)
                           }
@@ -3047,6 +2988,7 @@ jobs:
                           newWpAt = null
                       },
                       onDismiss = { newWpAt = null },
+                      night = settings.nightMode,
                   )
               }
 
@@ -3063,6 +3005,7 @@ jobs:
                           editingWp = null
                       },
                       onDismiss = { editingWp = null },
+                      night = settings.nightMode,
                   )
               }
 
@@ -3371,6 +3314,7 @@ jobs:
                               affiliation = target?.affiliation ?: "none",
                               size = 32.dp,
                               echelon = target?.echelon ?: "",
+                              night = settings.nightMode,
                           )
                           Spacer(Modifier.width(8.dp))
                           Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
@@ -3381,7 +3325,7 @@ jobs:
                               DropdownMenuItem(
                                   text = { Text(w.name) },
                                   leadingIcon = {
-                                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon)
+                                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon, night = settings.nightMode)
                                   },
                                   onClick = {
                                       onSelect(w.id)
@@ -3588,6 +3532,7 @@ jobs:
           import androidx.compose.material.icons.outlined.ExpandLess
           import androidx.compose.material.icons.outlined.ExpandMore
           import androidx.compose.material.icons.outlined.MoreVert
+          import androidx.compose.material.icons.outlined.Timeline
           import androidx.compose.material.icons.outlined.Visibility
           import androidx.compose.material.icons.outlined.VisibilityOff
           import androidx.compose.material3.AlertDialog
@@ -3610,6 +3555,7 @@ jobs:
           import androidx.compose.runtime.setValue
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.text.font.FontFamily
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
@@ -3617,9 +3563,12 @@ jobs:
           import app.gridfix.android.coords.Coordinates
           import app.gridfix.android.data.AppSettings
           import app.gridfix.android.data.FolderInfo
+          import app.gridfix.android.data.GraphicTypes
+          import app.gridfix.android.data.TacGraphic
           import app.gridfix.android.data.Waypoint
           import app.gridfix.android.data.WaypointDraft
           import app.gridfix.android.location.FixData
+          import app.gridfix.android.ui.Affiliations
           import app.gridfix.android.ui.WaypointDialog
           import app.gridfix.android.ui.WaypointMarker
           import java.util.Locale
@@ -3636,15 +3585,21 @@ jobs:
               onNavigateTo: (String) -> Unit,
               onAddFolder: (String) -> Unit,
               onSetFolderVisible: (name: String, visible: Boolean) -> Unit,
+              graphics: List<TacGraphic>,
+              onDeleteGraphic: (String) -> Unit,
+              onClearGraphics: (folder: String) -> Unit,
           )
           {
               var dialogOpen by remember { mutableStateOf(false) }
               var editing by remember { mutableStateOf<Waypoint?>(null) }
               var deleteCandidate by remember { mutableStateOf<Waypoint?>(null) }
+              var deleteGraphicCandidate by remember { mutableStateOf<TacGraphic?>(null) }
+              var clearFolderCandidate by remember { mutableStateOf<String?>(null) }
               var newFolderOpen by remember { mutableStateOf(false) }
               val collapsed = remember { mutableStateMapOf<String, Boolean>() }
               val loc = fix.location
               val byFolder = waypoints.groupBy { it.folder }
+              val graphicsByFolder = graphics.groupBy { it.folder }
 
               Box(Modifier.fillMaxSize()) {
                   LazyColumn(
@@ -3678,6 +3633,7 @@ jobs:
 
                       folders.forEach { folder ->
                           val list = byFolder[folder.name].orEmpty()
+                          val glist = graphicsByFolder[folder.name].orEmpty()
                           val isCollapsed = collapsed[folder.name] == true
                           item(key = "folder-${folder.name}") {
                               Row(
@@ -3702,7 +3658,7 @@ jobs:
                                       modifier = Modifier.weight(1f),
                                   )
                                   Text(
-                                      "${list.size}",
+                                      if (glist.isEmpty()) "${list.size}" else "${list.size} + ${glist.size}",
                                       style = MaterialTheme.typography.labelMedium,
                                       color = MaterialTheme.colorScheme.onSurfaceVariant,
                                   )
@@ -3727,6 +3683,20 @@ jobs:
                                       onEdit = { editing = w; dialogOpen = true },
                                       onDelete = { deleteCandidate = w },
                                   )
+                              }
+                              items(glist, key = { "g-" + it.id }) { g ->
+                                  GraphicRow(
+                                      g = g,
+                                      night = settings.nightMode,
+                                      onDelete = { deleteGraphicCandidate = g },
+                                  )
+                              }
+                              if (glist.size > 1) {
+                                  item(key = "clear-${folder.name}") {
+                                      TextButton(onClick = { clearFolderCandidate = folder.name }) {
+                                          Text("Clear ${glist.size} graphics in ${folder.name}")
+                                      }
+                                  }
                               }
                           }
                       }
@@ -3772,6 +3742,7 @@ jobs:
                           dialogOpen = false
                       },
                       onDismiss = { dialogOpen = false },
+                      night = settings.nightMode,
                   )
               }
 
@@ -3800,6 +3771,41 @@ jobs:
                   )
               }
 
+              deleteGraphicCandidate?.let { g ->
+                  AlertDialog(
+                      onDismissRequest = { deleteGraphicCandidate = null },
+                      title = { Text("Delete ${g.name.ifBlank { GraphicTypes.label(g.type) }}?") },
+                      text = { Text("This drawn graphic will be removed permanently.") },
+                      confirmButton = {
+                          TextButton(onClick = {
+                              onDeleteGraphic(g.id)
+                              deleteGraphicCandidate = null
+                          }) { Text("Delete") }
+                      },
+                      dismissButton = {
+                          TextButton(onClick = { deleteGraphicCandidate = null }) { Text("Cancel") }
+                      },
+                  )
+              }
+
+              clearFolderCandidate?.let { fname ->
+                  val count = graphicsByFolder[fname].orEmpty().size
+                  AlertDialog(
+                      onDismissRequest = { clearFolderCandidate = null },
+                      title = { Text("Clear $fname?") },
+                      text = { Text("All $count drawn graphics in this folder will be removed permanently. Waypoints are not affected.") },
+                      confirmButton = {
+                          TextButton(onClick = {
+                              onClearGraphics(fname)
+                              clearFolderCandidate = null
+                          }) { Text("Clear") }
+                      },
+                      dismissButton = {
+                          TextButton(onClick = { clearFolderCandidate = null }) { Text("Cancel") }
+                      },
+                  )
+              }
+
               deleteCandidate?.let { w ->
                   AlertDialog(
                       onDismissRequest = { deleteCandidate = null },
@@ -3815,6 +3821,52 @@ jobs:
                           TextButton(onClick = { deleteCandidate = null }) { Text("Cancel") }
                       },
                   )
+              }
+          }
+
+          @Composable
+          private fun GraphicRow(
+              g: TacGraphic,
+              night: Boolean,
+              onDelete: () -> Unit,
+          ) {
+              Card(
+                  modifier = Modifier.fillMaxWidth(),
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Row(
+                      Modifier
+                          .fillMaxWidth()
+                          .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 2.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                      Icon(
+                          Icons.Outlined.Timeline,
+                          contentDescription = null,
+                          tint = if (night) Color(0xFFFF3B30)
+                          else Affiliations.color(g.affiliation, MaterialTheme.colorScheme.primary),
+                          modifier = Modifier.size(26.dp),
+                      )
+                      Spacer(Modifier.size(12.dp))
+                      Column(Modifier.weight(1f)) {
+                          Text(
+                              g.name.ifBlank { GraphicTypes.label(g.type) },
+                              style = MaterialTheme.typography.titleMedium,
+                          )
+                          Text(
+                              "${GraphicTypes.label(g.type)} · ${g.points.size} points",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                      }
+                      IconButton(onClick = onDelete) {
+                          Icon(
+                              Icons.Outlined.Delete,
+                              contentDescription = "Delete graphic",
+                              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                      }
+                  }
               }
           }
 
@@ -3839,7 +3891,7 @@ jobs:
                           .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
                       verticalAlignment = Alignment.CenterVertically,
                   ) {
-                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon)
+                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon, night = settings.nightMode)
                       Spacer(Modifier.size(12.dp))
                       Column(Modifier.weight(1f)) {
                           Text(w.name, style = MaterialTheme.typography.titleMedium)
@@ -3898,7 +3950,7 @@ jobs:
           EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.4.0 (M3 tactical layer) source from bootstrap workflow'
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.4.1 (night symbology + graphics folders) source from bootstrap workflow'
             git push origin HEAD:main
           fi
 
