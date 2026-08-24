@@ -15,7 +15,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Write source files (v0.3.0 (M3 map) delta, plain text, auditable below)
+      - name: Write source files (v0.4.0 (M3 tactical layer) delta, plain text, auditable below)
         run: |
           mkdir -p '.'
           cat > 'README.md' <<'EOF_GRIDFIX'
@@ -24,9 +24,10 @@ jobs:
           MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
           built independently with its own design and code.
 
-          **Status: Milestone 3** — map view with MGRS grid overlay, waypoints on map, ruler,
-          offline tile cache + area download, MBTiles import. (M1: position readout · M2: compass
-          navigation, waypoint folders, NATO symbology.)
+          **Status: Milestone 3, build 2** — tactical layer: control-measure graphics drawn on the
+          map (phase lines, boundaries, axes of advance, direction of attack, objectives, assembly
+          areas, routes), echelon marks + unit designations on symbols. (M3b1: map, MGRS grid,
+          ruler, offline + MBTiles · M2: compass nav, folders, NATO symbology · M1: position.)
 
           ## Roadmap
 
@@ -70,8 +71,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "0.3.0-m3"
+                  versionCode = 6
+                  versionName = "0.4.0-m3b2"
               }
 
               buildTypes {
@@ -113,569 +114,457 @@ jobs:
               implementation("org.osmdroid:osmdroid-android:6.1.20")
           }
           EOF_GRIDFIX
-          mkdir -p 'app/src/main'
-          cat > 'app/src/main/AndroidManifest.xml' <<'EOF_GRIDFIX'
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-              <!-- Map tiles only: the app has no accounts, no analytics, no data collection -->
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-              <uses-feature
-                  android:name="android.hardware.location.gps"
-                  android:required="false" />
-
-              <application
-                  android:label="@string/app_name"
-                  android:icon="@mipmap/ic_launcher"
-                  android:supportsRtl="true"
-                  android:theme="@style/Theme.GridFix">
-
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
-          </manifest>
-          EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/coords'
-          cat > 'app/src/main/java/app/gridfix/android/coords/Coordinates.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.coords
-
-          import mil.nga.grid.features.Point
-          import mil.nga.mgrs.MGRS
-          import mil.nga.mgrs.grid.GridType
-          import java.text.SimpleDateFormat
-          import java.util.Date
-          import java.util.Locale
-          import java.util.TimeZone
-          import kotlin.math.abs
-          import kotlin.math.atan
-          import kotlin.math.cos
-          import kotlin.math.floor
-          import kotlin.math.pow
-          import kotlin.math.roundToLong
-          import kotlin.math.sin
-          import kotlin.math.sqrt
-          import kotlin.math.tan
-
-          object Coordinates {
-
-              data class MgrsParts(
-                  val gzd: String,
-                  val square: String,
-                  val easting: String,
-                  val northing: String,
-                  val full: String,
-              )
-
-              /** Lat/lon (WGS84) to MGRS at the requested precision (4/6/8/10 digits). */
-              fun mgrs(lat: Double, lon: Double, digits: Int): MgrsParts? = runCatching {
-                  val mgrs = MGRS.from(Point.point(lon, lat))
-                  val gridType = when (digits) {
-                      4 -> GridType.KILOMETER
-                      6 -> GridType.HUNDRED_METER
-                      8 -> GridType.TEN_METER
-                      else -> GridType.METER
-                  }
-                  val full = mgrs.coordinate(gridType).uppercase(Locale.US)
-                  val match = Regex("^(\\d{1,2}[A-Z])([A-Z]{2})(\\d*)$").find(full)
-                  if (match != null) {
-                      val (gzd, square, num) = match.destructured
-                      val half = num.length / 2
-                      MgrsParts(gzd, square, num.substring(0, half), num.substring(half), full)
-                  } else {
-                      // Polar regions (no zone number) or unexpected shape: show as-is
-                      MgrsParts(full, "", "", "", full)
-                  }
-              }.getOrNull()
-
-              data class UtmCoord(val zone: Int, val hemisphere: Char, val easting: Long, val northing: Long)
-
-              /** Lat/lon (WGS84) to standard UTM. Valid for lat -80..84. */
-              fun utm(lat: Double, lon: Double): UtmCoord? {
-                  if (lat < -80.0 || lat > 84.0) return null
-
-                  val zone = utmZone(lat, lon)
-
-                  val a = 6378137.0
-                  val f = 1.0 / 298.257223563
-                  val k0 = 0.9996
-                  val e2 = f * (2.0 - f)
-                  val ep2 = e2 / (1.0 - e2)
-
-                  val latRad = Math.toRadians(lat)
-                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
-                  val lonRad = Math.toRadians(lon)
-
-                  val n = a / sqrt(1.0 - e2 * sin(latRad).pow(2))
-                  val t = tan(latRad).pow(2)
-                  val c = ep2 * cos(latRad).pow(2)
-                  val bigA = cos(latRad) * (lonRad - lonOrigin)
-
-                  val m = a * (
-                      (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0) * latRad -
-                          (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(2.0 * latRad) +
-                          (15.0 * e2 * e2 / 256.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(4.0 * latRad) -
-                          (35.0 * e2 * e2 * e2 / 3072.0) * sin(6.0 * latRad)
-                      )
-
-                  val easting = k0 * n * (
-                      bigA + (1.0 - t + c) * bigA.pow(3) / 6.0 +
-                          (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * bigA.pow(5) / 120.0
-                      ) + 500000.0
-
-                  var northing = k0 * (
-                      m + n * tan(latRad) * (
-                          bigA.pow(2) / 2.0 +
-                              (5.0 - t + 9.0 * c + 4.0 * c * c) * bigA.pow(4) / 24.0 +
-                              (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * bigA.pow(6) / 720.0
-                          )
-                      )
-                  if (lat < 0) northing += 10000000.0
-
-                  return UtmCoord(
-                      zone = zone,
-                      hemisphere = if (lat >= 0) 'N' else 'S',
-                      easting = easting.roundToLong(),
-                      northing = northing.roundToLong(),
-                  )
-              }
-
-              fun formatUtm(u: UtmCoord?): String =
-                  if (u == null) "—" else "${u.zone}${u.hemisphere} ${u.easting}E ${u.northing}N"
-
-              /** Lat/lon in the chosen format: 0 = DD, 1 = DDM, 2 = DMS. */
-              fun formatLatLon(lat: Double, lon: Double, format: Int): String {
-                  fun one(value: Double, positive: Char, negative: Char): String {
-                      val hemi = if (value >= 0) positive else negative
-                      val v = abs(value)
-                      return when (format) {
-                          0 -> String.format(Locale.US, "%.5f° %c", v, hemi)
-                          2 -> {
-                              val d = v.toInt()
-                              val mFull = (v - d) * 60.0
-                              val mm = mFull.toInt()
-                              val s = (mFull - mm) * 60.0
-                              String.format(Locale.US, "%d° %02d' %04.1f\" %c", d, mm, s, hemi)
-                          }
-                          else -> {
-                              val d = v.toInt()
-                              val mFull = (v - d) * 60.0
-                              String.format(Locale.US, "%d° %06.3f' %c", d, mFull, hemi)
-                          }
-                      }
-                  }
-                  return one(lat, 'N', 'S') + "   " + one(lon, 'E', 'W')
-              }
-
-              /** Military date-time group in Zulu, e.g. 241435Z AUG 26 */
-              fun dtg(timeMillis: Long): String {
-                  val sdf = SimpleDateFormat("ddHHmm'Z' MMM yy", Locale.US)
-                  sdf.timeZone = TimeZone.getTimeZone("UTC")
-                  return sdf.format(Date(timeMillis)).uppercase(Locale.US)
-              }
-
-              fun formatAltitude(meters: Double, units: Int): String = when (units) {
-                  1 -> "${(meters * 3.28084).roundToLong()} ft"
-                  else -> "${meters.roundToLong()} m"
-              }
-
-              fun formatAccuracy(meters: Float, units: Int): String = when (units) {
-                  1 -> "±${(meters * 3.28084).roundToLong()} ft"
-                  else -> "±${meters.roundToLong()} m"
-              }
-
-              fun formatSpeed(metersPerSecond: Float, units: Int): String = when (units) {
-                  1 -> String.format(Locale.US, "%.1f mph", metersPerSecond * 2.23694)
-                  2 -> String.format(Locale.US, "%.1f kn", metersPerSecond * 1.94384)
-                  else -> String.format(Locale.US, "%.1f km/h", metersPerSecond * 3.6)
-              }
-
-              private fun utmZone(lat: Double, lon: Double): Int {
-                  var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
-                  // Norway exception
-                  if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
-                  // Svalbard exceptions
-                  if (lat in 72.0..84.0) {
-                      zone = when {
-                          lon in 0.0..9.0 -> 31
-                          lon in 9.0..21.0 -> 33
-                          lon in 21.0..33.0 -> 35
-                          lon in 33.0..42.0 -> 37
-                          else -> zone
-                      }
-                  }
-                  return zone
-              }
-
-              /** Grid convergence angle (degrees): grid north minus true north for this UTM zone. */
-              fun gridConvergence(lat: Double, lon: Double): Double {
-                  val zone = utmZone(lat, lon)
-                  val lonOrigin = ((zone - 1) * 6 - 180 + 3).toDouble()
-                  return Math.toDegrees(
-                      atan(tan(Math.toRadians(lon - lonOrigin)) * sin(Math.toRadians(lat)))
-                  )
-              }
-
-              data class NavInfo(val distanceMeters: Float, val bearingTrue: Float)
-
-              /** Geodesic distance and initial true bearing between two points. */
-              fun navInfo(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): NavInfo {
-                  val results = FloatArray(2)
-                  android.location.Location.distanceBetween(fromLat, fromLon, toLat, toLon, results)
-                  return NavInfo(results[0], (results[1] + 360f) % 360f)
-              }
-
-              fun formatDistance(meters: Float, units: Int): String = when (units) {
-                  1 -> {
-                      val feet = meters * 3.28084f
-                      if (feet < 1000f) String.format(Locale.US, "%.0f ft", feet)
-                      else String.format(Locale.US, "%.2f mi", meters / 1609.344f)
-                  }
-                  2 -> {
-                      if (meters < 1852f) String.format(Locale.US, "%.0f m", meters)
-                      else String.format(Locale.US, "%.2f NM", meters / 1852f)
-                  }
-                  else -> {
-                      if (meters < 1000f) String.format(Locale.US, "%.0f m", meters)
-                      else if (meters < 10000f) String.format(Locale.US, "%.2f km", meters / 1000f)
-                      else String.format(Locale.US, "%.1f km", meters / 1000f)
-                  }
-              }
-
-              /** Format an angle in degrees (0..360) as degrees or NATO mils per the angle-unit setting. */
-              fun formatAngle(degrees: Float, angleUnit: Int): String = when (angleUnit) {
-                  1 -> String.format(Locale.US, "%.0f mils", (degrees * 6400f / 360f + 6400f) % 6400f)
-                  else -> String.format(Locale.US, "%03.0f°", (degrees + 360f) % 360f)
-              }
-
-              /** Parse an MGRS string (spaces allowed, case-insensitive) to lat/lon. Null if invalid. */
-              fun parseMgrs(text: String): Pair<Double, Double>? = runCatching {
-                  val cleaned = text.trim().uppercase(Locale.US).replace(" ", "")
-                  if (cleaned.isEmpty()) return null
-                  val point = MGRS.parse(cleaned).toPoint()
-                  point.latitude to point.longitude
-              }.getOrNull()
-
-              // ---- Grid-overlay math: forced-zone UTM forward and the Snyder-series inverse ----
-              // Validated by roundtrip against the forward formulas above: < 1 mm error worldwide,
-              // < 7 mm out to 4.5 degrees from the central meridian (grid lines never go further).
-
-              /** UTM easting/northing of a point projected in a SPECIFIC zone (for grid drawing). */
-              fun utmForZone(lat: Double, lon: Double, zone: Int, north: Boolean): DoubleArray {
-                  val latRad = Math.toRadians(lat)
-                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
-                  val lonRad = Math.toRadians(lon)
-                  val a = 6378137.0
-                  val f = 1.0 / 298.257223563
-                  val k0 = 0.9996
-                  val e2 = f * (2.0 - f)
-                  val ep2 = e2 / (1.0 - e2)
-                  val n = a / sqrt(1.0 - e2 * sin(latRad).pow(2))
-                  val t = tan(latRad).pow(2)
-                  val c = ep2 * cos(latRad).pow(2)
-                  val bigA = cos(latRad) * (lonRad - lonOrigin)
-                  val m = a * (
-                      (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0) * latRad -
-                          (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(2.0 * latRad) +
-                          (15.0 * e2 * e2 / 256.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(4.0 * latRad) -
-                          (35.0 * e2 * e2 * e2 / 3072.0) * sin(6.0 * latRad)
-                      )
-                  val easting = k0 * n * (
-                      bigA + (1.0 - t + c) * bigA.pow(3) / 6.0 +
-                          (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * bigA.pow(5) / 120.0
-                      ) + 500000.0
-                  var northing = k0 * (
-                      m + n * tan(latRad) * (
-                          bigA.pow(2) / 2.0 +
-                              (5.0 - t + 9.0 * c + 4.0 * c * c) * bigA.pow(4) / 24.0 +
-                              (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * bigA.pow(6) / 720.0
-                          )
-                      )
-                  if (!north) northing += 10000000.0
-                  return doubleArrayOf(easting, northing)
-              }
-
-              /** UTM easting/northing back to lat/lon (WGS84). Returns [lat, lon]. */
-              fun utmInverse(easting: Double, northing: Double, zone: Int, north: Boolean): DoubleArray {
-                  val a = 6378137.0
-                  val f = 1.0 / 298.257223563
-                  val k0 = 0.9996
-                  val e2 = f * (2.0 - f)
-                  val ep2 = e2 / (1.0 - e2)
-                  val x = easting - 500000.0
-                  val y = if (north) northing else northing - 10000000.0
-                  val m = y / k0
-                  val mu = m / (a * (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0))
-                  val e1 = (1.0 - sqrt(1.0 - e2)) / (1.0 + sqrt(1.0 - e2))
-                  val phi1 = mu +
-                      (3.0 * e1 / 2.0 - 27.0 * e1 * e1 * e1 / 32.0) * sin(2.0 * mu) +
-                      (21.0 * e1 * e1 / 16.0 - 55.0 * e1.pow(4) / 32.0) * sin(4.0 * mu) +
-                      (151.0 * e1 * e1 * e1 / 96.0) * sin(6.0 * mu) +
-                      (1097.0 * e1.pow(4) / 512.0) * sin(8.0 * mu)
-                  val sin1 = sin(phi1)
-                  val cos1 = cos(phi1)
-                  val tan1 = tan(phi1)
-                  val c1 = ep2 * cos1 * cos1
-                  val t1 = tan1 * tan1
-                  val n1 = a / sqrt(1.0 - e2 * sin1 * sin1)
-                  val r1 = a * (1.0 - e2) / (1.0 - e2 * sin1 * sin1).pow(1.5)
-                  val d = x / (n1 * k0)
-                  val lat = phi1 - (n1 * tan1 / r1) * (
-                      d * d / 2.0 -
-                          (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * ep2) * d.pow(4) / 24.0 +
-                          (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1 - 252.0 * ep2 - 3.0 * c1 * c1) * d.pow(6) / 720.0
-                      )
-                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
-                  val lon = lonOrigin + (
-                      d -
-                          (1.0 + 2.0 * t1 + c1) * d.pow(3) / 6.0 +
-                          (5.0 - 2.0 * c1 + 28.0 * t1 - 3.0 * c1 * c1 + 8.0 * ep2 + 24.0 * t1 * t1) * d.pow(5) / 120.0
-                      ) / cos1
-                  return doubleArrayOf(Math.toDegrees(lat), Math.toDegrees(lon))
-              }
-
-              /** MGRS latitude band letter for a latitude in -80..84, e.g. 'R' for Dubai. */
-              fun bandLetter(lat: Double): Char {
-                  val letters = "CDEFGHJKLMNPQRSTUVWX"
-                  val idx = floor((lat + 80.0) / 8.0).toInt().coerceIn(0, 19)
-                  return letters[idx]
-              }
-          }
-          EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/data'
-          cat > 'app/src/main/java/app/gridfix/android/data/MapPrefs.kt' <<'EOF_GRIDFIX'
+          cat > 'app/src/main/java/app/gridfix/android/data/GraphicsRepository.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.data
 
           import android.content.Context
-          import androidx.datastore.preferences.core.booleanPreferencesKey
-          import androidx.datastore.preferences.core.doublePreferencesKey
           import androidx.datastore.preferences.core.edit
           import androidx.datastore.preferences.core.stringPreferencesKey
           import androidx.datastore.preferences.preferencesDataStore
           import kotlinx.coroutines.flow.Flow
           import kotlinx.coroutines.flow.map
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.UUID
 
-          private val Context.mapStore by preferencesDataStore(name = "map")
+          private val Context.graphicsStore by preferencesDataStore(name = "graphics")
+
+          /** A simple lat/lon vertex for tactical graphics. */
+          data class GeoVertex(val lat: Double, val lon: Double)
 
           /**
-           * Map screen preferences.
-           * baseLayer is "streets", "topo", "sat", or "mbtiles:<filename>".
+           * A tactical control-measure graphic drawn on the map.
+           * Types: phase_line, boundary, axis, doa, objective, aa, route.
+           * Area types (objective, aa) are closed automatically when rendered.
            */
-          data class MapPrefsData(
-              val baseLayer: String = "topo",
-              val gridEnabled: Boolean = true,
-              val lastLat: Double = 24.4539,   // sensible first-run default: UAE
-              val lastLon: Double = 54.3773,
-              val lastZoom: Double = 6.5,
+          data class TacGraphic(
+              val id: String,
+              val name: String,
+              val type: String,
+              val points: List<GeoVertex>,
+              val folder: String = DEFAULT_FOLDER,
+              val affiliation: String = "none",
+              val createdAt: Long = 0L,
           )
 
-          class MapPrefs(private val context: Context) {
+          object GraphicTypes {
+              /** type key -> (label, minimum vertices, isArea) */
+              val all = listOf(
+                  Triple("phase_line", "Phase line", 2),
+                  Triple("boundary", "Boundary", 2),
+                  Triple("axis", "Axis of advance", 2),
+                  Triple("doa", "Direction of attack", 2),
+                  Triple("objective", "Objective", 3),
+                  Triple("aa", "Assembly area", 3),
+                  Triple("route", "Route", 2),
+              )
 
-              private object Keys {
-                  val BASE_LAYER = stringPreferencesKey("base_layer")
-                  val GRID_ENABLED = booleanPreferencesKey("grid_enabled")
-                  val LAST_LAT = doublePreferencesKey("last_lat")
-                  val LAST_LON = doublePreferencesKey("last_lon")
-                  val LAST_ZOOM = doublePreferencesKey("last_zoom")
+              fun label(type: String): String = all.firstOrNull { it.first == type }?.second ?: type
+
+              fun minPoints(type: String): Int = all.firstOrNull { it.first == type }?.third ?: 2
+
+              fun isArea(type: String): Boolean = type == "objective" || type == "aa"
+
+              /** Display prefix used in the on-map label, per doctrine shorthand. */
+              fun labelPrefix(type: String): String = when (type) {
+                  "phase_line" -> "PL "
+                  "objective" -> "OBJ "
+                  "aa" -> "AA "
+                  else -> ""
+              }
+          }
+
+          class GraphicsRepository(private val context: Context) {
+
+              private val listKey = stringPreferencesKey("list")
+
+              val graphics: Flow<List<TacGraphic>> = context.graphicsStore.data.map { p ->
+                  decode(p[listKey] ?: "[]")
               }
 
-              val prefs: Flow<MapPrefsData> = context.mapStore.data.map { p ->
-                  MapPrefsData(
-                      baseLayer = p[Keys.BASE_LAYER] ?: "topo",
-                      gridEnabled = p[Keys.GRID_ENABLED] ?: true,
-                      lastLat = p[Keys.LAST_LAT] ?: 24.4539,
-                      lastLon = p[Keys.LAST_LON] ?: 54.3773,
-                      lastZoom = p[Keys.LAST_ZOOM] ?: 6.5,
+              suspend fun add(
+                  name: String,
+                  type: String,
+                  points: List<GeoVertex>,
+                  folder: String,
+                  affiliation: String,
+                  nowMillis: Long,
+              ): String {
+                  val g = TacGraphic(
+                      id = UUID.randomUUID().toString(),
+                      name = name.trim(),
+                      type = type,
+                      points = points,
+                      folder = folder.ifBlank { DEFAULT_FOLDER },
+                      affiliation = affiliation,
+                      createdAt = nowMillis,
                   )
-              }
-
-              suspend fun setBaseLayer(value: String) {
-                  context.mapStore.edit { it[Keys.BASE_LAYER] = value }
-              }
-
-              suspend fun setGridEnabled(value: Boolean) {
-                  context.mapStore.edit { it[Keys.GRID_ENABLED] = value }
-              }
-
-              suspend fun setCamera(lat: Double, lon: Double, zoom: Double) {
-                  context.mapStore.edit {
-                      it[Keys.LAST_LAT] = lat
-                      it[Keys.LAST_LON] = lon
-                      it[Keys.LAST_ZOOM] = zoom
+                  context.graphicsStore.edit { p ->
+                      p[listKey] = encode(decode(p[listKey] ?: "[]") + g)
                   }
+                  return g.id
+              }
+
+              suspend fun rename(id: String, name: String, folder: String, affiliation: String) {
+                  context.graphicsStore.edit { p ->
+                      p[listKey] = encode(
+                          decode(p[listKey] ?: "[]").map {
+                              if (it.id == id) it.copy(
+                                  name = name.trim(),
+                                  folder = folder.ifBlank { DEFAULT_FOLDER },
+                                  affiliation = affiliation,
+                              ) else it
+                          }
+                      )
+                  }
+              }
+
+              suspend fun delete(id: String) {
+                  context.graphicsStore.edit { p ->
+                      p[listKey] = encode(decode(p[listKey] ?: "[]").filterNot { it.id == id })
+                  }
+              }
+
+              private fun decode(json: String): List<TacGraphic> = runCatching {
+                  val arr = JSONArray(json)
+                  buildList {
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          val pts = o.getJSONArray("points")
+                          val vertices = buildList {
+                              for (j in 0 until pts.length()) {
+                                  val v = pts.getJSONArray(j)
+                                  add(GeoVertex(v.getDouble(0), v.getDouble(1)))
+                              }
+                          }
+                          add(
+                              TacGraphic(
+                                  id = o.getString("id"),
+                                  name = o.getString("name"),
+                                  type = o.getString("type"),
+                                  points = vertices,
+                                  folder = o.optString("folder", DEFAULT_FOLDER),
+                                  affiliation = o.optString("affiliation", "none"),
+                                  createdAt = o.optLong("createdAt"),
+                              )
+                          )
+                      }
+                  }
+              }.getOrDefault(emptyList())
+
+              private fun encode(list: List<TacGraphic>): String {
+                  val arr = JSONArray()
+                  for (g in list) {
+                      val pts = JSONArray()
+                      for (v in g.points) {
+                          pts.put(JSONArray().put(v.lat).put(v.lon))
+                      }
+                      arr.put(
+                          JSONObject()
+                              .put("id", g.id)
+                              .put("name", g.name)
+                              .put("type", g.type)
+                              .put("points", pts)
+                              .put("folder", g.folder)
+                              .put("affiliation", g.affiliation)
+                              .put("createdAt", g.createdAt)
+                      )
+                  }
+                  return arr.toString()
               }
           }
           EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/map'
-          cat > 'app/src/main/java/app/gridfix/android/map/MapSetup.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.map
+          mkdir -p 'app/src/main/java/app/gridfix/android/data'
+          cat > 'app/src/main/java/app/gridfix/android/data/WaypointRepository.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.data
 
           import android.content.Context
-          import android.graphics.ColorMatrix
-          import android.graphics.ColorMatrixColorFilter
-          import org.osmdroid.config.Configuration
-          import org.osmdroid.tileprovider.tilesource.ITileSource
-          import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
-          import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-          import org.osmdroid.util.MapTileIndex
-          import java.io.File
+          import androidx.datastore.preferences.core.edit
+          import androidx.datastore.preferences.core.stringPreferencesKey
+          import androidx.datastore.preferences.preferencesDataStore
+          import kotlinx.coroutines.flow.Flow
+          import kotlinx.coroutines.flow.map
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.Locale
+          import java.util.UUID
 
-          /** One selectable online base layer. */
-          data class BaseLayer(
-              val key: String,
-              val label: String,
-              val source: ITileSource,
-              val attribution: String,
-              /** Highest zoom worth bulk-downloading from this provider. */
-              val maxDownloadZoom: Int,
+          private val Context.wpStore by preferencesDataStore(name = "waypoints")
+
+          const val DEFAULT_FOLDER = "Waypoints"
+          const val DEFAULT_SYMBOL = "flag"
+
+          data class Waypoint(
+              val id: String,
+              val name: String,
+              val lat: Double,
+              val lon: Double,
+              val createdAt: Long,
+              val folder: String = DEFAULT_FOLDER,
+              val symbol: String = DEFAULT_SYMBOL,
+              val affiliation: String = "none",
+              val echelon: String = "",       // "", tm, sqd, sec, plt, co, bn, rgt, bde
+              val designation: String = "",   // free-text unit designation amplifier
           )
 
-          object MapSetup {
+          /** Everything needed to create or update a waypoint. */
+          data class WaypointDraft(
+              val name: String,
+              val lat: Double,
+              val lon: Double,
+              val folder: String,
+              val symbol: String,
+              val affiliation: String,
+              val echelon: String = "",
+              val designation: String = "",
+          )
 
-              private var initialized = false
+          /** A waypoint folder ("overlay"): can exist empty, and can be toggled visible/hidden. */
+          data class FolderInfo(val name: String, val visible: Boolean = true)
 
-              /** One-time osmdroid configuration: cache location, size, and the required user agent. */
-              fun init(context: Context) {
-                  if (initialized) return
-                  initialized = true
-                  val base = File(context.filesDir, "osmdroid")
-                  base.mkdirs()
-                  val tiles = File(base, "tiles")
-                  tiles.mkdirs()
-                  Configuration.getInstance().apply {
-                      osmdroidBasePath = base
-                      osmdroidTileCache = tiles
-                      userAgentValue = "GridFix/0.3 (github.com/Artemis2028/gridfix)"
-                      tileFileSystemCacheMaxBytes = 600L * 1024 * 1024
-                      tileFileSystemCacheTrimBytes = 500L * 1024 * 1024
-                      // Keep serving cached tiles long after their nominal expiry — offline-first.
-                      expirationExtendedDuration = 30L * 24 * 60 * 60 * 1000
+          class WaypointRepository(private val context: Context) {
+
+              private val listKey = stringPreferencesKey("list")
+              private val selectedKey = stringPreferencesKey("selected")
+              private val foldersKey = stringPreferencesKey("folders")
+
+              val waypoints: Flow<List<Waypoint>> = context.wpStore.data.map { p ->
+                  decode(p[listKey] ?: "[]")
+              }
+
+              val selectedId: Flow<String?> = context.wpStore.data.map { p -> p[selectedKey] }
+
+              /** Stored folders unioned with any folder referenced by a waypoint, sorted by name. */
+              val folders: Flow<List<FolderInfo>> = context.wpStore.data.map { p ->
+                  val stored = decodeFolders(p[foldersKey] ?: "[]")
+                  val referenced = decode(p[listKey] ?: "[]").map { it.folder }
+                  val names = (stored.map { it.name } + referenced + DEFAULT_FOLDER).distinct()
+                  names.map { n -> stored.firstOrNull { it.name == n } ?: FolderInfo(n) }
+                      .sortedBy { it.name.lowercase(Locale.US) }
+              }
+
+              suspend fun addFolder(name: String) {
+                  val clean = name.trim()
+                  if (clean.isEmpty()) return
+                  context.wpStore.edit { p ->
+                      p[foldersKey] = encodeFolders(
+                          upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), clean, null)
+                      )
                   }
               }
 
-              private val esriWorldImagery = object : OnlineTileSourceBase(
-                  "EsriWorldImagery",
-                  0,
-                  19,
-                  256,
-                  "",
-                  arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/"),
-                  "Esri, Maxar, Earthstar Geographics",
-              ) {
-                  override fun getTileURLString(pMapTileIndex: Long): String =
-                      baseUrl +
-                          MapTileIndex.getZoom(pMapTileIndex) + "/" +
-                          MapTileIndex.getY(pMapTileIndex) + "/" +
-                          MapTileIndex.getX(pMapTileIndex)
+              suspend fun setFolderVisible(name: String, visible: Boolean) {
+                  context.wpStore.edit { p ->
+                      p[foldersKey] = encodeFolders(
+                          upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), name, visible)
+                      )
+                  }
               }
 
-              val baseLayers: List<BaseLayer> = listOf(
-                  BaseLayer(
-                      key = "streets",
-                      label = "Streets",
-                      source = TileSourceFactory.MAPNIK,
-                      attribution = "© OpenStreetMap contributors",
-                      maxDownloadZoom = 16,
-                  ),
-                  BaseLayer(
-                      key = "topo",
-                      label = "Topographic",
-                      source = TileSourceFactory.OpenTopo,
-                      attribution = "© OpenStreetMap contributors, SRTM — style © OpenTopoMap (CC-BY-SA)",
-                      maxDownloadZoom = 15,
-                  ),
-                  BaseLayer(
-                      key = "sat",
-                      label = "Satellite",
-                      source = esriWorldImagery,
-                      attribution = "Esri, Maxar, Earthstar Geographics",
-                      maxDownloadZoom = 17,
-                  ),
-              )
-
-              fun layerFor(key: String): BaseLayer = baseLayers.firstOrNull { it.key == key } ?: baseLayers[1]
-
-              /** Folder where imported MBTiles files live. */
-              fun mbtilesDir(context: Context): File =
-                  File(context.filesDir, "mbtiles").apply { mkdirs() }
-
-              /**
-               * Night-vision tile filter: collapses the basemap to shades of red on black,
-               * matching the app's red-on-black night theme.
-               */
-              val nightTileFilter = ColorMatrixColorFilter(
-                  ColorMatrix(
-                      floatArrayOf(
-                          0.42f, 0.34f, 0.14f, 0f, 0f,
-                          0f, 0f, 0f, 0f, 0f,
-                          0f, 0f, 0f, 0f, 0f,
-                          0f, 0f, 0f, 1f, 0f,
+              suspend fun add(draft: WaypointDraft, nowMillis: Long) {
+                  context.wpStore.edit { p ->
+                      val current = decode(p[listKey] ?: "[]")
+                      val wp = Waypoint(
+                          id = UUID.randomUUID().toString(),
+                          name = draft.name,
+                          lat = draft.lat,
+                          lon = draft.lon,
+                          createdAt = nowMillis,
+                          folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                          symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
+                          affiliation = draft.affiliation,
+                          echelon = draft.echelon,
+                          designation = draft.designation,
                       )
-                  )
-              )
+                      p[listKey] = encode(current + wp)
+                      p[foldersKey] = encodeFolders(
+                          upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), wp.folder, null)
+                      )
+                      if (p[selectedKey] == null) {
+                          p[selectedKey] = wp.id
+                      }
+                  }
+              }
+
+              suspend fun update(id: String, draft: WaypointDraft) {
+                  context.wpStore.edit { p ->
+                      val current = decode(p[listKey] ?: "[]")
+                      p[listKey] = encode(
+                          current.map {
+                              if (it.id == id) it.copy(
+                                  name = draft.name,
+                                  lat = draft.lat,
+                                  lon = draft.lon,
+                                  folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                                  symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
+                                  affiliation = draft.affiliation,
+                                  echelon = draft.echelon,
+                                  designation = draft.designation,
+                              ) else it
+                          }
+                      )
+                      p[foldersKey] = encodeFolders(
+                          upsertFolder(
+                              decodeFolders(p[foldersKey] ?: "[]"),
+                              draft.folder.ifBlank { DEFAULT_FOLDER },
+                              null,
+                          )
+                      )
+                  }
+              }
+
+              suspend fun delete(id: String) {
+                  context.wpStore.edit { p ->
+                      val current = decode(p[listKey] ?: "[]")
+                      p[listKey] = encode(current.filterNot { it.id == id })
+                      if (p[selectedKey] == id) {
+                          p.remove(selectedKey)
+                      }
+                  }
+              }
+
+              suspend fun select(id: String) {
+                  context.wpStore.edit { p -> p[selectedKey] = id }
+              }
+
+              private fun decode(json: String): List<Waypoint> = runCatching {
+                  val arr = JSONArray(json)
+                  buildList {
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          add(
+                              Waypoint(
+                                  id = o.getString("id"),
+                                  name = o.getString("name"),
+                                  lat = o.getDouble("lat"),
+                                  lon = o.getDouble("lon"),
+                                  createdAt = o.optLong("createdAt"),
+                                  folder = o.optString("folder", DEFAULT_FOLDER),
+                                  symbol = o.optString("symbol", DEFAULT_SYMBOL),
+                                  affiliation = o.optString("affiliation", "none"),
+                                  echelon = o.optString("echelon", ""),
+                                  designation = o.optString("designation", ""),
+                              )
+                          )
+                      }
+                  }
+              }.getOrDefault(emptyList())
+
+              /** Add or update a folder entry; visible == null keeps the existing visibility. */
+              private fun upsertFolder(list: List<FolderInfo>, name: String, visible: Boolean?): List<FolderInfo> {
+                  val existing = list.firstOrNull { it.name == name }
+                  return when {
+                      existing == null -> list + FolderInfo(name, visible ?: true)
+                      visible == null -> list
+                      else -> list.map { if (it.name == name) it.copy(visible = visible) else it }
+                  }
+              }
+
+              private fun decodeFolders(json: String): List<FolderInfo> = runCatching {
+                  val arr = JSONArray(json)
+                  buildList {
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          add(FolderInfo(o.getString("name"), o.optBoolean("visible", true)))
+                      }
+                  }
+              }.getOrDefault(emptyList())
+
+              private fun encodeFolders(list: List<FolderInfo>): String {
+                  val arr = JSONArray()
+                  for (f in list) {
+                      arr.put(JSONObject().put("name", f.name).put("visible", f.visible))
+                  }
+                  return arr.toString()
+              }
+
+              private fun encode(list: List<Waypoint>): String {
+                  val arr = JSONArray()
+                  for (w in list) {
+                      arr.put(
+                          JSONObject()
+                              .put("id", w.id)
+                              .put("name", w.name)
+                              .put("lat", w.lat)
+                              .put("lon", w.lon)
+                              .put("createdAt", w.createdAt)
+                              .put("folder", w.folder)
+                              .put("symbol", w.symbol)
+                              .put("affiliation", w.affiliation)
+                              .put("echelon", w.echelon)
+                              .put("designation", w.designation)
+                      )
+                  }
+                  return arr.toString()
+              }
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/map'
-          cat > 'app/src/main/java/app/gridfix/android/map/MgrsGridOverlay.kt' <<'EOF_GRIDFIX'
+          cat > 'app/src/main/java/app/gridfix/android/map/ControlMeasuresOverlay.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.map
 
           import android.graphics.Canvas
           import android.graphics.Color
+          import android.graphics.DashPathEffect
           import android.graphics.Paint
           import android.graphics.Path
           import android.graphics.Point
           import android.graphics.Typeface
-          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.GeoVertex
+          import app.gridfix.android.data.GraphicTypes
+          import app.gridfix.android.data.TacGraphic
           import org.osmdroid.util.GeoPoint
           import org.osmdroid.views.Projection
           import org.osmdroid.views.overlay.Overlay
-          import kotlin.math.abs
+          import java.util.Locale
+          import kotlin.math.atan2
           import kotlin.math.cos
-          import kotlin.math.floor
+          import kotlin.math.hypot
           import kotlin.math.max
           import kotlin.math.min
+          import kotlin.math.sin
 
           /**
-           * Draws the MGRS grid on the map: grid-zone (GZD) boundaries, 100 km squares with
-           * their letter pairs, and 10 km / 1 km / 100 m / 10 m lines with principal-digit
-           * labels along the screen edges. Line density adapts to zoom. Also paints the
-           * basemap attribution line, which stays visible even with the grid switched off.
+           * Draws tactical control-measure graphics: phase lines, boundaries, axes of advance,
+           * directions of attack, objectives, assembly areas, and routes — in doctrine-style
+           * presentation (MIL-STD-2525 / APP-6 line graphics, simplified for a phone screen).
            *
-           * Projection math lives in [Coordinates] (UTM forward/inverse validated to < 1 cm
-           * everywhere grid lines are drawn). The map is always north-up, so GZD meridians
-           * and parallels are straight screen lines, while UTM grid lines are sampled along
-           * their length and drawn as paths so they curve correctly near zone edges.
+           * The overlay renders whatever is in [graphics] (already filtered to visible folders
+           * by the caller) plus an in-progress [draftPoints] polyline while draw mode is active.
+           * Colors follow the waypoint affiliation palette; night mode forces the red-on-black
+           * scheme like the rest of the app.
            */
-          class MgrsGridOverlay(private val density: Float) : Overlay() {
+          class ControlMeasuresOverlay(private val density: Float) : Overlay() {
 
-              var gridEnabled = true
+              var graphics: List<TacGraphic> = emptyList()
+              var selectedId: String? = null
               var nightMode = false
-              var lightLines = false          // true over satellite imagery
-              var attribution = ""
-              var bottomInsetPx = 0f          // height of the compose readout bar over the map bottom
-              var onIntervalLabel: ((String) -> Unit)? = null
+              var lightLines = false
 
-              private val gzdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+              // In-progress drawing (draw mode)
+              var draftActive = false
+              var draftType: String = "phase_line"
+              var draftAffiliation: String = "none"
+              var draftPoints: List<GeoVertex> = emptyList()
+
+              private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   style = Paint.Style.STROKE
-                  strokeWidth = 2.2f * density
+                  strokeWidth = 2.6f * density
+                  strokeJoin = Paint.Join.ROUND
+                  strokeCap = Paint.Cap.ROUND
               }
-              private val heavyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+              private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   style = Paint.Style.STROKE
-                  strokeWidth = 1.7f * density
+                  strokeWidth = 6.5f * density
+                  strokeJoin = Paint.Join.ROUND
+                  strokeCap = Paint.Cap.ROUND
               }
-              private val finePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                  style = Paint.Style.STROKE
-                  strokeWidth = 0.9f * density
+              private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL
+              }
+              private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  style = Paint.Style.FILL
               }
               private val textFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                   typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
@@ -685,537 +574,297 @@ jobs:
                   style = Paint.Style.STROKE
                   strokeWidth = 3f * density
               }
+              private val dash = DashPathEffect(floatArrayOf(9f * density, 6f * density), 0f)
 
-              private val pt = Point()
               private val gp = GeoPoint(0.0, 0.0)
+              private val pt = Point()
               private val path = Path()
-              private val squareCache = HashMap<String, String>()
-              private var lastIntervalLabel: String? = null
-
-              // Per-line label-detection state (see addPoint)
-              private var lastX = 0f
-              private var lastY = 0f
-              private var haveLast = false
-              private var labelWanted = 0     // 0 none, 1 easting (horizontal guide), 2 northing (vertical guide)
-              private var guideY = 0f
-              private var guideX = 0f
-              private var labelHit = Float.NaN
-
-              private data class Cell(
-                  val zone: Int,
-                  val band: Int,
-                  val lonW: Double,
-                  val lonE: Double,
-                  val latS: Double,
-                  val latN: Double,
-              ) {
-                  val north: Boolean get() = band >= 10
-                  val letter: Char get() = "CDEFGHJKLMNPQRSTUVWX"[band]
-              }
+              private val xs = FloatArray(MAX_PTS)
+              private val ys = FloatArray(MAX_PTS)
 
               override fun draw(canvas: Canvas, projection: Projection) {
-                  val lineColor = when {
-                      nightMode -> Color.rgb(255, 59, 48)
-                      lightLines -> Color.WHITE
-                      else -> Color.rgb(20, 22, 26)
-                  }
                   val haloColor = if (nightMode || lightLines) Color.BLACK else Color.WHITE
-                  val gzdColor = if (nightMode) Color.rgb(255, 59, 48) else Color.rgb(224, 180, 88)
-                  gzdPaint.color = gzdColor
-                  gzdPaint.alpha = 215
-                  heavyPaint.color = lineColor
-                  heavyPaint.alpha = 195
-                  finePaint.color = lineColor
-                  finePaint.alpha = 150
-
-                  drawAttribution(canvas, lineColor, haloColor)
-
-                  if (!gridEnabled) {
-                      emitInterval("")
-                      return
+                  for (g in graphics) {
+                      val n = project(projection, g.points)
+                      if (n == 0) continue
+                      drawGraphic(canvas, g.type, colorFor(g.affiliation), haloColor, n, g.name, g.id == selectedId, dashed = false)
                   }
-
-                  val bbox = projection.boundingBox
-                  val latN = min(bbox.latNorth, 84.0)
-                  val latS = max(bbox.latSouth, -80.0)
-                  val w = canvas.width
-                  if (latN <= latS || w <= 0) {
-                      emitInterval("")
-                      return
-                  }
-                  val centerLat = (bbox.latNorth + bbox.latSouth) / 2.0
-                  var lonSpan = bbox.lonEast - bbox.lonWest
-                  if (lonSpan <= 0.0) lonSpan += 360.0
-                  val mpp = lonSpan * 111319.49 * cos(Math.toRadians(centerLat)) / w
-                  val minSpacing = 48f * density
-                  val interval = intArrayOf(10, 100, 1000, 10000, 100000)
-                      .firstOrNull { it / mpp >= minSpacing } ?: 0
-                  emitInterval(
-                      when (interval) {
-                          0 -> "GZD"
-                          100000 -> "100 km"
-                          10000 -> "10 km"
-                          1000 -> "1 km"
-                          100 -> "100 m"
-                          else -> "10 m"
+                  if (draftActive && draftPoints.isNotEmpty()) {
+                      val n = project(projection, draftPoints)
+                      drawGraphic(canvas, draftType, colorFor(draftAffiliation), haloColor, n, "", selected = false, dashed = true)
+                      // vertex handles so each placed point is visible while drawing
+                      handlePaint.color = haloColor
+                      for (i in 0 until n) {
+                          canvas.drawCircle(xs[i], ys[i], 4.5f * density, handlePaint)
                       }
-                  )
-
-                  val ranges = if (bbox.lonWest <= bbox.lonEast) {
-                      listOf(bbox.lonWest to bbox.lonEast)
-                  } else {
-                      listOf(bbox.lonWest to 180.0, -180.0 to bbox.lonEast)
-                  }
-                  for ((rw, re) in ranges) {
-                      val cells = cellsInView(latS, latN, rw, re)
-                      if (cells.size > 200) {
-                          drawCoarseGzd(canvas, projection, rw, re, latS, latN)
-                      } else {
-                          if (interval > 0) {
-                              for (cell in cells) {
-                                  drawCellGrid(canvas, projection, cell, rw, re, latS, latN, interval, lineColor, haloColor)
-                              }
-                          }
-                          for (cell in cells) {
-                              drawGzdEdgesAndLabel(canvas, projection, cell, rw, re, latS, latN, gzdColor, haloColor)
-                          }
+                      handlePaint.color = colorFor(draftAffiliation)
+                      for (i in 0 until n) {
+                          canvas.drawCircle(xs[i], ys[i], 3f * density, handlePaint)
                       }
                   }
               }
 
-              private fun emitInterval(label: String) {
-                  if (label != lastIntervalLabel) {
-                      lastIntervalLabel = label
-                      onIntervalLabel?.invoke(label)
+              /** Screen-space distance from (x,y) to the nearest segment of [g], in pixels. */
+              fun distanceToGraphic(projection: Projection, g: TacGraphic, x: Float, y: Float): Float {
+                  val n = project(projection, g.points)
+                  if (n == 0) return Float.MAX_VALUE
+                  if (n == 1) return hypot(x - xs[0], y - ys[0])
+                  var best = Float.MAX_VALUE
+                  val closed = GraphicTypes.isArea(g.type) && n >= 3
+                  val last = if (closed) n else n - 1
+                  for (i in 0 until last) {
+                      val j = (i + 1) % n
+                      best = min(best, segmentDistance(x, y, xs[i], ys[i], xs[j], ys[j]))
+                  }
+                  return best
+              }
+
+              private fun colorFor(affiliation: String): Int {
+                  if (nightMode) return Color.rgb(255, 59, 48)
+                  return when (affiliation) {
+                      "friendly" -> Color.rgb(45, 120, 200)
+                      "hostile" -> Color.rgb(210, 50, 40)
+                      "neutral" -> Color.rgb(60, 150, 60)
+                      "unknown" -> Color.rgb(200, 170, 40)
+                      else -> if (lightLines) Color.WHITE else Color.rgb(20, 22, 26)
                   }
               }
 
-              /** GZD cells (with the Norway/Svalbard exceptions) intersecting the view. */
-              private fun cellsInView(latS: Double, latN: Double, lonW: Double, lonE: Double): List<Cell> {
-                  val out = ArrayList<Cell>()
-                  val bS = floor((max(latS, -80.0) + 80.0) / 8.0).toInt().coerceIn(0, 19)
-                  val bN = floor((min(latN, 83.999) + 80.0) / 8.0).toInt().coerceIn(0, 19)
-                  for (b in bS..bN) {
-                      val cs = -80.0 + 8.0 * b
-                      val cn = if (b == 19) 84.0 else cs + 8.0
-                      for (z in 1..60) {
-                          var cw = (z - 1) * 6.0 - 180.0
-                          var ce = cw + 6.0
-                          if (b == 17) {                       // band V: Norway
-                              if (z == 31) ce = 3.0
-                              if (z == 32) cw = 3.0
-                          }
-                          if (b == 19 && z in 31..37) {        // band X: Svalbard
-                              when (z) {
-                                  31 -> { cw = 0.0; ce = 9.0 }
-                                  33 -> { cw = 9.0; ce = 21.0 }
-                                  35 -> { cw = 21.0; ce = 33.0 }
-                                  37 -> { cw = 33.0; ce = 42.0 }
-                                  else -> continue             // 32X, 34X, 36X do not exist
-                              }
-                          }
-                          if (ce < lonW || cw > lonE) continue
-                          out.add(Cell(z, b, cw, ce, cs, cn))
-                      }
+              private fun project(projection: Projection, points: List<GeoVertex>, ): Int {
+                  val n = min(points.size, MAX_PTS)
+                  for (i in 0 until n) {
+                      gp.setCoords(points[i].lat, points[i].lon)
+                      projection.toPixels(gp, pt)
+                      xs[i] = pt.x.toFloat()
+                      ys[i] = pt.y.toFloat()
                   }
-                  return out
+                  return n
               }
 
-              /** World-zoom fallback: plain 6-degree / 8-degree lattice, no per-cell detail. */
-              private fun drawCoarseGzd(canvas: Canvas, proj: Projection, lonW: Double, lonE: Double, latS: Double, latN: Double) {
-                  var lon = floor(lonW / 6.0) * 6.0
-                  while (lon <= lonE + 1e-9) {
-                      gp.setCoords(0.0, lon.coerceIn(-180.0, 180.0))
-                      proj.toPixels(gp, pt)
-                      canvas.drawLine(pt.x.toFloat(), 0f, pt.x.toFloat(), canvas.height.toFloat(), gzdPaint)
-                      lon += 6.0
-                  }
-                  var lat = -80.0
-                  while (lat <= 84.0 + 1e-9) {
-                      if (lat in latS..latN) {
-                          gp.setCoords(lat, (lonW + lonE) / 2.0)
-                          proj.toPixels(gp, pt)
-                          canvas.drawLine(0f, pt.y.toFloat(), canvas.width.toFloat(), pt.y.toFloat(), gzdPaint)
-                      }
-                      lat += if (lat >= 72.0) 12.0 else 8.0
-                  }
-              }
-
-              private fun drawGzdEdgesAndLabel(
+              private fun drawGraphic(
                   canvas: Canvas,
-                  proj: Projection,
-                  cell: Cell,
-                  rw: Double,
-                  re: Double,
-                  latS: Double,
-                  latN: Double,
-                  gzdColor: Int,
+                  type: String,
+                  color: Int,
                   haloColor: Int,
+                  n: Int,
+                  name: String,
+                  selected: Boolean,
+                  dashed: Boolean,
               ) {
-                  val cw = max(cell.lonW, rw)
-                  val ce = min(cell.lonE, re)
-                  val cs = max(cell.latS, latS)
-                  val cn = min(cell.latN, latN)
-                  if (cw >= ce || cs >= cn) return
+                  linePaint.color = color
+                  linePaint.alpha = 235
+                  linePaint.pathEffect = if (dashed) dash else null
+                  glowPaint.color = haloColor
+                  glowPaint.alpha = 120
 
-                  // North-up Mercator: meridians are vertical, parallels horizontal straight lines.
-                  gp.setCoords(cell.latS, cell.lonW)
-                  proj.toPixels(gp, pt)
-                  val xw = pt.x.toFloat()
-                  val ys = pt.y.toFloat()
-                  gp.setCoords(cell.latN, cell.lonE)
-                  proj.toPixels(gp, pt)
-                  val xe = pt.x.toFloat()
-                  val yn = pt.y.toFloat()
-                  canvas.drawLine(xw, ys, xw, yn, gzdPaint)
-                  canvas.drawLine(xe, ys, xe, yn, gzdPaint)
-                  canvas.drawLine(xw, ys, xe, ys, gzdPaint)
-                  canvas.drawLine(xw, yn, xe, yn, gzdPaint)
-
-                  // Label at the center of the visible part of the cell
-                  gp.setCoords((cs + cn) / 2.0, (cw + ce) / 2.0)
-                  proj.toPixels(gp, pt)
-                  val visibleW = abs(
-                      run {
-                          gp.setCoords(cs, ce); proj.toPixels(gp, pt).x.toFloat()
-                      } - run {
-                          gp.setCoords(cs, cw); proj.toPixels(gp, pt).x.toFloat()
+                  when (type) {
+                      "axis" -> if (n >= 2) {
+                          buildAxisPath(n)
+                          if (selected) canvas.drawPath(path, glowPaint)
+                          canvas.drawPath(path, linePaint)
+                          label(canvas, name, xs[0], ys[0], color, haloColor, above = true)
                       }
-                  )
-                  if (visibleW >= 72f * density) {
-                      gp.setCoords((cs + cn) / 2.0, (cw + ce) / 2.0)
-                      proj.toPixels(gp, pt)
-                      val size = 15f * density
-                      textFill.textSize = size
-                      textHalo.textSize = size
-                      textFill.color = gzdColor
-                      textFill.alpha = 185
-                      textHalo.color = haloColor
-                      textHalo.alpha = 150
-                      val label = "${cell.zone}${cell.letter}"
-                      val tw = textFill.measureText(label)
-                      canvas.drawText(label, pt.x - tw / 2f, pt.y + size / 3f, textHalo)
-                      canvas.drawText(label, pt.x - tw / 2f, pt.y + size / 3f, textFill)
-                  }
-              }
-
-              private fun drawCellGrid(
-                  canvas: Canvas,
-                  proj: Projection,
-                  cell: Cell,
-                  rw: Double,
-                  re: Double,
-                  latS: Double,
-                  latN: Double,
-                  interval: Int,
-                  lineColor: Int,
-                  haloColor: Int,
-              ) {
-                  val cw = max(cell.lonW, rw)
-                  val ce = min(cell.lonE, re)
-                  val cs = max(cell.latS, latS)
-                  val cn = min(cell.latN, latN)
-                  if (cw >= ce || cs >= cn) return
-                  val zone = cell.zone
-                  val north = cell.north
-
-                  // UTM bounds of the clipped cell from corner + edge-midpoint samples
-                  var eMin = Double.MAX_VALUE
-                  var eMax = -Double.MAX_VALUE
-                  var nMin = Double.MAX_VALUE
-                  var nMax = -Double.MAX_VALUE
-                  val midLat = (cs + cn) / 2.0
-                  val midLon = (cw + ce) / 2.0
-                  val corners = arrayOf(
-                      doubleArrayOf(cs, cw), doubleArrayOf(cs, ce), doubleArrayOf(cn, cw), doubleArrayOf(cn, ce),
-                      doubleArrayOf(cs, midLon), doubleArrayOf(cn, midLon), doubleArrayOf(midLat, cw), doubleArrayOf(midLat, ce),
-                  )
-                  for (s in corners) {
-                      val en = Coordinates.utmForZone(s[0], s[1], zone, north)
-                      eMin = min(eMin, en[0]); eMax = max(eMax, en[0])
-                      nMin = min(nMin, en[1]); nMax = max(nMax, en[1])
-                  }
-                  eMin = floor(eMin / interval) * interval
-                  nMin = floor(nMin / interval) * interval
-                  eMax += interval
-                  nMax += interval
-
-                  guideY = canvas.height - bottomInsetPx - 14f * density
-                  guideX = 10f * density
-
-                  if (interval < 100000) {
-                      gridPass(canvas, proj, cell, 100000, eMin, eMax, nMin, nMax, heavyPaint, 0, lineColor, haloColor, labeled = true)
-                      gridPass(canvas, proj, cell, interval, eMin, eMax, nMin, nMax, finePaint, 100000, lineColor, haloColor, labeled = true)
-                  } else {
-                      gridPass(canvas, proj, cell, 100000, eMin, eMax, nMin, nMax, heavyPaint, 0, lineColor, haloColor, labeled = false)
-                  }
-
-                  drawSquareLetters(canvas, proj, cell, cs, cn, cw, ce, eMin, eMax, nMin, nMax, lineColor, haloColor)
-              }
-
-              private fun drawSquareLetters(
-                  canvas: Canvas,
-                  proj: Projection,
-                  cell: Cell,
-                  cs: Double,
-                  cn: Double,
-                  cw: Double,
-                  ce: Double,
-                  eMin: Double,
-                  eMax: Double,
-                  nMin: Double,
-                  nMax: Double,
-                  lineColor: Int,
-                  haloColor: Int,
-              ) {
-                  // On-screen width of 100 km at the cell's mid-latitude
-                  val midLat = (cs + cn) / 2.0
-                  val midLon = (cw + ce) / 2.0
-                  val en = Coordinates.utmForZone(midLat, midLon, cell.zone, cell.north)
-                  val ll = Coordinates.utmInverse(en[0] + 100000.0, en[1], cell.zone, cell.north)
-                  gp.setCoords(midLat, midLon)
-                  proj.toPixels(gp, pt)
-                  val x0 = pt.x
-                  gp.setCoords(ll[0], ll[1])
-                  proj.toPixels(gp, pt)
-                  if (abs(pt.x - x0) < 64f * density) return
-
-                  var e100 = floor(eMin / 100000.0) * 100000.0
-                  while (e100 <= eMax) {
-                      var n100 = floor(nMin / 100000.0) * 100000.0
-                      while (n100 <= nMax) {
-                          val c = Coordinates.utmInverse(e100 + 50000.0, n100 + 50000.0, cell.zone, cell.north)
-                          val insideCell = c[1] >= cell.lonW && c[1] <= cell.lonE &&
-                              c[0] >= cell.latS && c[0] <= cell.latN
-                          if (insideCell) {
-                              val key = "${cell.zone}${cell.letter}:${(e100 / 100000).toLong()}:${(n100 / 100000).toLong()}"
-                              if (squareCache.size > 2048) squareCache.clear()
-                              val letters = squareCache.getOrPut(key) {
-                                  Coordinates.mgrs(c[0], c[1], 4)?.square ?: ""
-                              }
-                              if (letters.isNotEmpty()) {
-                                  gp.setCoords(c[0], c[1])
-                                  proj.toPixels(gp, pt)
-                                  val size = 24f * density
-                                  textFill.textSize = size
-                                  textHalo.textSize = size
-                                  textFill.color = lineColor
-                                  textFill.alpha = 105
-                                  textHalo.color = haloColor
-                                  textHalo.alpha = 85
-                                  val tw = textFill.measureText(letters)
-                                  canvas.drawText(letters, pt.x - tw / 2f, pt.y + size / 3f, textHalo)
-                                  canvas.drawText(letters, pt.x - tw / 2f, pt.y + size / 3f, textFill)
-                              }
+                      "doa" -> if (n >= 2) {
+                          buildPolyline(n, closed = false)
+                          if (selected) canvas.drawPath(path, glowPaint)
+                          canvas.drawPath(path, linePaint)
+                          drawSolidArrowHead(canvas, n, color)
+                          label(canvas, name, xs[0], ys[0], color, haloColor, above = true)
+                      }
+                      "objective", "aa" -> if (n >= 2) {
+                          buildPolyline(n, closed = n >= 3)
+                          fillPaint.color = color
+                          fillPaint.alpha = 26
+                          if (n >= 3) canvas.drawPath(path, fillPaint)
+                          if (selected) canvas.drawPath(path, glowPaint)
+                          canvas.drawPath(path, linePaint)
+                          var cx = 0f
+                          var cy = 0f
+                          for (i in 0 until n) {
+                              cx += xs[i]; cy += ys[i]
                           }
-                          n100 += 100000.0
+                          label(
+                              canvas,
+                              GraphicTypes.labelPrefix(type) + name.uppercase(Locale.US),
+                              cx / n,
+                              cy / n,
+                              color,
+                              haloColor,
+                              above = false,
+                              centered = true,
+                          )
                       }
-                      e100 += 100000.0
-                  }
-              }
-
-              /**
-               * One pass of grid lines at [interval]: vertical (constant easting) sampled along
-               * northing, then horizontal (constant northing) sampled along easting, clipped at
-               * the cell's meridians. Labeled passes drop principal digits where lines cross the
-               * bottom (eastings) and left (northings) label guides.
-               */
-              private fun gridPass(
-                  canvas: Canvas,
-                  proj: Projection,
-                  cell: Cell,
-                  interval: Int,
-                  eMin: Double,
-                  eMax: Double,
-                  nMin: Double,
-                  nMax: Double,
-                  paint: Paint,
-                  skipMultiple: Int,
-                  lineColor: Int,
-                  haloColor: Int,
-                  labeled: Boolean,
-              ) {
-                  val steps = 12
-                  val guard = 90
-
-                  // Vertical lines: constant easting
-                  var v = eMin
-                  var count = 0
-                  while (v <= eMax && count < guard) {
-                      val eL = Math.round(v / interval) * interval.toLong()
-                      v += interval
-                      count++
-                      if (skipMultiple > 0 && eL % skipMultiple == 0L) continue
-                      beginLine(if (labeled) 1 else 0)
-                      var prevIn = false
-                      var prevLat = 0.0
-                      var prevLon = 0.0
-                      for (i in 0..steps) {
-                          val nn = nMin + (nMax - nMin) * i / steps
-                          val ll = Coordinates.utmInverse(eL.toDouble(), nn, cell.zone, cell.north)
-                          prevIn = clipStep(proj, cell, ll[0], ll[1], prevLat, prevLon, prevIn, i)
-                          prevLat = ll[0]
-                          prevLon = ll[1]
+                      "route" -> if (n >= 2) {
+                          buildPolyline(n, closed = false)
+                          if (selected) canvas.drawPath(path, glowPaint)
+                          canvas.drawPath(path, linePaint)
+                          handlePaint.color = color
+                          for (i in 0 until n) {
+                              canvas.drawCircle(xs[i], ys[i], 3f * density, handlePaint)
+                          }
+                          val mid = n / 2
+                          label(canvas, name, xs[mid], ys[mid], color, haloColor, above = true)
                       }
-                      canvas.drawPath(path, paint)
-                      if (labeled && !labelHit.isNaN()) {
-                          drawPrincipal(canvas, eL, interval, labelHit, guideY + 4.5f * density, lineColor, haloColor, centered = true)
-                      }
-                  }
-
-                  // Horizontal lines: constant northing
-                  v = nMin
-                  count = 0
-                  while (v <= nMax && count < guard) {
-                      val nL = Math.round(v / interval) * interval.toLong()
-                      v += interval
-                      count++
-                      if (skipMultiple > 0 && nL % skipMultiple == 0L) continue
-                      beginLine(if (labeled) 2 else 0)
-                      var prevIn = false
-                      var prevLat = 0.0
-                      var prevLon = 0.0
-                      for (i in 0..steps) {
-                          val ee = eMin + (eMax - eMin) * i / steps
-                          val ll = Coordinates.utmInverse(ee, nL.toDouble(), cell.zone, cell.north)
-                          prevIn = clipStep(proj, cell, ll[0], ll[1], prevLat, prevLon, prevIn, i)
-                          prevLat = ll[0]
-                          prevLon = ll[1]
-                      }
-                      canvas.drawPath(path, paint)
-                      if (labeled && !labelHit.isNaN()) {
-                          drawPrincipal(canvas, nL, interval, guideX, labelHit - 5f * density, lineColor, haloColor, centered = false)
+                      else -> if (n >= 2) {          // phase_line, boundary
+                          buildPolyline(n, closed = false)
+                          if (selected) canvas.drawPath(path, glowPaint)
+                          canvas.drawPath(path, linePaint)
+                          val text = GraphicTypes.labelPrefix(type) + name.uppercase(Locale.US)
+                          if (type == "phase_line") {
+                              label(canvas, text, xs[0], ys[0], color, haloColor, above = true)
+                              label(canvas, text, xs[n - 1], ys[n - 1], color, haloColor, above = true)
+                          } else {
+                              val mid = n / 2
+                              label(canvas, text, xs[mid], ys[mid], color, haloColor, above = true)
+                          }
                       }
                   }
               }
 
-              private fun beginLine(wantLabel: Int) {
+              private fun buildPolyline(n: Int, closed: Boolean) {
                   path.reset()
-                  haveLast = false
-                  labelWanted = wantLabel
-                  labelHit = Float.NaN
+                  path.moveTo(xs[0], ys[0])
+                  for (i in 1 until n) path.lineTo(xs[i], ys[i])
+                  if (closed) path.close()
               }
 
               /**
-               * Feed one sampled point of a grid line, clipping against the cell's meridians.
-               * Returns whether this sample was inside the cell (becomes prevIn for the next step).
+               * Doctrine-style axis-of-advance: an outlined broad arrow along the centerline,
+               * open at the rear. Shaft edges are the centerline offset by ± half width with
+               * miter directions at interior vertices; the head is twice the shaft width.
                */
-              private fun clipStep(
-                  proj: Projection,
-                  cell: Cell,
-                  lat: Double,
-                  lon: Double,
-                  prevLat: Double,
-                  prevLon: Double,
-                  prevIn: Boolean,
-                  index: Int,
-              ): Boolean {
-                  val inside = lon >= cell.lonW - 1e-9 && lon <= cell.lonE + 1e-9
-                  if (inside) {
-                      if (!prevIn && index > 0) {
-                          // entering the cell: start at the boundary crossing
-                          val bound = if (prevLon < cell.lonW) cell.lonW else cell.lonE
-                          val t = safeT(bound, prevLon, lon)
-                          addPoint(proj, prevLat + t * (lat - prevLat), bound, newSegment = true)
+              private fun buildAxisPath(n: Int) {
+                  var total = 0f
+                  for (i in 0 until n - 1) total += hypot(xs[i + 1] - xs[i], ys[i + 1] - ys[i])
+                  val w = (total * 0.13f).coerceIn(14f * density, 64f * density)
+                  val half = w / 2f
+                  val headLen = min(w * 1.25f, total * 0.45f)
+
+                  // Tip is the last vertex; neck sits headLen back along the centerline.
+                  var remaining = headLen
+                  var neckSeg = n - 2
+                  var neckX = xs[n - 2]
+                  var neckY = ys[n - 2]
+                  for (i in n - 2 downTo 0) {
+                      val segLen = hypot(xs[i + 1] - xs[i], ys[i + 1] - ys[i])
+                      if (segLen >= remaining || i == 0) {
+                          val t = if (segLen == 0f) 0f else (1f - remaining / segLen).coerceIn(0f, 1f)
+                          neckX = xs[i] + (xs[i + 1] - xs[i]) * t
+                          neckY = ys[i] + (ys[i + 1] - ys[i]) * t
+                          neckSeg = i
+                          break
                       }
-                      addPoint(proj, lat, lon, newSegment = !prevIn && index == 0 || !haveLast)
-                  } else if (prevIn) {
-                      // leaving the cell: end at the boundary crossing
-                      val bound = if (lon < cell.lonW) cell.lonW else cell.lonE
-                      val t = safeT(bound, prevLon, lon)
-                      addPoint(proj, prevLat + t * (lat - prevLat), bound, newSegment = false)
-                      haveLast = false
+                      remaining -= segLen
                   }
-                  return inside
+
+                  // Shaft vertices: rear .. neck
+                  val sx = FloatArray(neckSeg + 2)
+                  val sy = FloatArray(neckSeg + 2)
+                  for (i in 0..neckSeg) {
+                      sx[i] = xs[i]; sy[i] = ys[i]
+                  }
+                  sx[neckSeg + 1] = neckX
+                  sy[neckSeg + 1] = neckY
+                  val m = neckSeg + 2
+
+                  val lx = FloatArray(m)
+                  val ly = FloatArray(m)
+                  val rx = FloatArray(m)
+                  val ry = FloatArray(m)
+                  for (i in 0 until m) {
+                      val (nxv, nyv) = miterNormal(sx, sy, m, i)
+                      lx[i] = sx[i] + nxv * half
+                      ly[i] = sy[i] + nyv * half
+                      rx[i] = sx[i] - nxv * half
+                      ry[i] = sy[i] - nyv * half
+                  }
+
+                  val ang = atan2((ys[n - 1] - neckY).toDouble(), (xs[n - 1] - neckX).toDouble())
+                  val nx = -sin(ang).toFloat()
+                  val ny = cos(ang).toFloat()
+
+                  path.reset()
+                  path.moveTo(lx[0], ly[0])
+                  for (i in 1 until m) path.lineTo(lx[i], ly[i])
+                  path.lineTo(neckX + nx * w, neckY + ny * w)          // head left barb
+                  path.lineTo(xs[n - 1], ys[n - 1])                    // tip
+                  path.lineTo(neckX - nx * w, neckY - ny * w)          // head right barb
+                  for (i in m - 1 downTo 0) path.lineTo(rx[i], ry[i])  // back along right edge; rear stays open
               }
 
-              /** Project and append a point; detect label-guide crossings on drawn segments. */
-              private fun addPoint(proj: Projection, lat: Double, lon: Double, newSegment: Boolean) {
-                  gp.setCoords(lat, lon)
-                  proj.toPixels(gp, pt)
-                  val x = pt.x.toFloat()
-                  val y = pt.y.toFloat()
-                  if (newSegment || !haveLast) {
-                      path.moveTo(x, y)
-                  } else {
-                      path.lineTo(x, y)
-                      if (labelHit.isNaN()) {
-                          when (labelWanted) {
-                              1 -> if ((lastY - guideY) * (y - guideY) <= 0f && lastY != y) {
-                                  val t = (guideY - lastY) / (y - lastY)
-                                  labelHit = lastX + t * (x - lastX)
-                              }
-                              2 -> if ((lastX - guideX) * (x - guideX) <= 0f && lastX != x) {
-                                  val t = (guideX - lastX) / (x - lastX)
-                                  labelHit = lastY + t * (y - lastY)
-                              }
-                          }
-                      }
+              /** Unit normal at vertex [i] of the polyline, averaging adjacent segment normals. */
+              private fun miterNormal(px: FloatArray, py: FloatArray, m: Int, i: Int): Pair<Float, Float> {
+                  var dx = 0f
+                  var dy = 0f
+                  if (i > 0) {
+                      dx += px[i] - px[i - 1]
+                      dy += py[i] - py[i - 1]
                   }
-                  lastX = x
-                  lastY = y
-                  haveLast = true
+                  if (i < m - 1) {
+                      dx += px[i + 1] - px[i]
+                      dy += py[i + 1] - py[i]
+                  }
+                  val len = hypot(dx, dy)
+                  if (len == 0f) return 0f to 0f
+                  return (-dy / len) to (dx / len)
               }
 
-              /** Principal-digit label for a grid line value at the given interval. */
-              private fun drawPrincipal(
+              private fun drawSolidArrowHead(canvas: Canvas, n: Int, color: Int) {
+                  val ang = atan2((ys[n - 1] - ys[n - 2]).toDouble(), (xs[n - 1] - xs[n - 2]).toDouble())
+                  val len = 11f * density
+                  val spread = Math.toRadians(150.0)
+                  path.reset()
+                  path.moveTo(xs[n - 1], ys[n - 1])
+                  path.lineTo(
+                      xs[n - 1] + len * cos(ang + spread).toFloat(),
+                      ys[n - 1] + len * sin(ang + spread).toFloat(),
+                  )
+                  path.lineTo(
+                      xs[n - 1] + len * cos(ang - spread).toFloat(),
+                      ys[n - 1] + len * sin(ang - spread).toFloat(),
+                  )
+                  path.close()
+                  fillPaint.color = color
+                  fillPaint.alpha = 235
+                  canvas.drawPath(path, fillPaint)
+              }
+
+              private fun label(
                   canvas: Canvas,
-                  value: Long,
-                  interval: Int,
+                  text: String,
                   x: Float,
                   y: Float,
-                  lineColor: Int,
+                  color: Int,
                   haloColor: Int,
-                  centered: Boolean,
+                  above: Boolean,
+                  centered: Boolean = false,
               ) {
-                  val big = String.format(java.util.Locale.US, "%02d", (value / 1000) % 100)
-                  val small = when (interval) {
-                      100 -> ((value / 100) % 10).toString()
-                      10 -> String.format(java.util.Locale.US, "%02d", (value % 1000) / 10)
-                      else -> ""
-                  }
-                  val bigSize = 13f * density
-                  val smallSize = 10f * density
-                  textFill.textSize = bigSize
-                  val bigW = textFill.measureText(big)
-                  textFill.textSize = smallSize
-                  val smallW = if (small.isEmpty()) 0f else textFill.measureText(small)
-                  val x0 = if (centered) x - (bigW + smallW) / 2f else x
-                  textFill.color = lineColor
-                  textFill.alpha = 235
-                  textHalo.color = haloColor
-                  textHalo.alpha = 210
-
-                  textFill.textSize = bigSize
-                  textHalo.textSize = bigSize
-                  canvas.drawText(big, x0, y, textHalo)
-                  canvas.drawText(big, x0, y, textFill)
-                  if (small.isNotEmpty()) {
-                      textFill.textSize = smallSize
-                      textHalo.textSize = smallSize
-                      canvas.drawText(small, x0 + bigW + 1f * density, y, textHalo)
-                      canvas.drawText(small, x0 + bigW + 1f * density, y, textFill)
-                  }
-              }
-
-              private fun safeT(bound: Double, a: Double, b: Double): Double {
-                  val d = b - a
-                  if (d == 0.0) return 0.0
-                  return ((bound - a) / d).coerceIn(0.0, 1.0)
-              }
-
-              private fun drawAttribution(canvas: Canvas, lineColor: Int, haloColor: Int) {
-                  if (attribution.isEmpty()) return
-                  val size = 9.5f * density
+                  if (text.isBlank()) return
+                  val size = 11.5f * density
                   textFill.textSize = size
                   textHalo.textSize = size
-                  textFill.color = lineColor
-                  textFill.alpha = 200
+                  textFill.color = color
+                  textFill.alpha = 245
                   textHalo.color = haloColor
-                  textHalo.alpha = 190
-                  val y = canvas.height - bottomInsetPx - 5f * density
-                  canvas.drawText(attribution, 6f * density, y, textHalo)
-                  canvas.drawText(attribution, 6f * density, y, textFill)
+                  textHalo.alpha = 200
+                  val tw = textFill.measureText(text)
+                  val tx = if (centered) x - tw / 2f else x + 6f * density
+                  val ty = if (above) y - 7f * density else y + size / 3f
+                  canvas.drawText(text, tx, ty, textHalo)
+                  canvas.drawText(text, tx, ty, textFill)
+              }
+
+              private fun segmentDistance(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+                  val dx = bx - ax
+                  val dy = by - ay
+                  val len2 = dx * dx + dy * dy
+                  val t = if (len2 == 0f) 0f else ((px - ax) * dx + (py - ay) * dy) / len2
+                  val tc = max(0f, min(1f, t))
+                  return hypot(px - (ax + tc * dx), py - (ay + tc * dy))
+              }
+
+              companion object {
+                  const val MAX_PTS = 64
               }
           }
           EOF_GRIDFIX
@@ -1279,6 +928,7 @@ jobs:
           import androidx.navigation.compose.currentBackStackEntryAsState
           import androidx.navigation.compose.rememberNavController
           import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.GraphicsRepository
           import app.gridfix.android.data.SettingsRepository
           import app.gridfix.android.data.WaypointRepository
           import app.gridfix.android.location.LocationTracker
@@ -1302,6 +952,8 @@ jobs:
               val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
               val selectedId by waypointRepo.selectedId.collectAsStateWithLifecycle(initialValue = null)
               val folders by waypointRepo.folders.collectAsStateWithLifecycle(initialValue = emptyList())
+              val graphicsRepo = remember { GraphicsRepository(context.applicationContext) }
+              val graphics by graphicsRepo.graphics.collectAsStateWithLifecycle(initialValue = emptyList())
 
               // Waypoints in visible ("active") overlays are the ones offered for navigation
               val navigableWaypoints = if (folders.isEmpty()) waypoints else {
@@ -1464,6 +1116,16 @@ jobs:
                                       scope.launch { waypointRepo.select(id) }
                                       goTo("navigate")
                                   },
+                                  graphics = graphics,
+                                  onAddGraphic = { name, type, points, folder, affiliation ->
+                                      scope.launch {
+                                          graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis())
+                                      }
+                                  },
+                                  onUpdateGraphic = { id, name, folder, affiliation ->
+                                      scope.launch { graphicsRepo.rename(id, name, folder, affiliation) }
+                                  },
+                                  onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                               )
                           }
                           composable("waypoints") {
@@ -1629,6 +1291,8 @@ jobs:
               var folder by remember(initial) { mutableStateOf(initial?.folder ?: DEFAULT_FOLDER) }
               var symbol by remember(initial) { mutableStateOf(initial?.symbol ?: "flag") }
               var affiliation by remember(initial) { mutableStateOf(initial?.affiliation ?: "none") }
+              var echelon by remember(initial) { mutableStateOf(initial?.echelon ?: "") }
+              var designation by remember(initial) { mutableStateOf(initial?.designation ?: "") }
               var usePreset by remember(initial) { mutableStateOf(initial == null && presetLat != null) }
               var gzdSquare by remember(initial) {
                   mutableStateOf(baseParts?.let { "${it.gzd} ${it.square}" } ?: "")
@@ -1700,6 +1364,27 @@ jobs:
                                   affiliation = affiliation,
                               ) { symbol = it }
                           }
+
+                          Text("Echelon", style = MaterialTheme.typography.labelLarge)
+                          Row(
+                              modifier = Modifier.horizontalScroll(rememberScrollState()),
+                              horizontalArrangement = Arrangement.spacedBy(8.dp),
+                          ) {
+                              Echelons.all.forEach { (key, label) ->
+                                  FilterChip(
+                                      selected = key == echelon,
+                                      onClick = { echelon = key },
+                                      label = { Text(label) },
+                                  )
+                              }
+                          }
+                          OutlinedTextField(
+                              value = designation,
+                              onValueChange = { designation = it.take(24) },
+                              label = { Text("Unit designation (optional)") },
+                              placeholder = { Text("e.g. A/1-502") },
+                              singleLine = true,
+                          )
 
                           Text("Folder", style = MaterialTheme.typography.labelLarge)
                           if (folderNames.isNotEmpty()) {
@@ -1804,7 +1489,10 @@ jobs:
                           val finalFolder = folder.ifBlank { DEFAULT_FOLDER }
                           if (usePreset && presetLat != null && presetLon != null) {
                               onConfirm(
-                                  WaypointDraft(finalName, presetLat, presetLon, finalFolder, symbol, affiliation)
+                                  WaypointDraft(
+                                      finalName, presetLat, presetLon, finalFolder, symbol, affiliation,
+                                      echelon, designation.trim(),
+                                  )
                               )
                           } else if (easting.isEmpty() || easting.length != northing.length) {
                               error = "Easting and northing need the same number of digits."
@@ -1814,7 +1502,10 @@ jobs:
                                   error = "Couldn't read that grid — check the zone letters and digits."
                               } else {
                                   onConfirm(
-                                      WaypointDraft(finalName, parsed.first, parsed.second, finalFolder, symbol, affiliation)
+                                      WaypointDraft(
+                                          finalName, parsed.first, parsed.second, finalFolder, symbol, affiliation,
+                                          echelon, designation.trim(),
+                                      )
                                   )
                               }
                           }
@@ -1824,6 +1515,432 @@ jobs:
                       TextButton(onClick = onDismiss) { Text("Cancel") }
                   },
               )
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
+          cat > 'app/src/main/java/app/gridfix/android/ui/WaypointMarker.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui
+
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.Image
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.DrawScope
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
+          import androidx.compose.ui.res.painterResource
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.Dp
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlin.math.cos
+          import kotlin.math.sin
+
+          /** MIL-STD-2525-style affiliation colors. */
+          object Affiliations {
+              val all = listOf("none", "friendly", "hostile", "neutral", "unknown")
+
+              fun label(key: String): String = when (key) {
+                  "friendly" -> "Friendly"
+                  "hostile" -> "Hostile"
+                  "neutral" -> "Neutral"
+                  "unknown" -> "Unknown"
+                  else -> "None"
+              }
+
+              fun color(key: String, fallback: Color): Color = when (key) {
+                  "friendly" -> Color(0xFF5BC8F5)   // crystal blue
+                  "hostile" -> Color(0xFFFF6B60)    // salmon red
+                  "neutral" -> Color(0xFF8FE38F)    // bamboo green
+                  "unknown" -> Color(0xFFF0E060)    // light yellow
+                  else -> fallback
+              }
+          }
+
+          /**
+           * Renders a waypoint marker:
+           * - NATO unit keys (nato_*) render the bundled MIL-STD-2525B symbol image
+           * - tactical task keys (task_*) render drawn task glyphs or letter badges
+           * - shape keys render plain drawn shapes
+           * - everything else renders a material icon
+           * Non-NATO markers get an affiliation frame (friendly rectangle, hostile diamond,
+           * neutral square, unknown circle) except tasks, which stand alone per doctrine.
+           */
+          @Composable
+          fun WaypointMarker(
+              symbol: String,
+              affiliation: String,
+              modifier: Modifier = Modifier,
+              size: Dp = 30.dp,
+              echelon: String = "",
+          ) {
+              if (NatoSymbols.isNato(symbol)) {
+                  val res = NatoSymbols.resId(symbol)
+                  if (res != null) {
+                      Box(modifier.size(size)) {
+                          Image(
+                              painter = painterResource(res),
+                              contentDescription = NatoSymbols.label(symbol),
+                              modifier = Modifier.fillMaxSize(),
+                          )
+                          EchelonMarks(
+                              echelon = echelon,
+                              color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
+                              halo = MaterialTheme.colorScheme.background,
+                          )
+                      }
+                      return
+                  }
+              }
+
+              val color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary)
+              val isShape = WaypointSymbols.isShape(symbol)
+              val isTask = WaypointSymbols.isTask(symbol)
+              val taskLetter = if (isTask) WaypointSymbols.taskLetter(symbol) else null
+
+              Box(modifier.size(size), contentAlignment = Alignment.Center) {
+                  Canvas(Modifier.fillMaxSize()) {
+                      val w = this.size.width
+                      val h = this.size.height
+                      val frameStroke = Stroke(width = w * 0.07f)
+                      val glyphStroke = w * 0.08f
+
+                      if (!isTask) {
+                          when (affiliation) {
+                              "friendly" -> drawRoundRect(
+                                  color = color,
+                                  topLeft = Offset(w * 0.04f, h * 0.20f),
+                                  size = Size(w * 0.92f, h * 0.60f),
+                                  cornerRadius = CornerRadius(w * 0.08f),
+                                  style = frameStroke,
+                              )
+                              "hostile" -> {
+                                  val p = Path().apply {
+                                      moveTo(w / 2f, h * 0.05f)
+                                      lineTo(w * 0.95f, h / 2f)
+                                      lineTo(w / 2f, h * 0.95f)
+                                      lineTo(w * 0.05f, h / 2f)
+                                      close()
+                                  }
+                                  drawPath(p, color, style = frameStroke)
+                              }
+                              "neutral" -> drawRect(
+                                  color = color,
+                                  topLeft = Offset(w * 0.10f, h * 0.10f),
+                                  size = Size(w * 0.80f, h * 0.80f),
+                                  style = frameStroke,
+                              )
+                              "unknown" -> drawCircle(
+                                  color = color,
+                                  radius = w * 0.44f,
+                                  style = frameStroke,
+                              )
+                          }
+                      }
+
+                      if (isShape) {
+                          val s = w * 0.36f
+                          when (symbol) {
+                              "dot" -> drawCircle(color, radius = s * 0.45f)
+                              "square" -> drawRect(
+                                  color,
+                                  topLeft = Offset(w / 2f - s * 0.42f, h / 2f - s * 0.42f),
+                                  size = Size(s * 0.84f, s * 0.84f),
+                              )
+                              "triangle" -> {
+                                  val p = Path().apply {
+                                      moveTo(w / 2f, h / 2f - s * 0.55f)
+                                      lineTo(w / 2f + s * 0.58f, h / 2f + s * 0.42f)
+                                      lineTo(w / 2f - s * 0.58f, h / 2f + s * 0.42f)
+                                      close()
+                                  }
+                                  drawPath(p, color)
+                              }
+                              "diamond" -> {
+                                  val p = Path().apply {
+                                      moveTo(w / 2f, h / 2f - s * 0.6f)
+                                      lineTo(w / 2f + s * 0.6f, h / 2f)
+                                      lineTo(w / 2f, h / 2f + s * 0.6f)
+                                      lineTo(w / 2f - s * 0.6f, h / 2f)
+                                      close()
+                                  }
+                                  drawPath(p, color)
+                              }
+                              "cross" -> rotate(45f) {
+                                  val half = s * 0.6f
+                                  val t = s * 0.3f
+                                  drawLine(color, Offset(w / 2f - half, h / 2f), Offset(w / 2f + half, h / 2f), strokeWidth = t)
+                                  drawLine(color, Offset(w / 2f, h / 2f - half), Offset(w / 2f, h / 2f + half), strokeWidth = t)
+                              }
+                          }
+                      }
+
+                      if (isTask && taskLetter == null) {
+                          when (symbol) {
+                              "task_block" -> {
+                                  drawLine(color, Offset(w * 0.08f, h * 0.5f), Offset(w * 0.72f, h * 0.5f), glyphStroke)
+                                  drawLine(color, Offset(w * 0.72f, h * 0.16f), Offset(w * 0.72f, h * 0.84f), glyphStroke)
+                              }
+                              "task_ambush" -> {
+                                  drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.86f, h * 0.5f), glyphStroke)
+                                  arrowHead(Offset(w * 0.92f, h * 0.5f), 0f, w * 0.16f, color, glyphStroke)
+                                  drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.08f, h * 0.16f), glyphStroke)
+                                  drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.04f, h * 0.5f), glyphStroke)
+                                  drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.08f, h * 0.84f), glyphStroke)
+                              }
+                              "task_sbf" -> {
+                                  drawLine(color, Offset(w * 0.5f, h * 0.9f), Offset(w * 0.5f, h * 0.45f), glyphStroke)
+                                  drawLine(color, Offset(w * 0.5f, h * 0.45f), Offset(w * 0.22f, h * 0.18f), glyphStroke)
+                                  drawLine(color, Offset(w * 0.5f, h * 0.45f), Offset(w * 0.78f, h * 0.18f), glyphStroke)
+                                  arrowHead(Offset(w * 0.20f, h * 0.16f), 225f, w * 0.13f, color, glyphStroke)
+                                  arrowHead(Offset(w * 0.80f, h * 0.16f), 315f, w * 0.13f, color, glyphStroke)
+                              }
+                              "task_fix" -> {
+                                  drawLine(color, Offset(w * 0.06f, h * 0.5f), Offset(w * 0.22f, h * 0.5f), glyphStroke)
+                                  var x = w * 0.22f
+                                  var up = true
+                                  while (x < w * 0.66f) {
+                                      val nx = x + w * 0.11f
+                                      drawLine(
+                                          color,
+                                          Offset(x, if (up) h * 0.5f else h * 0.32f),
+                                          Offset(nx, if (up) h * 0.32f else h * 0.5f),
+                                          glyphStroke,
+                                      )
+                                      x = nx
+                                      up = !up
+                                  }
+                                  drawLine(color, Offset(x, h * 0.5f), Offset(w * 0.86f, h * 0.5f), glyphStroke)
+                                  arrowHead(Offset(w * 0.92f, h * 0.5f), 0f, w * 0.15f, color, glyphStroke)
+                              }
+                              "task_secure" -> {
+                                  drawCircle(color, radius = w * 0.34f, style = Stroke(glyphStroke))
+                                  arrowHead(Offset(w * 0.5f, h * 0.16f), 180f, w * 0.16f, color, glyphStroke)
+                              }
+                              "task_occupy" -> {
+                                  drawCircle(color, radius = w * 0.32f, style = Stroke(glyphStroke))
+                                  val cx = w * 0.24f
+                                  val cy = h * 0.76f
+                                  val a = w * 0.11f
+                                  drawLine(color, Offset(cx - a, cy - a), Offset(cx + a, cy + a), glyphStroke)
+                                  drawLine(color, Offset(cx - a, cy + a), Offset(cx + a, cy - a), glyphStroke)
+                              }
+                              "task_retain" -> {
+                                  drawCircle(color, radius = w * 0.28f, style = Stroke(glyphStroke))
+                                  for (i in 0 until 10) {
+                                      val ang = Math.toRadians(i * 36.0)
+                                      val x1 = w / 2f + (w * 0.28f) * cos(ang).toFloat()
+                                      val y1 = h / 2f + (w * 0.28f) * sin(ang).toFloat()
+                                      val x2 = w / 2f + (w * 0.40f) * cos(ang).toFloat()
+                                      val y2 = h / 2f + (w * 0.40f) * sin(ang).toFloat()
+                                      drawLine(color, Offset(x1, y1), Offset(x2, y2), glyphStroke * 0.75f)
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  if (!isShape && !isTask && symbol.isNotEmpty()) {
+                      Icon(
+                          WaypointSymbols.icon(symbol),
+                          contentDescription = null,
+                          tint = color,
+                          modifier = Modifier.size(size * 0.5f),
+                      )
+                  }
+                  if (taskLetter != null) {
+                      Text(
+                          taskLetter,
+                          color = color,
+                          fontFamily = FontFamily.Monospace,
+                          fontWeight = FontWeight.Bold,
+                          fontSize = (size.value * 0.55f).sp,
+                      )
+                  }
+                  if (!isTask) {
+                      EchelonMarks(echelon = echelon, color = color, halo = MaterialTheme.colorScheme.background)
+                  }
+              }
+          }
+
+          /**
+           * MIL-STD-2525-style echelon marks drawn along the top edge of the marker:
+           * team = slashed circle, squad/section/platoon = 1–3 dots,
+           * company/battalion/regiment = 1–3 bars, brigade = X.
+           */
+          @Composable
+          private fun EchelonMarks(echelon: String, color: Color, halo: Color) {
+              if (echelon.isEmpty()) return
+              Canvas(Modifier.fillMaxSize()) {
+                  val w = this.size.width
+                  val cy = w * 0.085f
+                  val s = w * 0.13f
+                  val stroke = s * 0.30f
+
+                  fun marks(count: Int, dot: Boolean) {
+                      val gap = if (dot) s * 0.78f else s * 0.62f
+                      val x0 = w / 2f - gap * (count - 1) / 2f
+                      for (i in 0 until count) {
+                          val x = x0 + gap * i
+                          if (dot) {
+                              drawCircle(halo, radius = s * 0.30f + stroke * 0.5f, center = Offset(x, cy))
+                              drawCircle(color, radius = s * 0.30f, center = Offset(x, cy))
+                          } else {
+                              drawLine(halo, Offset(x, cy - s * 0.55f), Offset(x, cy + s * 0.55f), stroke * 1.9f)
+                              drawLine(color, Offset(x, cy - s * 0.55f), Offset(x, cy + s * 0.55f), stroke)
+                          }
+                      }
+                  }
+
+                  when (echelon) {
+                      "tm" -> {
+                          drawCircle(halo, radius = s * 0.62f, center = Offset(w / 2f, cy), style = Stroke(stroke * 1.9f))
+                          drawCircle(color, radius = s * 0.62f, center = Offset(w / 2f, cy), style = Stroke(stroke))
+                          drawLine(
+                              halo,
+                              Offset(w / 2f - s * 0.85f, cy + s * 0.85f),
+                              Offset(w / 2f + s * 0.85f, cy - s * 0.85f),
+                              stroke * 1.9f,
+                          )
+                          drawLine(
+                              color,
+                              Offset(w / 2f - s * 0.85f, cy + s * 0.85f),
+                              Offset(w / 2f + s * 0.85f, cy - s * 0.85f),
+                              stroke,
+                          )
+                      }
+                      "sqd" -> marks(1, dot = true)
+                      "sec" -> marks(2, dot = true)
+                      "plt" -> marks(3, dot = true)
+                      "co" -> marks(1, dot = false)
+                      "bn" -> marks(2, dot = false)
+                      "rgt" -> marks(3, dot = false)
+                      "bde" -> {
+                          val r = s * 0.60f
+                          listOf(
+                              Offset(w / 2f - r, cy - r) to Offset(w / 2f + r, cy + r),
+                              Offset(w / 2f - r, cy + r) to Offset(w / 2f + r, cy - r),
+                          ).forEach { (a, b) ->
+                              drawLine(halo, a, b, stroke * 1.9f)
+                              drawLine(color, a, b, stroke)
+                          }
+                      }
+                  }
+              }
+          }
+
+          /** Small open arrowhead at [tip], pointing along [angleDeg] (0° = +x, clockwise). */
+          private fun DrawScope.arrowHead(tip: Offset, angleDeg: Float, len: Float, color: Color, stroke: Float) {
+              val a = Math.toRadians(angleDeg.toDouble())
+              val back = 150.0 * Math.PI / 180.0
+              val a1 = a + back
+              val a2 = a - back
+              drawLine(color, tip, Offset(tip.x + len * cos(a1).toFloat(), tip.y + len * sin(a1).toFloat()), stroke)
+              drawLine(color, tip, Offset(tip.x + len * cos(a2).toFloat(), tip.y + len * sin(a2).toFloat()), stroke)
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
+          cat > 'app/src/main/java/app/gridfix/android/ui/WaypointSymbols.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui
+
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.Adjust
+          import androidx.compose.material.icons.outlined.Cabin
+          import androidx.compose.material.icons.outlined.CellTower
+          import androidx.compose.material.icons.outlined.DirectionsCar
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material.icons.outlined.Home
+          import androidx.compose.material.icons.outlined.MedicalServices
+          import androidx.compose.material.icons.outlined.Star
+          import androidx.compose.material.icons.outlined.WaterDrop
+          import androidx.compose.material.icons.outlined.Warning
+          import androidx.compose.ui.graphics.vector.ImageVector
+
+          /** Echelon amplifier drawn above a unit frame (MIL-STD-2525 style marks). */
+          object Echelons {
+              val all = listOf(
+                  "" to "None",
+                  "tm" to "Team",
+                  "sqd" to "Squad",
+                  "sec" to "Section",
+                  "plt" to "Platoon",
+                  "co" to "Company",
+                  "bn" to "Battalion",
+                  "rgt" to "Regiment",
+                  "bde" to "Brigade",
+              )
+
+              fun label(key: String): String = all.firstOrNull { it.first == key }?.second ?: key
+          }
+
+          /** Symbols a waypoint can carry. Keys are stored with the waypoint; icons resolve here. */
+          object WaypointSymbols {
+
+              /** Plain drawn shapes (rendered by WaypointMarker, not material icons). */
+              val shapes = listOf("dot", "triangle", "square", "diamond", "cross")
+
+              val all = listOf(
+                  "dot", "triangle", "square", "diamond", "cross",
+                  "flag", "target", "star", "home", "danger",
+                  "water", "camp", "vehicle", "antenna", "medic",
+              )
+
+              fun isShape(key: String): Boolean = key in shapes
+
+              /** Tactical mission task symbols (drawn by WaypointMarker). */
+              val tasks = listOf(
+                  "task_block", "task_ambush", "task_sbf", "task_fix", "task_secure",
+                  "task_occupy", "task_retain", "task_screen", "task_guard", "task_cover",
+              )
+
+              fun isTask(key: String): Boolean = key.startsWith("task_")
+
+              fun taskLabel(key: String): String = when (key) {
+                  "task_block" -> "Block"
+                  "task_ambush" -> "Ambush"
+                  "task_sbf" -> "Support by fire"
+                  "task_fix" -> "Fix"
+                  "task_secure" -> "Secure"
+                  "task_occupy" -> "Occupy"
+                  "task_retain" -> "Retain"
+                  "task_screen" -> "Screen"
+                  "task_guard" -> "Guard"
+                  "task_cover" -> "Cover"
+                  else -> key
+              }
+
+              /** Letter-badge tasks render as a letter instead of a glyph. */
+              fun taskLetter(key: String): String? = when (key) {
+                  "task_screen" -> "S"
+                  "task_guard" -> "G"
+                  "task_cover" -> "C"
+                  else -> null
+              }
+
+              fun icon(key: String): ImageVector = when (key) {
+                  "target" -> Icons.Outlined.Adjust
+                  "star" -> Icons.Outlined.Star
+                  "home" -> Icons.Outlined.Home
+                  "danger" -> Icons.Outlined.Warning
+                  "water" -> Icons.Outlined.WaterDrop
+                  "camp" -> Icons.Outlined.Cabin
+                  "vehicle" -> Icons.Outlined.DirectionsCar
+                  "antenna" -> Icons.Outlined.CellTower
+                  "medic" -> Icons.Outlined.MedicalServices
+                  else -> Icons.Outlined.Flag
+              }
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
@@ -1857,16 +1974,20 @@ jobs:
           import androidx.compose.foundation.shape.CircleShape
           import androidx.compose.foundation.verticalScroll
           import androidx.compose.material.icons.Icons
+          import androidx.compose.foundation.horizontalScroll
           import androidx.compose.material.icons.outlined.AddLocationAlt
           import androidx.compose.material.icons.outlined.Download
           import androidx.compose.material.icons.outlined.GridOn
           import androidx.compose.material.icons.outlined.Layers
           import androidx.compose.material.icons.outlined.MyLocation
           import androidx.compose.material.icons.outlined.Straighten
+          import androidx.compose.material.icons.outlined.Timeline
           import androidx.compose.material3.AlertDialog
+          import androidx.compose.material3.FilterChip
           import androidx.compose.material3.Icon
           import androidx.compose.material3.IconButton
           import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedTextField
           import androidx.compose.material3.RadioButton
           import androidx.compose.material3.Surface
           import androidx.compose.material3.Switch
@@ -1901,13 +2022,18 @@ jobs:
           import app.gridfix.android.coords.Coordinates
           import app.gridfix.android.data.AppSettings
           import app.gridfix.android.data.FolderInfo
+          import app.gridfix.android.data.GeoVertex
+          import app.gridfix.android.data.GraphicTypes
           import app.gridfix.android.data.MapPrefs
           import app.gridfix.android.data.MapPrefsData
+          import app.gridfix.android.data.TacGraphic
           import app.gridfix.android.data.Waypoint
           import app.gridfix.android.data.WaypointDraft
           import app.gridfix.android.location.FixData
+          import app.gridfix.android.map.ControlMeasuresOverlay
           import app.gridfix.android.map.MapSetup
           import app.gridfix.android.map.MgrsGridOverlay
+          import app.gridfix.android.ui.Affiliations
           import app.gridfix.android.ui.WaypointDialog
           import app.gridfix.android.ui.WaypointMarker
           import kotlinx.coroutines.Dispatchers
@@ -1934,6 +2060,7 @@ jobs:
           private class MapHolder {
               var map: MapView? = null
               var grid: MgrsGridOverlay? = null
+              var cm: ControlMeasuresOverlay? = null
               var appliedLayer = ""
               var appliedNight: Boolean? = null
               var appliedGrid: Boolean? = null
@@ -1950,6 +2077,10 @@ jobs:
               onAdd: (WaypointDraft) -> Unit,
               onUpdate: (id: String, draft: WaypointDraft) -> Unit,
               onNavigateTo: (String) -> Unit,
+              graphics: List<TacGraphic>,
+              onAddGraphic: (name: String, type: String, points: List<GeoVertex>, folder: String, affiliation: String) -> Unit,
+              onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String) -> Unit,
+              onDeleteGraphic: (String) -> Unit,
           ) {
               val context = LocalContext.current
               remember { MapSetup.init(context.applicationContext); true }
@@ -1961,17 +2092,30 @@ jobs:
               val density = LocalDensity.current
               val holder = remember { MapHolder() }
 
-              // Waypoints in visible folders are drawn on the map
+              // Waypoints and graphics in visible folders are drawn on the map
               val visibleWaypoints = remember(waypoints, folders) {
                   if (folders.isEmpty()) waypoints else {
                       val visible = folders.filter { it.visible }.map { it.name }.toSet()
                       waypoints.filter { it.folder in visible }
                   }
               }
+              val visibleGraphics = remember(graphics, folders) {
+                  if (folders.isEmpty()) graphics else {
+                      val visible = folders.filter { it.visible }.map { it.name }.toSet()
+                      val known = folders.map { it.name }.toSet()
+                      graphics.filter { it.folder in visible || it.folder !in known }
+                  }
+              }
 
               var cameraTick by remember { mutableIntStateOf(0) }
               var following by remember { mutableStateOf(false) }
               var rulerAnchor by remember { mutableStateOf<GeoPoint?>(null) }
+              var drawType by remember { mutableStateOf<String?>(null) }
+              var drawAffiliation by remember { mutableStateOf("none") }
+              var drawPoints by remember { mutableStateOf<List<GeoVertex>>(emptyList()) }
+              var drawPickerOpen by remember { mutableStateOf(false) }
+              var drawNameOpen by remember { mutableStateOf(false) }
+              var editingGraphic by remember { mutableStateOf<TacGraphic?>(null) }
               var newWpAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
               var editingWp by remember { mutableStateOf<Waypoint?>(null) }
               var infoWp by remember { mutableStateOf<Waypoint?>(null) }
@@ -2039,16 +2183,50 @@ jobs:
                               map.overlays.add(
                                   MapEventsOverlay(object : MapEventsReceiver {
                                       override fun singleTapConfirmedHelper(gp: GeoPoint?): Boolean {
-                                          if (gp != null && rulerAnchor != null) {
+                                          if (gp == null) return false
+                                          if (drawType != null) {
+                                              drawPoints = drawPoints + GeoVertex(gp.latitude, gp.longitude)
+                                              holder.map?.invalidate()
+                                              return true
+                                          }
+                                          if (rulerAnchor != null) {
                                               rulerAnchor = gp
                                               return true
+                                          }
+                                          // Tap near a control-measure graphic opens its editor
+                                          val m = holder.map
+                                          val cmo = holder.cm
+                                          if (m != null && cmo != null) {
+                                              val px = android.graphics.Point()
+                                              m.projection.toPixels(gp, px)
+                                              val thresh = 26f * m.context.resources.displayMetrics.density
+                                              var best: TacGraphic? = null
+                                              var bestD = thresh
+                                              for (g in cmo.graphics) {
+                                                  val d = cmo.distanceToGraphic(
+                                                      m.projection, g, px.x.toFloat(), px.y.toFloat()
+                                                  )
+                                                  if (d < bestD) {
+                                                      bestD = d
+                                                      best = g
+                                                  }
+                                              }
+                                              if (best != null) {
+                                                  editingGraphic = best
+                                                  return true
+                                              }
                                           }
                                           return false
                                       }
 
                                       override fun longPressHelper(gp: GeoPoint?): Boolean {
                                           if (gp != null) {
-                                              newWpAt = gp.latitude to gp.longitude
+                                              if (drawType != null) {
+                                                  drawPoints = drawPoints + GeoVertex(gp.latitude, gp.longitude)
+                                                  holder.map?.invalidate()
+                                              } else {
+                                                  newWpAt = gp.latitude to gp.longitude
+                                              }
                                               return true
                                           }
                                           return false
@@ -2056,6 +2234,9 @@ jobs:
                                   })
                               )
                               map.overlays.add(grid)
+                              val cm = ControlMeasuresOverlay(ctx.resources.displayMetrics.density)
+                              holder.cm = cm
+                              map.overlays.add(cm)
                               map.addMapListener(object : MapListener {
                                   override fun onScroll(event: ScrollEvent?): Boolean {
                                       cameraTick++
@@ -2104,6 +2285,17 @@ jobs:
                                       map.invalidate()
                                   }
                               }
+                              holder.cm?.let { c ->
+                                  c.graphics = visibleGraphics
+                                  c.selectedId = editingGraphic?.id
+                                  c.nightMode = settings.nightMode
+                                  c.lightLines = !settings.nightMode && p.baseLayer == "sat" && offlineFile == null
+                                  c.draftActive = drawType != null
+                                  c.draftType = drawType ?: "phase_line"
+                                  c.draftAffiliation = drawAffiliation
+                                  c.draftPoints = drawPoints
+                                  map.invalidate()
+                              }
                           },
                       )
 
@@ -2132,6 +2324,7 @@ jobs:
                               holder.map?.onDetach()
                               holder.map = null
                               holder.grid = null
+                              holder.cm = null
                               holder.appliedLayer = ""
                               holder.appliedNight = null
                               holder.appliedGrid = null
@@ -2227,7 +2420,12 @@ jobs:
                                                   indication = null,
                                               ) { infoWp = w }
                                       ) {
-                                          WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = markerDp)
+                                          WaypointMarker(
+                                              symbol = w.symbol,
+                                              affiliation = w.affiliation,
+                                              size = markerDp,
+                                              echelon = w.echelon,
+                                          )
                                       }
                                       if (showNames) {
                                           Surface(
@@ -2235,7 +2433,7 @@ jobs:
                                               shape = MaterialTheme.shapes.extraSmall,
                                           ) {
                                               Text(
-                                                  w.name,
+                                                  if (w.designation.isEmpty()) w.name else "${w.name} · ${w.designation}",
                                                   style = MaterialTheme.typography.labelSmall,
                                                   fontFamily = FontFamily.Monospace,
                                                   modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
@@ -2290,6 +2488,9 @@ jobs:
                               holder.map?.mapCenter?.let { GeoPoint(it.latitude, it.longitude) }
                           } else null
                       }
+                      MapButton(Icons.Outlined.Timeline, "Draw graphic", drawType != null) {
+                          if (drawType == null) drawPickerOpen = true
+                      }
                       MapButton(Icons.Outlined.AddLocationAlt, "Waypoint at crosshair", false) {
                           holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
                       }
@@ -2314,15 +2515,60 @@ jobs:
                       }
                   }
 
-                  // Bottom readout: crosshair MGRS + range/bearing line
+                  // Bottom stack: draw-mode action bar (when drawing) above the crosshair readout
                   @Suppress("UNUSED_EXPRESSION")
                   cameraTick
                   val center = holder.map?.mapCenter
-                  Surface(
+                  Column(
                       modifier = Modifier
                           .align(Alignment.BottomCenter)
                           .fillMaxWidth()
                           .onSizeChanged { readoutHeightPx = it.height },
+                  ) {
+                  drawType?.let { dt ->
+                      Surface(
+                          modifier = Modifier.fillMaxWidth(),
+                          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+                      ) {
+                          Row(
+                              Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                              verticalAlignment = Alignment.CenterVertically,
+                          ) {
+                              Text(
+                                  "${GraphicTypes.label(dt)} · ${drawPoints.size} pts",
+                                  style = MaterialTheme.typography.labelMedium,
+                                  fontFamily = FontFamily.Monospace,
+                                  color = MaterialTheme.colorScheme.onSurface,
+                                  modifier = Modifier.weight(1f),
+                                  maxLines = 1,
+                              )
+                              TextButton(onClick = {
+                                  holder.map?.mapCenter?.let { c ->
+                                      drawPoints = drawPoints + GeoVertex(c.latitude, c.longitude)
+                                      holder.map?.invalidate()
+                                  }
+                              }) { Text("+Point") }
+                              TextButton(
+                                  enabled = drawPoints.isNotEmpty(),
+                                  onClick = {
+                                      drawPoints = drawPoints.dropLast(1)
+                                      holder.map?.invalidate()
+                                  },
+                              ) { Text("Undo") }
+                              TextButton(
+                                  enabled = drawPoints.size >= GraphicTypes.minPoints(dt),
+                                  onClick = { drawNameOpen = true },
+                              ) { Text("Done") }
+                              TextButton(onClick = {
+                                  drawType = null
+                                  drawPoints = emptyList()
+                                  holder.map?.invalidate()
+                              }) { Text("✕") }
+                          }
+                      }
+                  }
+                  Surface(
+                      modifier = Modifier.fillMaxWidth(),
                       color = MaterialTheme.colorScheme.surface.copy(alpha = 0.93f),
                   ) {
                       Column(
@@ -2397,6 +2643,7 @@ jobs:
                               maxLines = 1,
                           )
                       }
+                  }
                   }
               }
 
@@ -2541,13 +2788,201 @@ jobs:
                   }
               }
 
+              if (drawPickerOpen) {
+                  AlertDialog(
+                      onDismissRequest = { drawPickerOpen = false },
+                      title = { Text("Draw graphic") },
+                      text = {
+                          Column(
+                              Modifier.verticalScroll(rememberScrollState()),
+                              verticalArrangement = Arrangement.spacedBy(4.dp),
+                          ) {
+                              GraphicTypes.all.forEach { (key, label, _) ->
+                                  Text(
+                                      label,
+                                      style = MaterialTheme.typography.bodyLarge,
+                                      modifier = Modifier
+                                          .fillMaxWidth()
+                                          .clickable {
+                                              drawType = key
+                                              drawPoints = emptyList()
+                                              drawPickerOpen = false
+                                          }
+                                          .padding(vertical = 8.dp),
+                                  )
+                              }
+                              Spacer(Modifier.height(6.dp))
+                              Text("Color", style = MaterialTheme.typography.labelLarge)
+                              Row(
+                                  modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                              ) {
+                                  Affiliations.all.forEach { key ->
+                                      FilterChip(
+                                          selected = key == drawAffiliation,
+                                          onClick = { drawAffiliation = key },
+                                          label = { Text(Affiliations.label(key)) },
+                                      )
+                                  }
+                              }
+                              Spacer(Modifier.height(4.dp))
+                              Text(
+                                  "Then tap the map (or +Point at the crosshair) to place vertices, and Done to save.",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          }
+                      },
+                      confirmButton = {
+                          TextButton(onClick = { drawPickerOpen = false }) { Text("Cancel") }
+                      },
+                  )
+              }
+
+              if (drawNameOpen) {
+                  val dt = drawType
+                  if (dt == null) {
+                      drawNameOpen = false
+                  } else {
+                      var gName by remember(dt) { mutableStateOf("") }
+                      var gFolder by remember(dt) { mutableStateOf(folders.firstOrNull { it.name == "Graphics" }?.name ?: folders.firstOrNull()?.name ?: "Graphics") }
+                      var gAff by remember(dt) { mutableStateOf(drawAffiliation) }
+                      AlertDialog(
+                          onDismissRequest = { drawNameOpen = false },
+                          title = { Text("Save ${GraphicTypes.label(dt).lowercase()}") },
+                          text = {
+                              Column(
+                                  Modifier.verticalScroll(rememberScrollState()),
+                                  verticalArrangement = Arrangement.spacedBy(12.dp),
+                              ) {
+                                  OutlinedTextField(
+                                      value = gName,
+                                      onValueChange = { gName = it.take(20) },
+                                      label = { Text("Name / designation") },
+                                      placeholder = { Text(if (dt == "phase_line") "e.g. BLUE" else "e.g. BRAVO") },
+                                      singleLine = true,
+                                  )
+                                  Text("Color", style = MaterialTheme.typography.labelLarge)
+                                  Row(
+                                      modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                      horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                  ) {
+                                      Affiliations.all.forEach { key ->
+                                          FilterChip(
+                                              selected = key == gAff,
+                                              onClick = { gAff = key },
+                                              label = { Text(Affiliations.label(key)) },
+                                          )
+                                      }
+                                  }
+                                  Text("Folder", style = MaterialTheme.typography.labelLarge)
+                                  Row(
+                                      modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                      horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                  ) {
+                                      (folders.map { it.name } + "Graphics").distinct().forEach { f ->
+                                          FilterChip(
+                                              selected = f == gFolder,
+                                              onClick = { gFolder = f },
+                                              label = { Text(f) },
+                                          )
+                                      }
+                                  }
+                              }
+                          },
+                          confirmButton = {
+                              TextButton(onClick = {
+                                  val finalName = gName.trim().ifBlank { "${graphics.size + 1}" }
+                                  onAddGraphic(finalName, dt, drawPoints, gFolder, gAff)
+                                  drawNameOpen = false
+                                  drawType = null
+                                  drawPoints = emptyList()
+                                  holder.map?.invalidate()
+                              }) { Text("Save") }
+                          },
+                          dismissButton = {
+                              TextButton(onClick = { drawNameOpen = false }) { Text("Keep drawing") }
+                          },
+                      )
+                  }
+              }
+
+              editingGraphic?.let { g ->
+                  var gName by remember(g.id) { mutableStateOf(g.name) }
+                  var gFolder by remember(g.id) { mutableStateOf(g.folder) }
+                  var gAff by remember(g.id) { mutableStateOf(g.affiliation) }
+                  AlertDialog(
+                      onDismissRequest = { editingGraphic = null },
+                      title = { Text(GraphicTypes.label(g.type)) },
+                      text = {
+                          Column(
+                              Modifier.verticalScroll(rememberScrollState()),
+                              verticalArrangement = Arrangement.spacedBy(12.dp),
+                          ) {
+                              OutlinedTextField(
+                                  value = gName,
+                                  onValueChange = { gName = it.take(20) },
+                                  label = { Text("Name / designation") },
+                                  singleLine = true,
+                              )
+                              Text("Color", style = MaterialTheme.typography.labelLarge)
+                              Row(
+                                  modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                              ) {
+                                  Affiliations.all.forEach { key ->
+                                      FilterChip(
+                                          selected = key == gAff,
+                                          onClick = { gAff = key },
+                                          label = { Text(Affiliations.label(key)) },
+                                      )
+                                  }
+                              }
+                              Text("Folder", style = MaterialTheme.typography.labelLarge)
+                              Row(
+                                  modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                              ) {
+                                  (folders.map { it.name } + g.folder).distinct().forEach { f ->
+                                      FilterChip(
+                                          selected = f == gFolder,
+                                          onClick = { gFolder = f },
+                                          label = { Text(f) },
+                                      )
+                                  }
+                              }
+                              Text(
+                                  "${g.points.size} vertices",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          }
+                      },
+                      confirmButton = {
+                          TextButton(onClick = {
+                              onUpdateGraphic(g.id, gName.trim().ifBlank { g.name }, gFolder, gAff)
+                              editingGraphic = null
+                          }) { Text("Save") }
+                      },
+                      dismissButton = {
+                          Row {
+                              TextButton(onClick = {
+                                  onDeleteGraphic(g.id)
+                                  editingGraphic = null
+                              }) { Text("Delete") }
+                              TextButton(onClick = { editingGraphic = null }) { Text("Close") }
+                          }
+                      },
+                  )
+              }
+
               infoWp?.let { w ->
                   val loc = fix.location
                   AlertDialog(
                       onDismissRequest = { infoWp = null },
                       title = {
                           Row(verticalAlignment = Alignment.CenterVertically) {
-                              WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp)
+                              WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon)
                               Spacer(Modifier.width(10.dp))
                               Text(w.name)
                           }
@@ -2559,6 +2994,14 @@ jobs:
                                   fontFamily = FontFamily.Monospace,
                                   style = MaterialTheme.typography.bodyMedium,
                               )
+                              if (w.designation.isNotEmpty()) {
+                                  Text(
+                                      w.designation,
+                                      style = MaterialTheme.typography.bodySmall,
+                                      fontFamily = FontFamily.Monospace,
+                                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  )
+                              }
                               Text(
                                   "Folder: ${w.folder}",
                                   style = MaterialTheme.typography.bodySmall,
@@ -2749,6 +3192,375 @@ jobs:
                       null to "Import failed: ${e.message ?: "unknown error"}"
                   }
               }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/NavigateScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import android.hardware.GeomagneticField
+          import android.hardware.SensorManager
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.ArrowDropDown
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.DropdownMenu
+          import androidx.compose.material3.DropdownMenuItem
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.drawText
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.rememberTextMeasurer
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.Waypoint
+          import app.gridfix.android.location.CompassTracker
+          import app.gridfix.android.location.FixData
+          import app.gridfix.android.ui.WaypointMarker
+
+          @Composable
+          fun NavigateScreen(
+              fix: FixData,
+              settings: AppSettings,
+              waypoints: List<Waypoint>,
+              selectedId: String?,
+              onSelect: (String) -> Unit,
+          ) {
+              val context = LocalContext.current
+              val compass = remember { CompassTracker(context.applicationContext) }
+              DisposableEffect(Unit) {
+                  compass.start()
+                  onDispose { compass.stop() }
+              }
+              val compassData by compass.data.collectAsStateWithLifecycle()
+
+              val loc = fix.location
+              val target = waypoints.firstOrNull { it.id == selectedId } ?: waypoints.firstOrNull()
+
+              // Magnetic declination from the World Magnetic Model, refreshed when we move ~10 km
+              val declination = remember(
+                  loc?.latitude?.let { (it * 10).toInt() },
+                  loc?.longitude?.let { (it * 10).toInt() },
+              ) {
+                  if (loc == null) 0f else GeomagneticField(
+                      loc.latitude.toFloat(),
+                      loc.longitude.toFloat(),
+                      if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
+                      loc.time,
+                  ).declination
+              }
+              val convergence = if (loc == null) 0f else {
+                  Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
+              }
+
+              // Heading: compass sensor preferred, GPS course as fallback while moving
+              val headingTrue: Float? = when {
+                  compassData.hasSensor && compassData.hasReading ->
+                      (compassData.azimuthMagnetic + declination + 360f) % 360f
+                  loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f ->
+                      (loc.bearing + 360f) % 360f
+                  else -> null
+              }
+
+              fun toRef(angleTrue: Float): Float = when (settings.northRef) {
+                  1 -> (angleTrue - declination + 360f) % 360f
+                  2 -> (angleTrue - convergence + 360f) % 360f
+                  else -> angleTrue
+              }
+              val refLetter = when (settings.northRef) {
+                  1 -> "M"
+                  2 -> "G"
+                  else -> "T"
+              }
+
+              val nav = if (loc != null && target != null) {
+                  Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
+              } else null
+
+              if (waypoints.isEmpty()) {
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(32.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.Center,
+                  ) {
+                      Icon(
+                          Icons.Outlined.Flag,
+                          contentDescription = null,
+                          modifier = Modifier.size(56.dp),
+                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                      Spacer(Modifier.height(16.dp))
+                      Text("No waypoints yet", style = MaterialTheme.typography.titleLarge)
+                      Spacer(Modifier.height(8.dp))
+                      Text(
+                          "Create your first waypoint in the Waypoints tab, then come back here to navigate to it.",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          textAlign = TextAlign.Center,
+                      )
+                  }
+                  return
+              }
+
+              // Colors captured outside the Canvas draw scope
+              val ringColor = MaterialTheme.colorScheme.outline
+              val onSurface = MaterialTheme.colorScheme.onSurface
+              val subtle = MaterialTheme.colorScheme.onSurfaceVariant
+              val primary = MaterialTheme.colorScheme.primary
+              val textMeasurer = rememberTextMeasurer()
+              val cardinalStyle = TextStyle(
+                  fontSize = 15.sp,
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.Bold,
+              )
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(16.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                  // Target selector
+                  var menuOpen by remember { mutableStateOf(false) }
+                  Box {
+                      Row(
+                          modifier = Modifier.clickable { menuOpen = true },
+                          verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                          WaypointMarker(
+                              symbol = target?.symbol ?: "flag",
+                              affiliation = target?.affiliation ?: "none",
+                              size = 32.dp,
+                              echelon = target?.echelon ?: "",
+                          )
+                          Spacer(Modifier.width(8.dp))
+                          Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
+                          Icon(Icons.Outlined.ArrowDropDown, contentDescription = "Change target", tint = subtle)
+                      }
+                      DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                          waypoints.forEach { w ->
+                              DropdownMenuItem(
+                                  text = { Text(w.name) },
+                                  leadingIcon = {
+                                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon)
+                                  },
+                                  onClick = {
+                                      onSelect(w.id)
+                                      menuOpen = false
+                                  },
+                              )
+                          }
+                      }
+                  }
+                  target?.let { t ->
+                      val parts = Coordinates.mgrs(t.lat, t.lon, 8)
+                      Text(
+                          parts?.full ?: "",
+                          style = MaterialTheme.typography.bodySmall,
+                          fontFamily = FontFamily.Monospace,
+                          color = subtle,
+                      )
+                  }
+
+                  Spacer(Modifier.height(12.dp))
+
+                  // Compass rose with target arrow
+                  Canvas(Modifier.size(280.dp)) {
+                      val c = center
+                      val r = size.minDimension / 2f - 8.dp.toPx()
+                      drawCircle(ringColor, radius = r, center = c, style = Stroke(width = 2.dp.toPx()))
+
+                      val ringHeading = headingTrue?.let { toRef(it) } ?: 0f
+                      rotate(-ringHeading, pivot = c) {
+                          for (i in 0 until 72) {
+                              val major = i % 18 == 0
+                              val medium = i % 6 == 0
+                              rotate(i * 5f, pivot = c) {
+                                  drawLine(
+                                      color = if (major) onSurface else subtle,
+                                      start = Offset(c.x, c.y - r),
+                                      end = Offset(
+                                          c.x,
+                                          c.y - r + (if (major) 14.dp else if (medium) 10.dp else 5.dp).toPx(),
+                                      ),
+                                      strokeWidth = if (major) 3f else 1.5f,
+                                  )
+                              }
+                          }
+                          listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f).forEach { (label, ang) ->
+                              rotate(ang, pivot = c) {
+                                  val layout = textMeasurer.measure(AnnotatedString(label), style = cardinalStyle)
+                                  drawText(
+                                      layout,
+                                      color = if (label == "N") primary else subtle,
+                                      topLeft = Offset(
+                                          c.x - layout.size.width / 2f,
+                                          c.y - r + 18.dp.toPx(),
+                                      ),
+                                  )
+                              }
+                          }
+                      }
+
+                      if (nav != null && headingTrue != null) {
+                          rotate((nav.bearingTrue - headingTrue + 360f) % 360f, pivot = c) {
+                              val path = Path().apply {
+                                  moveTo(c.x, c.y - r + 34.dp.toPx())
+                                  lineTo(c.x - 16.dp.toPx(), c.y + 12.dp.toPx())
+                                  lineTo(c.x, c.y - 4.dp.toPx())
+                                  lineTo(c.x + 16.dp.toPx(), c.y + 12.dp.toPx())
+                                  close()
+                              }
+                              drawPath(path, primary)
+                          }
+                      }
+                      drawCircle(onSurface, radius = 3.dp.toPx(), center = c)
+                  }
+
+                  Spacer(Modifier.height(8.dp))
+
+                  // Distance
+                  Text(
+                      if (nav != null) Coordinates.formatDistance(nav.distanceMeters, settings.units) else "—",
+                      fontSize = 44.sp,
+                      lineHeight = 50.sp,
+                      fontFamily = FontFamily.Monospace,
+                      fontWeight = FontWeight.Bold,
+                      color = primary,
+                  )
+                  Text(
+                      "DISTANCE",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = subtle,
+                      letterSpacing = 1.5.sp,
+                  )
+
+                  Spacer(Modifier.height(14.dp))
+
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      MiniStat(
+                          label = "BEARING",
+                          value = if (nav != null) {
+                              Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      MiniStat(
+                          label = "BACK-AZ",
+                          value = if (nav != null) {
+                              Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Spacer(Modifier.height(12.dp))
+                  MiniStat(
+                      label = "YOUR HEADING",
+                      value = if (headingTrue != null) {
+                          Coordinates.formatAngle(toRef(headingTrue), settings.angleUnit) + " " + refLetter
+                      } else "—",
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+
+                  // Status hints
+                  if (loc == null) {
+                      Spacer(Modifier.height(12.dp))
+                      Text(
+                          "Acquiring GPS signal…",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = subtle,
+                      )
+                  }
+                  if (!compassData.hasSensor) {
+                      Spacer(Modifier.height(12.dp))
+                      Text(
+                          "No compass sensor on this device — heading uses your direction of travel while moving.",
+                          style = MaterialTheme.typography.bodySmall,
+                          color = subtle,
+                          textAlign = TextAlign.Center,
+                      )
+                  } else if (compassData.accuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW) {
+                      Spacer(Modifier.height(12.dp))
+                      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                          Text(
+                              "Compass needs calibration — move your phone in a figure-8 a few times.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurface,
+                              modifier = Modifier.padding(12.dp),
+                              textAlign = TextAlign.Center,
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {
+              Card(
+                  modifier = modifier,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Column(
+                      Modifier
+                          .fillMaxWidth()
+                          .padding(14.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                      Text(
+                          value,
+                          style = MaterialTheme.typography.titleLarge,
+                          fontFamily = FontFamily.Monospace,
+                          color = MaterialTheme.colorScheme.onSurface,
+                      )
+                      Spacer(Modifier.height(4.dp))
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          letterSpacing = 1.2.sp,
+                      )
+                  }
+              }
+          }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
           cat > 'app/src/main/java/app/gridfix/android/ui/screens/WaypointsScreen.kt' <<'EOF_GRIDFIX'
@@ -3027,7 +3839,7 @@ jobs:
                           .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
                       verticalAlignment = Alignment.CenterVertically,
                   ) {
-                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp)
+                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon)
                       Spacer(Modifier.size(12.dp))
                       Column(Modifier.weight(1f)) {
                           Text(w.name, style = MaterialTheme.typography.titleMedium)
@@ -3086,7 +3898,7 @@ jobs:
           EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.3.0 (M3 map) source from bootstrap workflow'
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.4.0 (M3 tactical layer) source from bootstrap workflow'
             git push origin HEAD:main
           fi
 
