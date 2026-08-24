@@ -83,7 +83,10 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
         for (g in graphics) {
             val n = project(projection, g.points)
             if (n == 0) continue
-            drawGraphic(canvas, g.type, colorFor(g.affiliation), haloColor, n, g.name, g.id == selectedId, dashed = false)
+            drawGraphic(
+                canvas, g.type, colorFor(g.affiliation), haloColor, n,
+                nightName(g.name, g.affiliation), g.id == selectedId, dashed = false,
+            )
         }
         if (draftActive && draftPoints.isNotEmpty()) {
             val n = project(projection, draftPoints)
@@ -115,8 +118,18 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
         return best
     }
 
+    /**
+     * On a single-color (night) display, enemy graphics are marked "ENY" per
+     * FM 1-02.2 / MIL-STD-2525 practice, since color no longer distinguishes them.
+     */
+    private fun nightName(name: String, affiliation: String): String =
+        if (nightMode && affiliation == "hostile") "$name ENY" else name
+
     private fun colorFor(affiliation: String): Int {
-        if (nightMode) return Color.rgb(255, 59, 48)
+        if (nightMode) {
+            // Two-tone red: hostile stays at full intensity, everything else dimmer
+            return if (affiliation == "hostile") Color.rgb(255, 59, 48) else Color.rgb(196, 45, 36)
+        }
         return when (affiliation) {
             "friendly" -> Color.rgb(45, 120, 200)
             "hostile" -> Color.rgb(210, 50, 40)

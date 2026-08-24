@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -44,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -51,9 +53,12 @@ import androidx.compose.ui.unit.sp
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
+import app.gridfix.android.data.GraphicTypes
+import app.gridfix.android.data.TacGraphic
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.location.FixData
+import app.gridfix.android.ui.Affiliations
 import app.gridfix.android.ui.WaypointDialog
 import app.gridfix.android.ui.WaypointMarker
 import java.util.Locale
@@ -70,15 +75,21 @@ fun WaypointsScreen(
     onNavigateTo: (String) -> Unit,
     onAddFolder: (String) -> Unit,
     onSetFolderVisible: (name: String, visible: Boolean) -> Unit,
+    graphics: List<TacGraphic>,
+    onDeleteGraphic: (String) -> Unit,
+    onClearGraphics: (folder: String) -> Unit,
 )
 {
     var dialogOpen by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Waypoint?>(null) }
     var deleteCandidate by remember { mutableStateOf<Waypoint?>(null) }
+    var deleteGraphicCandidate by remember { mutableStateOf<TacGraphic?>(null) }
+    var clearFolderCandidate by remember { mutableStateOf<String?>(null) }
     var newFolderOpen by remember { mutableStateOf(false) }
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     val loc = fix.location
     val byFolder = waypoints.groupBy { it.folder }
+    val graphicsByFolder = graphics.groupBy { it.folder }
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
@@ -112,6 +123,7 @@ fun WaypointsScreen(
 
             folders.forEach { folder ->
                 val list = byFolder[folder.name].orEmpty()
+                val glist = graphicsByFolder[folder.name].orEmpty()
                 val isCollapsed = collapsed[folder.name] == true
                 item(key = "folder-${folder.name}") {
                     Row(
@@ -136,7 +148,7 @@ fun WaypointsScreen(
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            "${list.size}",
+                            if (glist.isEmpty()) "${list.size}" else "${list.size} + ${glist.size}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -161,6 +173,20 @@ fun WaypointsScreen(
                             onEdit = { editing = w; dialogOpen = true },
                             onDelete = { deleteCandidate = w },
                         )
+                    }
+                    items(glist, key = { "g-" + it.id }) { g ->
+                        GraphicRow(
+                            g = g,
+                            night = settings.nightMode,
+                            onDelete = { deleteGraphicCandidate = g },
+                        )
+                    }
+                    if (glist.size > 1) {
+                        item(key = "clear-${folder.name}") {
+                            TextButton(onClick = { clearFolderCandidate = folder.name }) {
+                                Text("Clear ${glist.size} graphics in ${folder.name}")
+                            }
+                        }
                     }
                 }
             }
@@ -206,6 +232,7 @@ fun WaypointsScreen(
                 dialogOpen = false
             },
             onDismiss = { dialogOpen = false },
+            night = settings.nightMode,
         )
     }
 
@@ -234,6 +261,41 @@ fun WaypointsScreen(
         )
     }
 
+    deleteGraphicCandidate?.let { g ->
+        AlertDialog(
+            onDismissRequest = { deleteGraphicCandidate = null },
+            title = { Text("Delete ${g.name.ifBlank { GraphicTypes.label(g.type) }}?") },
+            text = { Text("This drawn graphic will be removed permanently.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteGraphic(g.id)
+                    deleteGraphicCandidate = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteGraphicCandidate = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    clearFolderCandidate?.let { fname ->
+        val count = graphicsByFolder[fname].orEmpty().size
+        AlertDialog(
+            onDismissRequest = { clearFolderCandidate = null },
+            title = { Text("Clear $fname?") },
+            text = { Text("All $count drawn graphics in this folder will be removed permanently. Waypoints are not affected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onClearGraphics(fname)
+                    clearFolderCandidate = null
+                }) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearFolderCandidate = null }) { Text("Cancel") }
+            },
+        )
+    }
+
     deleteCandidate?.let { w ->
         AlertDialog(
             onDismissRequest = { deleteCandidate = null },
@@ -249,6 +311,52 @@ fun WaypointsScreen(
                 TextButton(onClick = { deleteCandidate = null }) { Text("Cancel") }
             },
         )
+    }
+}
+
+@Composable
+private fun GraphicRow(
+    g: TacGraphic,
+    night: Boolean,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Timeline,
+                contentDescription = null,
+                tint = if (night) Color(0xFFFF3B30)
+                else Affiliations.color(g.affiliation, MaterialTheme.colorScheme.primary),
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(Modifier.size(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    g.name.ifBlank { GraphicTypes.label(g.type) },
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    "${GraphicTypes.label(g.type)} · ${g.points.size} points",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "Delete graphic",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -273,7 +381,7 @@ private fun WaypointRow(
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon)
+            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon, night = settings.nightMode)
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(w.name, style = MaterialTheme.typography.titleMedium)

@@ -15,6 +15,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -58,6 +60,19 @@ object Affiliations {
  * Non-NATO markers get an affiliation frame (friendly rectangle, hostile diamond,
  * neutral square, unknown circle) except tasks, which stand alone per doctrine.
  */
+/** Night-vision red: luminance mapped onto the red channel, green/blue dropped. */
+private val NightImageFilter = ColorFilter.colorMatrix(
+    ColorMatrix(
+        floatArrayOf(
+            0.35f, 0.50f, 0.15f, 0f, 30f,
+            0f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f,
+        )
+    )
+)
+private val NightRed = Color(0xFFFF3B30)
+
 @Composable
 fun WaypointMarker(
     symbol: String,
@@ -65,6 +80,7 @@ fun WaypointMarker(
     modifier: Modifier = Modifier,
     size: Dp = 30.dp,
     echelon: String = "",
+    night: Boolean = false,
 ) {
     if (NatoSymbols.isNato(symbol)) {
         val res = NatoSymbols.resId(symbol)
@@ -74,10 +90,12 @@ fun WaypointMarker(
                     painter = painterResource(res),
                     contentDescription = NatoSymbols.label(symbol),
                     modifier = Modifier.fillMaxSize(),
+                    colorFilter = if (night) NightImageFilter else null,
                 )
                 EchelonMarks(
                     echelon = echelon,
-                    color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
+                    color = if (night) NightRed
+                    else Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
                     halo = MaterialTheme.colorScheme.background,
                 )
             }
@@ -85,7 +103,8 @@ fun WaypointMarker(
         }
     }
 
-    val color = Affiliations.color(affiliation, MaterialTheme.colorScheme.primary)
+    val color = if (night) NightRed
+    else Affiliations.color(affiliation, MaterialTheme.colorScheme.primary)
     val isShape = WaypointSymbols.isShape(symbol)
     val isTask = WaypointSymbols.isTask(symbol)
     val taskLetter = if (isTask) WaypointSymbols.taskLetter(symbol) else null

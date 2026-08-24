@@ -44,6 +44,26 @@ object WaypointSymbols {
 
     fun isShape(key: String): Boolean = key in shapes
 
+    /** Short display label for a basic symbol or shape (pickers). */
+    fun label(key: String): String = when (key) {
+        "dot" -> "Dot"
+        "triangle" -> "Triangle"
+        "square" -> "Square"
+        "diamond" -> "Diamond"
+        "cross" -> "Cross"
+        "flag" -> "Flag"
+        "target" -> "Target"
+        "star" -> "Star"
+        "home" -> "Home"
+        "danger" -> "Danger"
+        "water" -> "Water"
+        "camp" -> "Camp"
+        "vehicle" -> "Vehicle"
+        "antenna" -> "Antenna"
+        "medic" -> "Medic"
+        else -> key
+    }
+
     /** Tactical mission task symbols (drawn by WaypointMarker). */
     val tasks = listOf(
         "task_block", "task_ambush", "task_sbf", "task_fix", "task_secure",

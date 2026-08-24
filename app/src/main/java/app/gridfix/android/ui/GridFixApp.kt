@@ -247,11 +247,15 @@ fun GridFixApp() {
                         graphics = graphics,
                         onAddGraphic = { name, type, points, folder, affiliation ->
                             scope.launch {
+                                waypointRepo.addFolder(folder)   // so the overlay eye toggle exists
                                 graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis())
                             }
                         },
                         onUpdateGraphic = { id, name, folder, affiliation ->
-                            scope.launch { graphicsRepo.rename(id, name, folder, affiliation) }
+                            scope.launch {
+                                waypointRepo.addFolder(folder)
+                                graphicsRepo.rename(id, name, folder, affiliation)
+                            }
                         },
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                     )
@@ -277,6 +281,9 @@ fun GridFixApp() {
                             scope.launch { waypointRepo.select(id) }
                             goTo("navigate")
                         },
+                        graphics = graphics,
+                        onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
+                        onClearGraphics = { folder -> scope.launch { graphicsRepo.deleteFolder(folder) } },
                     )
                 }
                 composable("settings") { SettingsScreen(repo, settings) }

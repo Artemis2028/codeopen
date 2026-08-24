@@ -45,6 +45,8 @@ fun SymbolRow(
     keys: List<String>,
     selected: String,
     affiliation: String,
+    labelFor: ((String) -> String)? = null,
+    night: Boolean = false,
     onSelect: (String) -> Unit,
 ) {
     Row(
@@ -53,20 +55,35 @@ fun SymbolRow(
     ) {
         keys.forEach { key ->
             val isSelected = key == selected
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(CircleShape)
-                    .border(
-                        width = if (isSelected) 2.dp else 1.dp,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.outline,
-                        shape = CircleShape,
-                    )
-                    .clickable { onSelect(key) },
-                contentAlignment = Alignment.Center,
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                WaypointMarker(symbol = key, affiliation = affiliation, size = 32.dp)
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .border(
+                            width = if (isSelected) 2.dp else 1.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline,
+                            shape = CircleShape,
+                        )
+                        .clickable { onSelect(key) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    WaypointMarker(symbol = key, affiliation = affiliation, size = 32.dp, night = night)
+                }
+                labelFor?.let { f ->
+                    Text(
+                        f(key),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -86,6 +103,7 @@ fun WaypointDialog(
     defaultName: String,
     onConfirm: (WaypointDraft) -> Unit,
     onDismiss: () -> Unit,
+    night: Boolean = false,
 ) {
     val baseParts = remember(initial) {
         when {
@@ -150,6 +168,8 @@ fun WaypointDialog(
                     keys = WaypointSymbols.all,
                     selected = symbol,
                     affiliation = affiliation,
+                    labelFor = { WaypointSymbols.label(it) },
+                    night = night,
                 ) { symbol = it }
 
                 Text("Tactical task", style = MaterialTheme.typography.labelLarge)
@@ -157,6 +177,8 @@ fun WaypointDialog(
                     keys = WaypointSymbols.tasks,
                     selected = symbol,
                     affiliation = affiliation,
+                    labelFor = { WaypointSymbols.taskLabel(it) },
+                    night = night,
                 ) { symbol = it }
 
                 Text("NATO units", style = MaterialTheme.typography.labelLarge)
@@ -170,6 +192,8 @@ fun WaypointDialog(
                         keys = NatoSymbols.keysFor(aff),
                         selected = symbol,
                         affiliation = affiliation,
+                        labelFor = { NatoSymbols.functionLabel(it) },
+                        night = night,
                     ) { symbol = it }
                 }
 

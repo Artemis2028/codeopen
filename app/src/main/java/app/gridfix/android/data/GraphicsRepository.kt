@@ -108,6 +108,13 @@ class GraphicsRepository(private val context: Context) {
         }
     }
 
+    /** Remove every graphic in [folder] — "clear the sketch" in one go. */
+    suspend fun deleteFolder(folder: String) {
+        context.graphicsStore.edit { p ->
+            p[listKey] = encode(decode(p[listKey] ?: "[]").filterNot { it.folder == folder })
+        }
+    }
+
     private fun decode(json: String): List<TacGraphic> = runCatching {
         val arr = JSONArray(json)
         buildList {

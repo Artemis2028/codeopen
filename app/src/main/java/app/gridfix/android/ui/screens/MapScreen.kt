@@ -478,6 +478,7 @@ fun MapScreen(
                                     affiliation = w.affiliation,
                                     size = markerDp,
                                     echelon = w.echelon,
+                                    night = settings.nightMode,
                                 )
                             }
                             if (showNames) {
@@ -898,7 +899,7 @@ fun MapScreen(
             drawNameOpen = false
         } else {
             var gName by remember(dt) { mutableStateOf("") }
-            var gFolder by remember(dt) { mutableStateOf(folders.firstOrNull { it.name == "Graphics" }?.name ?: folders.firstOrNull()?.name ?: "Graphics") }
+            var gFolder by remember(dt) { mutableStateOf("Graphics") }
             var gAff by remember(dt) { mutableStateOf(drawAffiliation) }
             AlertDialog(
                 onDismissRequest = { drawNameOpen = false },
@@ -1035,7 +1036,7 @@ fun MapScreen(
             onDismissRequest = { infoWp = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon)
+                    WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon, night = settings.nightMode)
                     Spacer(Modifier.width(10.dp))
                     Text(w.name)
                 }
@@ -1100,6 +1101,7 @@ fun MapScreen(
                 newWpAt = null
             },
             onDismiss = { newWpAt = null },
+            night = settings.nightMode,
         )
     }
 
@@ -1116,6 +1118,7 @@ fun MapScreen(
                 editingWp = null
             },
             onDismiss = { editingWp = null },
+            night = settings.nightMode,
         )
     }
 

@@ -44,6 +44,13 @@ object NatoSymbols {
         return "$aff $func"
     }
 
+    /** Function-only label ("Infantry", "Air defense") for compact picker captions. */
+    fun functionLabel(key: String): String {
+        val parts = key.split("_")
+        if (parts.size != 3) return key
+        return functions.firstOrNull { it.first == parts[2] }?.second ?: parts[2]
+    }
+
     private val resMap: Map<String, Int> = mapOf(
         "nato_f_inf" to R.drawable.nato_f_inf,
         "nato_f_mechinf" to R.drawable.nato_f_mechinf,
