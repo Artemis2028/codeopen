@@ -65,7 +65,6 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.location.CompassTracker
 import app.gridfix.android.location.FixData
-import app.gridfix.android.ui.Speech
 import app.gridfix.android.ui.WaypointMarker
 import kotlin.math.abs
 
@@ -127,11 +126,6 @@ fun NavigateScreen(
     val nav = if (loc != null && target != null) {
         Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
     } else null
-
-    val speech = remember { Speech(context.applicationContext) }
-    DisposableEffect(Unit) {
-        onDispose { speech.shutdown() }
-    }
 
     // Arrival alert: one buzz + tone when closing inside 50 m of the target;
     // re-arms after moving back out past 150 m or switching targets.
@@ -402,37 +396,12 @@ fun NavigateScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        // Eyes-free aids: haptic azimuth guide + spoken bearing/distance
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FilterChip(
-                selected = hapticGuide,
-                onClick = { hapticGuide = !hapticGuide },
-                label = { Text(if (hapticGuide) "HAPTIC GUIDE ON" else "HAPTIC GUIDE") },
-            )
-            FilterChip(
-                selected = false,
-                onClick = {
-                    val t = target
-                    if (nav != null && t != null) {
-                        val ang = Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit)
-                            .replace("°", " degrees")
-                        val refWord = when (refLetter) {
-                            "M" -> "magnetic"
-                            "G" -> "grid"
-                            else -> "true"
-                        }
-                        val dist = speakableDistance(
-                            Coordinates.formatDistance(nav.distanceMeters, settings.units)
-                        )
-                        speech.speak("Target ${t.name}. Bearing $ang $refWord. Distance $dist.")
-                    }
-                },
-                label = { Text("SPEAK") },
-            )
-        }
+        // Eyes-free aid: haptic azimuth guide
+        FilterChip(
+            selected = hapticGuide,
+            onClick = { hapticGuide = !hapticGuide },
+            label = { Text(if (hapticGuide) "HAPTIC GUIDE ON" else "HAPTIC GUIDE") },
+        )
         if (hapticGuide) {
             Spacer(Modifier.height(6.dp))
             Text(
@@ -484,14 +453,6 @@ private fun deviceVibrator(context: Context): Vibrator? = runCatching {
         context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     }
 }.getOrNull()
-
-/** Expand unit abbreviations so the TTS engine reads them naturally. */
-private fun speakableDistance(text: String): String = text
-    .replace(Regex("\\bkm\\b"), "kilometers")
-    .replace(Regex("\\bNM\\b"), "nautical miles")
-    .replace(Regex("\\bmi\\b"), "miles")
-    .replace(Regex("\\bft\\b"), "feet")
-    .replace(Regex("\\bm\\b"), "meters")
 
 @Composable
 private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {

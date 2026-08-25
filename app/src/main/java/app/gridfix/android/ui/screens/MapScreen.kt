@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -69,6 +70,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -79,6 +82,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1679,31 +1684,97 @@ fun MapScreen(
     }
 
     if (gotoOpen) {
-        var gridText by remember { mutableStateOf("") }
-        var gotoError by remember { mutableStateOf(false) }
+        // Same three-field layout as the waypoint editor: grid zone + square
+        // prefilled from the crosshair (usually you stay in your own square, so
+        // you only type the digits), full-grid paste splits itself, easting
+        // auto-advances to northing at 5 digits.
+        val centerParts = remember {
+            holder.map?.mapCenter?.let { c ->
+                Coordinates.mgrs(c.latitude, c.longitude, 10)
+            }
+        }
+        var gzdSquare by remember {
+            mutableStateOf(
+                centerParts?.takeIf { it.square.isNotEmpty() }
+                    ?.let { "${it.gzd} ${it.square}" } ?: ""
+            )
+        }
+        var gotoEasting by remember { mutableStateOf("") }
+        var gotoNorthing by remember { mutableStateOf("") }
+        var gotoError by remember { mutableStateOf<String?>(null) }
+        val gotoNorthingFocus = remember { FocusRequester() }
+        val bigDigits = androidx.compose.ui.text.TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = 18.sp,
+        )
         AlertDialog(
             onDismissRequest = { gotoOpen = false },
             title = { Text("Go to grid") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
-                        value = gridText,
-                        onValueChange = {
-                            gridText = it.uppercase(java.util.Locale.US).take(20)
-                            gotoError = false
+                        value = gzdSquare,
+                        onValueChange = { v ->
+                            val cleaned = v.uppercase(java.util.Locale.US)
+                                .filter { it.isLetterOrDigit() || it == ' ' }
+                            var handled = false
+                            if (cleaned.replace(" ", "").length > 7) {
+                                // A full grid was pasted — split it into the fields
+                                val parsed = Coordinates.parseMgrs(cleaned)
+                                if (parsed != null) {
+                                    val parts = Coordinates.mgrs(parsed.first, parsed.second, 10)
+                                    if (parts != null && parts.easting.isNotEmpty()) {
+                                        gzdSquare = "${parts.gzd} ${parts.square}"
+                                        gotoEasting = parts.easting
+                                        gotoNorthing = parts.northing
+                                        handled = true
+                                    }
+                                }
+                            }
+                            if (!handled) gzdSquare = cleaned.take(7)
+                            gotoError = null
                         },
-                        label = { Text("MGRS") },
-                        placeholder = { Text("39R TM 32565 76254") },
+                        label = { Text("Grid zone (or paste a full grid)") },
+                        placeholder = { Text("39R TM") },
                         singleLine = true,
-                        isError = gotoError,
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 18.sp,
-                        ),
+                        textStyle = bigDigits,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    if (gotoError) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = gotoEasting,
+                            onValueChange = { v ->
+                                gotoEasting = v.filter { it.isDigit() }.take(5)
+                                gotoError = null
+                                if (gotoEasting.length == 5) gotoNorthingFocus.requestFocus()
+                            },
+                            label = { Text("Easting") },
+                            placeholder = { Text("23556") },
+                            singleLine = true,
+                            textStyle = bigDigits,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = gotoNorthing,
+                            onValueChange = { v ->
+                                gotoNorthing = v.filter { it.isDigit() }.take(5)
+                                gotoError = null
+                            },
+                            label = { Text("Northing") },
+                            placeholder = { Text("97008") },
+                            singleLine = true,
+                            textStyle = bigDigits,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(gotoNorthingFocus),
+                        )
+                    }
+                    gotoError?.let { msg ->
                         Text(
-                            "Couldn't read that grid — check the zone letters and digits.",
+                            msg,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -1712,17 +1783,25 @@ fun MapScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val parsed = Coordinates.parseMgrs(gridText)
-                    if (parsed == null) {
-                        gotoError = true
-                    } else {
-                        val m = holder.map
-                        if (m != null) {
-                            val z = if (m.zoomLevelDouble < 14.0) 15.0 else m.zoomLevelDouble
-                            m.controller.animateTo(GeoPoint(parsed.first, parsed.second), z, null)
+                    when {
+                        gzdSquare.isBlank() ->
+                            gotoError = "Enter the grid zone and 100 km square (e.g. 39R TM)."
+                        gotoEasting.isEmpty() || gotoEasting.length != gotoNorthing.length ->
+                            gotoError = "Easting and northing need the same number of digits."
+                        else -> {
+                            val parsed = Coordinates.parseMgrs(gzdSquare + gotoEasting + gotoNorthing)
+                            if (parsed == null) {
+                                gotoError = "Couldn't read that grid — check the zone letters and digits."
+                            } else {
+                                val m = holder.map
+                                if (m != null) {
+                                    val z = if (m.zoomLevelDouble < 14.0) 15.0 else m.zoomLevelDouble
+                                    m.controller.animateTo(GeoPoint(parsed.first, parsed.second), z, null)
+                                }
+                                following = false
+                                gotoOpen = false
+                            }
                         }
-                        following = false
-                        gotoOpen = false
                     }
                 }) { Text("Go") }
             },

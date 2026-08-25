@@ -13,7 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCode2
-import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -24,7 +23,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -33,7 +31,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -45,7 +42,6 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.location.FixData
 import app.gridfix.android.ui.QrDialog
-import app.gridfix.android.ui.Speech
 import app.gridfix.android.ui.geoUri
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -59,13 +55,8 @@ fun PositionScreen(
     onMark: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     var markedAt by remember { mutableStateOf(0L) }
     var qrOpen by remember { mutableStateOf(false) }
-    val speech = remember { Speech(context.applicationContext) }
-    DisposableEffect(Unit) {
-        onDispose { speech.shutdown() }
-    }
 
     // 1 Hz ticker for the clock and fix age
     val now by produceState(initialValue = System.currentTimeMillis()) {
@@ -211,13 +202,6 @@ fun PositionScreen(
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                    IconButton(onClick = { speech.speak(Phonetic.mgrsSpeech(parts.full)) }) {
-                        Icon(
-                            Icons.Outlined.VolumeUp,
-                            contentDescription = "Speak grid",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     IconButton(onClick = { qrOpen = true }) {
