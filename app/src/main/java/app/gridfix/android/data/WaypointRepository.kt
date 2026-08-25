@@ -90,11 +90,12 @@ class WaypointRepository(private val context: Context) {
         }
     }
 
-    suspend fun add(draft: WaypointDraft, nowMillis: Long) {
+    suspend fun add(draft: WaypointDraft, nowMillis: Long): String {
+        val newId = UUID.randomUUID().toString()
         context.wpStore.edit { p ->
             val current = decode(p[listKey] ?: "[]")
             val wp = Waypoint(
-                id = UUID.randomUUID().toString(),
+                id = newId,
                 name = draft.name,
                 lat = draft.lat,
                 lon = draft.lon,
@@ -115,6 +116,7 @@ class WaypointRepository(private val context: Context) {
                 p[selectedKey] = wp.id
             }
         }
+        return newId
     }
 
     /** Bulk add (imports): one datastore write however many points arrive. */

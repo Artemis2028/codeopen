@@ -176,6 +176,47 @@ object Coordinates {
         )
     }
 
+    private fun gridConvergenceForZone(lat: Double, lon: Double, zone: Int): Double {
+        val lonOrigin = ((zone - 1) * 6 - 180 + 3).toDouble()
+        return Math.toDegrees(
+            atan(tan(Math.toRadians(lon - lonOrigin)) * sin(Math.toRadians(lat)))
+        )
+    }
+
+    /** Result of a two-ray fix: the intersection plus the range from each observer. */
+    data class RayFix(val lat: Double, val lon: Double, val dist1: Double, val dist2: Double)
+
+    /**
+     * Intersection of two rays given in TRUE bearings, solved in the UTM plane of
+     * the first point's zone (grid bearings via per-point convergence). Null when
+     * the rays are near-parallel, diverge, or the fix lands beyond 100 km — the
+     * cases a map-reading instructor would also reject.
+     */
+    fun rayIntersection(
+        lat1: Double, lon1: Double, bearing1True: Double,
+        lat2: Double, lon2: Double, bearing2True: Double,
+    ): RayFix? {
+        val zone = utmZone(lat1, lon1)
+        val north = lat1 >= 0
+        val p1 = utmForZone(lat1, lon1, zone, north)
+        val p2 = utmForZone(lat2, lon2, zone, north)
+        val g1 = Math.toRadians(bearing1True - gridConvergenceForZone(lat1, lon1, zone))
+        val g2 = Math.toRadians(bearing2True - gridConvergenceForZone(lat2, lon2, zone))
+        val d1x = sin(g1)
+        val d1y = cos(g1)
+        val d2x = sin(g2)
+        val d2y = cos(g2)
+        val cross = d1x * d2y - d1y * d2x
+        if (abs(cross) < 1e-6) return null
+        val dx = p2[0] - p1[0]
+        val dy = p2[1] - p1[1]
+        val t = (dx * d2y - dy * d2x) / cross
+        val s = (dx * d1y - dy * d1x) / cross
+        if (t <= 0.0 || s <= 0.0 || t > 100_000.0 || s > 100_000.0) return null
+        val ll = utmInverse(p1[0] + t * d1x, p1[1] + t * d1y, zone, north)
+        return RayFix(ll[0], ll[1], t, s)
+    }
+
     data class NavInfo(val distanceMeters: Float, val bearingTrue: Float)
 
     /** Geodesic distance and initial true bearing between two points. */

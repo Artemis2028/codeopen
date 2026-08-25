@@ -231,7 +231,13 @@ fun WaypointDialog(
                     onValueChange = { name = it },
                     label = { Text("Name") },
                     placeholder = {
-                        Text(if (kind == KIND_UNIT) unitNameFor(symbol, echelon) else defaultName)
+                        Text(
+                            when {
+                                kind == KIND_UNIT -> unitNameFor(symbol, echelon)
+                                WaypointSymbols.isTask(symbol) -> unitNameFor(symbol, "")
+                                else -> defaultName
+                            }
+                        )
                     },
                     singleLine = true,
                 )
@@ -522,7 +528,13 @@ fun WaypointDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val finalName = name.ifBlank { if (kind == KIND_UNIT) unitNameFor(symbol, echelon) else defaultName }
+                val finalName = name.ifBlank {
+                    when {
+                        kind == KIND_UNIT -> unitNameFor(symbol, echelon)
+                        WaypointSymbols.isTask(symbol) -> unitNameFor(symbol, "")
+                        else -> defaultName
+                    }
+                }
                 val finalFolder = folder.ifBlank { DEFAULT_FOLDER }
                 // A unit's affiliation comes from its chosen symbol frame
                 val finalAffiliation = if (kind == KIND_UNIT) {

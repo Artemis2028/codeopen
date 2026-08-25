@@ -31,6 +31,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.outlined.AddLocationAlt
+import androidx.compose.material.icons.outlined.Calculate
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.GridOn
@@ -95,7 +96,11 @@ import app.gridfix.android.map.MapSetup
 import app.gridfix.android.map.MgrsGridOverlay
 import app.gridfix.android.map.TracksOverlay
 import app.gridfix.android.ui.Affiliations
+import app.gridfix.android.ui.DeclinationDialog
+import app.gridfix.android.ui.FieldToolsChooser
+import app.gridfix.android.ui.RayFixDialog
 import app.gridfix.android.ui.RouteCardDialog
+import app.gridfix.android.ui.SunMoonDialog
 import app.gridfix.android.ui.WaypointDialog
 import app.gridfix.android.ui.WaypointMarker
 import kotlinx.coroutines.Dispatchers
@@ -190,6 +195,8 @@ fun MapScreen(
     var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
     var gotoOpen by remember { mutableStateOf(false) }
     var stopTrackOpen by remember { mutableStateOf(false) }
+    var fieldToolsOpen by remember { mutableStateOf(false) }
+    var fieldTool by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var viewedPoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
     val activeTrack by TrackRecorderService.active.collectAsStateWithLifecycle()
@@ -552,7 +559,17 @@ fun MapScreen(
                                     .clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
-                                    ) { infoWp = w }
+                                    ) {
+                                        if (drawType != null) {
+                                            // Drawing: tapping a waypoint adds its exact
+                                            // position as the next vertex, no popup
+                                            drawPoints = drawPoints + GeoVertex(w.lat, w.lon)
+                                            notice = "Added ${w.name}"
+                                            holder.map?.invalidate()
+                                        } else {
+                                            infoWp = w
+                                        }
+                                    }
                             ) {
                                 WaypointMarker(
                                     symbol = w.symbol,
@@ -604,8 +621,9 @@ fun MapScreen(
         Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(end = 10.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             MapButton(Icons.Outlined.Layers, "Layers", false) { layersOpen = true }
@@ -639,6 +657,9 @@ fun MapScreen(
                     onRecordStart()
                 }
             }
+            MapButton(Icons.Outlined.Calculate, "Field tools", fieldTool != null) {
+                fieldToolsOpen = true
+            }
             MapButton(Icons.Outlined.AddLocationAlt, "Waypoint at crosshair", false) {
                 holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
             }
@@ -667,6 +688,23 @@ fun MapScreen(
                     if (km < 1.0) String.format(java.util.Locale.US, "● REC  %.0f m", at.distanceM)
                     else String.format(java.util.Locale.US, "● REC  %.2f km", km)
                 ) { stopTrackOpen = true }
+            }
+            run {
+                val loc = fix.location
+                val mock = loc != null && (
+                    if (android.os.Build.VERSION.SDK_INT >= 31) loc.isMock
+                    else @Suppress("DEPRECATION") loc.isFromMockProvider
+                    )
+                val warning = when {
+                    loc == null -> null
+                    mock -> "MOCK LOCATION ACTIVE"
+                    loc.hasAccuracy() && loc.accuracy > 50f ->
+                        "GPS DEGRADED ±${loc.accuracy.toInt()} m — trust your pace count"
+                    fix.satellitesUsed in 1..3 ->
+                        "GPS WEAK — ${fix.satellitesUsed} satellites in fix"
+                    else -> null
+                }
+                warning?.let { StatusChip(it) {} }
             }
             if (!hasPermission) {
                 StatusChip("Location off — tap to enable") { onRequestPermission() }
@@ -1183,6 +1221,39 @@ fun MapScreen(
             settings = settings,
             onDismiss = { routeCardFor = null },
         )
+    }
+
+    if (fieldToolsOpen) {
+        FieldToolsChooser(
+            onPick = {
+                fieldTool = it
+                fieldToolsOpen = false
+            },
+            onDismiss = { fieldToolsOpen = false },
+        )
+    }
+
+    fieldTool?.let { tool ->
+        val c = holder.map?.mapCenter
+        val crossLat = c?.latitude ?: p.lastLat
+        val crossLon = c?.longitude ?: p.lastLon
+        when (tool) {
+            "resection", "intersection" -> RayFixDialog(
+                resection = tool == "resection",
+                settings = settings,
+                bases = visibleWaypoints,
+                myPosition = fix.location?.let { it.latitude to it.longitude },
+                crosshair = crossLat to crossLon,
+                onSaveWaypoint = { draft -> onAdd(draft) },
+                onShowOnMap = { la, lo ->
+                    following = false
+                    holder.map?.controller?.animateTo(GeoPoint(la, lo))
+                },
+                onDismiss = { fieldTool = null },
+            )
+            "sunmoon" -> SunMoonDialog(crossLat, crossLon) { fieldTool = null }
+            "declination" -> DeclinationDialog(crossLat, crossLon) { fieldTool = null }
+        }
     }
 
     if (gotoOpen) {

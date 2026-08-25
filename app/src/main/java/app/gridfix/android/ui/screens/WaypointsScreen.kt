@@ -105,6 +105,7 @@ fun WaypointsScreen(
     viewedTrackId: String?,
     onViewTrack: (String?) -> Unit,
     onDeleteTrack: (String) -> Unit,
+    onBacktrackTrack: (TrackInfo) -> Unit,
     onShowOnMap: (Waypoint) -> Unit,
     onShowGraphicOnMap: (TacGraphic) -> Unit,
     unitNameFor: (symbol: String, echelon: String) -> String,
@@ -360,6 +361,7 @@ fun WaypointsScreen(
                         onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
                         onShare = { shareGpx(t) },
                         onDelete = { deleteTrackCandidate = t },
+                        onBacktrack = { onBacktrackTrack(t) },
                     )
                 }
             }
@@ -550,6 +552,7 @@ private fun TrackRow(
     onView: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
+    onBacktrack: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -585,19 +588,32 @@ private fun TrackRow(
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = onShare) {
-                Icon(
-                    Icons.Outlined.Share,
-                    contentDescription = "Share GPX",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Outlined.Delete,
-                    contentDescription = "Delete track",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            var menuOpen by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Outlined.MoreVert,
+                        contentDescription = "Track options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Back-track route") },
+                        leadingIcon = { Icon(Icons.Outlined.Timeline, contentDescription = null) },
+                        onClick = { menuOpen = false; onBacktrack() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share GPX") },
+                        leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                        onClick = { menuOpen = false; onShare() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                        onClick = { menuOpen = false; onDelete() },
+                    )
+                }
             }
         }
     }

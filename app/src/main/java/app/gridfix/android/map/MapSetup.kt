@@ -59,6 +59,38 @@ object MapSetup {
                 MapTileIndex.getX(pMapTileIndex)
     }
 
+    private val usgsTopo = object : OnlineTileSourceBase(
+        "USGSTopo",
+        0,
+        16,
+        256,
+        "",
+        arrayOf("https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/"),
+        "USGS The National Map",
+    ) {
+        override fun getTileURLString(pMapTileIndex: Long): String =
+            baseUrl +
+                MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                MapTileIndex.getY(pMapTileIndex) + "/" +
+                MapTileIndex.getX(pMapTileIndex)
+    }
+
+    private val esriHillshade = object : OnlineTileSourceBase(
+        "EsriHillshade",
+        0,
+        16,
+        256,
+        "",
+        arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/"),
+        "Esri, USGS, NASA",
+    ) {
+        override fun getTileURLString(pMapTileIndex: Long): String =
+            baseUrl +
+                MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                MapTileIndex.getY(pMapTileIndex) + "/" +
+                MapTileIndex.getX(pMapTileIndex)
+    }
+
     val baseLayers: List<BaseLayer> = listOf(
         BaseLayer(
             key = "streets",
@@ -80,6 +112,20 @@ object MapSetup {
             source = esriWorldImagery,
             attribution = "Esri, Maxar, Earthstar Geographics",
             maxDownloadZoom = 17,
+        ),
+        BaseLayer(
+            key = "usgs",
+            label = "USGS Topo (US only)",
+            source = usgsTopo,
+            attribution = "USGS The National Map",
+            maxDownloadZoom = 15,
+        ),
+        BaseLayer(
+            key = "hillshade",
+            label = "Hillshade",
+            source = esriHillshade,
+            attribution = "Esri, USGS, NASA",
+            maxDownloadZoom = 14,
         ),
     )
 

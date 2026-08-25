@@ -1,7 +1,14 @@
 package app.gridfix.android.ui.screens
 
+import android.content.Context
 import android.hardware.GeomagneticField
 import android.hardware.SensorManager
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -115,6 +123,35 @@ fun NavigateScreen(
     val nav = if (loc != null && target != null) {
         Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
     } else null
+
+    // Arrival alert: one buzz + tone when closing inside 50 m of the target;
+    // re-arms after moving back out past 150 m or switching targets.
+    var alertedFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(nav?.distanceMeters?.toInt(), target?.id) {
+        val t = target ?: return@LaunchedEffect
+        val dist = nav?.distanceMeters ?: return@LaunchedEffect
+        if (dist < 50f && alertedFor != t.id) {
+            alertedFor = t.id
+            runCatching {
+                val vib = if (Build.VERSION.SDK_INT >= 31) {
+                    (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
+                        .defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                }
+                vib.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1))
+            }
+            runCatching {
+                val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
+                tg.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 500)
+                kotlinx.coroutines.delay(700)
+                tg.release()
+            }
+        } else if (dist > 150f && alertedFor == t.id) {
+            alertedFor = null
+        }
+    }
 
     if (waypoints.isEmpty()) {
         Column(
@@ -297,13 +334,32 @@ fun NavigateScreen(
             )
         }
         Spacer(Modifier.height(12.dp))
-        MiniStat(
-            label = "YOUR HEADING",
-            value = if (headingTrue != null) {
-                Coordinates.formatAngle(toRef(headingTrue), settings.angleUnit) + " " + refLetter
-            } else "—",
-            modifier = Modifier.fillMaxWidth(),
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            MiniStat(
+                label = "YOUR HEADING",
+                value = if (headingTrue != null) {
+                    Coordinates.formatAngle(toRef(headingTrue), settings.angleUnit) + " " + refLetter
+                } else "—",
+                modifier = Modifier.weight(1f),
+            )
+            val speed = loc?.takeIf { it.hasSpeed() && it.speed > 0.4f }?.speed
+            MiniStat(
+                label = "ETA",
+                value = when {
+                    nav != null && nav.distanceMeters < 50f -> "HERE"
+                    nav != null && speed != null -> {
+                        val secs = (nav.distanceMeters / speed).toInt()
+                        if (secs >= 3600) {
+                            String.format(java.util.Locale.US, "%d:%02d h", secs / 3600, (secs % 3600) / 60)
+                        } else {
+                            String.format(java.util.Locale.US, "%d:%02d", secs / 60, secs % 60)
+                        }
+                    }
+                    else -> "—"
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
 
         // Status hints
         if (loc == null) {

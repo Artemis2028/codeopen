@@ -56,12 +56,16 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.core.content.FileProvider
+import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
+import app.gridfix.android.data.DEFAULT_FOLDER
+import app.gridfix.android.data.GeoVertex
 import app.gridfix.android.data.GraphicsRepository
 import app.gridfix.android.data.InterchangeFiles
 import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.data.TrackRepository
+import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.data.WaypointRepository
 import app.gridfix.android.location.TrackRecorderService
 import kotlinx.coroutines.Dispatchers
@@ -95,13 +99,18 @@ fun GridFixApp() {
     var viewedTrackId by remember { mutableStateOf<String?>(null) }
     var mapFocus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
-    // "Armor Brigade 1"-style automatic unit names from symbol + echelon
+    // Automatic names: "Armor Brigade 1" for units, "Support by fire 1" for task symbols
     val unitNameFor: (String, String) -> String = { symbol, echelon ->
-        val func = NatoSymbols.functionLabel(symbol)
-        val ech = if (echelon.isEmpty()) "" else " " + Echelons.label(echelon)
-        val base = (func + ech).trim()
-        val n = waypoints.count { it.kind == KIND_UNIT && it.name.startsWith(base) } + 1
-        "$base $n"
+        if (WaypointSymbols.isTask(symbol)) {
+            val base = WaypointSymbols.taskLabel(symbol)
+            "$base ${waypoints.count { it.name.startsWith(base) } + 1}"
+        } else {
+            val func = NatoSymbols.functionLabel(symbol)
+            val ech = if (echelon.isEmpty()) "" else " " + Echelons.label(echelon)
+            val base = (func + ech).trim()
+            val n = waypoints.count { it.kind == KIND_UNIT && it.name.startsWith(base) } + 1
+            "$base $n"
+        }
     }
 
     // Waypoints in visible ("active") overlays are the ones offered for navigation
@@ -235,7 +244,29 @@ fun GridFixApp() {
             ) {
                 composable("position") {
                     if (!hasPermission) PermissionGate(requestPermission)
-                    else PositionScreen(fix = fix, settings = settings, repo = repo)
+                    else PositionScreen(
+                        fix = fix,
+                        settings = settings,
+                        repo = repo,
+                        onMark = {
+                            fix.location?.let { loc ->
+                                scope.launch {
+                                    val id = waypointRepo.add(
+                                        WaypointDraft(
+                                            name = "MARK " + Coordinates.dtg(System.currentTimeMillis()).take(7),
+                                            lat = loc.latitude,
+                                            lon = loc.longitude,
+                                            folder = DEFAULT_FOLDER,
+                                            symbol = "target",
+                                            affiliation = "none",
+                                        ),
+                                        System.currentTimeMillis(),
+                                    )
+                                    waypointRepo.select(id)
+                                }
+                            }
+                        },
+                    )
                 }
                 composable("navigate") {
                     if (!hasPermission) PermissionGate(requestPermission)
@@ -338,6 +369,33 @@ fun GridFixApp() {
                         onDeleteTrack = { id ->
                             if (viewedTrackId == id) viewedTrackId = null
                             scope.launch { trackRepo.delete(id) }
+                        },
+                        onBacktrackTrack = { t ->
+                            scope.launch {
+                                val pts = TrackRepository.readPoints(context, t.id)
+                                if (pts.size >= 2) {
+                                    val reversed = pts.reversed()
+                                    val stride = kotlin.math.max(1, reversed.size / 19)
+                                    val dec = ArrayList<GeoVertex>()
+                                    var i = 0
+                                    while (i < reversed.size) {
+                                        dec.add(GeoVertex(reversed[i].lat, reversed[i].lon))
+                                        i += stride
+                                    }
+                                    val last = reversed.last()
+                                    if (dec.last().lat != last.lat || dec.last().lon != last.lon) {
+                                        dec.add(GeoVertex(last.lat, last.lon))
+                                    }
+                                    waypointRepo.addFolder("Graphics")
+                                    graphicsRepo.add(
+                                        ("Back " + t.name).take(20), "route",
+                                        dec.take(64), "Graphics", "none",
+                                        System.currentTimeMillis(),
+                                    )
+                                    mapFocus = dec.first().lat to dec.first().lon
+                                    goTo("map")
+                                }
+                            }
                         },
                         onShowOnMap = { w ->
                             mapFocus = w.lat to w.lon
