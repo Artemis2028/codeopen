@@ -17,7 +17,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -138,6 +140,50 @@ fun RouteCardDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                // Elevation profile along the route, from the cached terrain data
+                var profile by remember(route.id) {
+                    androidx.compose.runtime.mutableStateOf<app.gridfix.android.map.Terrain.Profile?>(null)
+                }
+                androidx.compose.runtime.LaunchedEffect(route.id) {
+                    profile = app.gridfix.android.map.Terrain.profile(context, route.points)
+                }
+                profile?.let { pr ->
+                    val valid = pr.elevations.count { !it.isNaN() }
+                    if (valid >= 2) {
+                        val (gain, loss) = pr.gainLoss()
+                        var lo = Float.MAX_VALUE
+                        var hi = -Float.MAX_VALUE
+                        for (e in pr.elevations) if (!e.isNaN()) {
+                            if (e < lo) lo = e
+                            if (e > hi) hi = e
+                        }
+                        Text(
+                            String.format(
+                                java.util.Locale.US,
+                                "CLIMB ↑%.0f m  ↓%.0f m   ·   %.0f–%.0f m MSL",
+                                gain, loss, lo, hi,
+                            ),
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        ProfileChart(
+                            distances = pr.distancesM,
+                            elevations = pr.elevations,
+                            legEnds = pr.legEndIndex,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(72.dp),
+                        )
+                        if (pr.missing > pr.elevations.size / 10) {
+                            Text(
+                                "Profile has gaps — download elevation for this area to fill it in.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 legs.forEach { l ->
                     Column {

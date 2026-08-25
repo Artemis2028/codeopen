@@ -1717,6 +1717,13 @@ fun MapScreen(
             )
             "sunmoon" -> SunMoonDialog(crossLat, crossLon) { fieldTool = null }
             "declination" -> DeclinationDialog(crossLat, crossLon) { fieldTool = null }
+            "los" -> app.gridfix.android.ui.LosDialog(
+                settings = settings,
+                waypoints = visibleWaypoints,
+                myPosition = fix.location?.let { it.latitude to it.longitude },
+                crosshair = crossLat to crossLon,
+                onDismiss = { fieldTool = null },
+            )
         }
     }
 
