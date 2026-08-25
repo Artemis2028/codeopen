@@ -21,6 +21,7 @@ data class MapPrefsData(
     val lastLat: Double = 24.4539,   // sensible first-run default: UAE
     val lastLon: Double = 54.3773,
     val lastZoom: Double = 6.5,
+    val hillshadeOverlay: Boolean = false,
 )
 
 class MapPrefs(private val context: Context) {
@@ -31,6 +32,7 @@ class MapPrefs(private val context: Context) {
         val LAST_LAT = doublePreferencesKey("last_lat")
         val LAST_LON = doublePreferencesKey("last_lon")
         val LAST_ZOOM = doublePreferencesKey("last_zoom")
+        val HILLSHADE_OVERLAY = booleanPreferencesKey("hillshade_overlay")
     }
 
     val prefs: Flow<MapPrefsData> = context.mapStore.data.map { p ->
@@ -40,6 +42,7 @@ class MapPrefs(private val context: Context) {
             lastLat = p[Keys.LAST_LAT] ?: 24.4539,
             lastLon = p[Keys.LAST_LON] ?: 54.3773,
             lastZoom = p[Keys.LAST_ZOOM] ?: 6.5,
+            hillshadeOverlay = p[Keys.HILLSHADE_OVERLAY] ?: false,
         )
     }
 
@@ -49,6 +52,10 @@ class MapPrefs(private val context: Context) {
 
     suspend fun setGridEnabled(value: Boolean) {
         context.mapStore.edit { it[Keys.GRID_ENABLED] = value }
+    }
+
+    suspend fun setHillshadeOverlay(value: Boolean) {
+        context.mapStore.edit { it[Keys.HILLSHADE_OVERLAY] = value }
     }
 
     suspend fun setCamera(lat: Double, lon: Double, zoom: Double) {

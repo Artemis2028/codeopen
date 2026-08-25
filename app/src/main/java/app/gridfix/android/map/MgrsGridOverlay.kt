@@ -34,7 +34,10 @@ class MgrsGridOverlay(private val density: Float) : Overlay() {
     var lightLines = false          // true over satellite imagery
     var attribution = ""
     var bottomInsetPx = 0f          // height of the compose readout bar over the map bottom
+    var mapOrientation = 0f         // degrees; edge labels only make sense north-up
     var onIntervalLabel: ((String) -> Unit)? = null
+
+    private val northUp: Boolean get() = mapOrientation > -0.5f && mapOrientation < 0.5f
 
     private val gzdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -315,8 +318,8 @@ class MgrsGridOverlay(private val density: Float) : Overlay() {
         guideX = 10f * density
 
         if (interval < 100000) {
-            gridPass(canvas, proj, cell, 100000, eMin, eMax, nMin, nMax, heavyPaint, 0, lineColor, haloColor, labeled = true)
-            gridPass(canvas, proj, cell, interval, eMin, eMax, nMin, nMax, finePaint, 100000, lineColor, haloColor, labeled = true)
+            gridPass(canvas, proj, cell, 100000, eMin, eMax, nMin, nMax, heavyPaint, 0, lineColor, haloColor, labeled = northUp)
+            gridPass(canvas, proj, cell, interval, eMin, eMax, nMin, nMax, finePaint, 100000, lineColor, haloColor, labeled = northUp)
         } else {
             gridPass(canvas, proj, cell, 100000, eMin, eMax, nMin, nMax, heavyPaint, 0, lineColor, haloColor, labeled = false)
         }
@@ -585,7 +588,14 @@ class MgrsGridOverlay(private val density: Float) : Overlay() {
         textHalo.color = haloColor
         textHalo.alpha = 190
         val y = canvas.height - bottomInsetPx - 5f * density
+        // The canvas is pre-rotated when the map is turned; counter-rotate so the
+        // attribution stays screen-anchored and upright.
+        canvas.save()
+        if (!northUp) {
+            canvas.rotate(-mapOrientation, canvas.width / 2f, canvas.height / 2f)
+        }
         canvas.drawText(attribution, 6f * density, y, textHalo)
         canvas.drawText(attribution, 6f * density, y, textFill)
+        canvas.restore()
     }
 }

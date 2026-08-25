@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MyLocation
+import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Straighten
 import androidx.compose.material.icons.outlined.Timeline
@@ -65,6 +66,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -92,6 +94,7 @@ import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.location.FixData
 import app.gridfix.android.location.TrackRecorderService
 import app.gridfix.android.map.ControlMeasuresOverlay
+import app.gridfix.android.map.Elevation
 import app.gridfix.android.map.MapSetup
 import app.gridfix.android.map.MgrsGridOverlay
 import app.gridfix.android.map.TracksOverlay
@@ -129,6 +132,7 @@ private class MapHolder {
     var grid: MgrsGridOverlay? = null
     var cm: ControlMeasuresOverlay? = null
     var tracks: TracksOverlay? = null
+    var hillshade: org.osmdroid.views.overlay.TilesOverlay? = null
     var visibleWps: List<Waypoint> = emptyList()
     var appliedLayer = ""
     var appliedNight: Boolean? = null
@@ -209,6 +213,14 @@ fun MapScreen(
         viewedPoints = if (viewedTrackId == null) emptyList() else {
             TrackRepository.readPoints(context, viewedTrackId).map { it.lat to it.lon }
         }
+    }
+
+    // Crosshair elevation, refreshed shortly after the map stops moving
+    var crossElevation by remember { mutableStateOf<Double?>(null) }
+    LaunchedEffect(cameraTick) {
+        delay(350)
+        val c = holder.map?.mapCenter ?: return@LaunchedEffect
+        crossElevation = Elevation.elevationAt(context, c.latitude, c.longitude)
     }
     var newWpAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var editingWp by remember { mutableStateOf<Waypoint?>(null) }
@@ -360,6 +372,22 @@ fun MapScreen(
                     val trk = TracksOverlay(ctx.resources.displayMetrics.density)
                     holder.tracks = trk
                     map.overlays.add(trk)
+                    // Hybrid terrain: shadow-only hillshade, inserted under the grid on demand
+                    val hs = org.osmdroid.views.overlay.TilesOverlay(
+                        org.osmdroid.tileprovider.MapTileProviderBasic(ctx, MapSetup.hillshadeSource),
+                        ctx,
+                    ).apply {
+                        setColorFilter(MapSetup.hillshadeShadowFilter)
+                        loadingBackgroundColor = android.graphics.Color.TRANSPARENT
+                        loadingLineColor = android.graphics.Color.TRANSPARENT
+                        isEnabled = false
+                    }
+                    holder.hillshade = hs
+                    map.overlays.add(1, hs)   // under the grid; events overlay stays first
+                    // Two-finger map rotation; north-reset button appears when turned
+                    val rot = org.osmdroid.views.overlay.gestures.RotationGestureOverlay(map)
+                    rot.isEnabled = true
+                    map.overlays.add(rot)
                     map.addMapListener(object : MapListener {
                         override fun onScroll(event: ScrollEvent?): Boolean {
                             cameraTick++
@@ -372,9 +400,16 @@ fun MapScreen(
                         }
                     })
                     map.setOnTouchListener { v, ev ->
-                        if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
-                            following = false
-                            v.performClick()
+                        when (ev.actionMasked) {
+                            android.view.MotionEvent.ACTION_DOWN -> {
+                                following = false
+                                v.performClick()
+                            }
+                            android.view.MotionEvent.ACTION_UP,
+                            android.view.MotionEvent.ACTION_POINTER_UP -> {
+                                // pick up rotation changes when the gesture ends
+                                cameraTick++
+                            }
                         }
                         false
                     }
@@ -402,12 +437,14 @@ fun MapScreen(
                         g.lightLines = !settings.nightMode && p.baseLayer == "sat" && offlineFile == null
                         g.attribution = if (offlineFile != null) "MBTiles: ${offlineFile.name}" else layer.attribution
                         g.bottomInsetPx = readoutHeightPx.toFloat()
+                        g.mapOrientation = map.mapOrientation
                         if (holder.appliedGrid != p.gridEnabled) {
                             holder.appliedGrid = p.gridEnabled
                             g.gridEnabled = p.gridEnabled
                             map.invalidate()
                         }
                     }
+                    holder.hillshade?.isEnabled = p.hillshadeOverlay && offlineFile == null
                     holder.cm?.let { c ->
                         c.graphics = visibleGraphics
                         c.selectedId = editingGraphic?.id
@@ -455,6 +492,7 @@ fun MapScreen(
                     holder.grid = null
                     holder.cm = null
                     holder.tracks = null
+                    holder.hillshade = null
                     holder.appliedLayer = ""
                     holder.appliedNight = null
                     holder.appliedGrid = null
@@ -503,11 +541,13 @@ fun MapScreen(
                 fix.location?.let { loc ->
                     val own = GeoPoint(loc.latitude, loc.longitude)
                     proj.toPixels(own, pxPoint)
+                    proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
                     val ox = pxPoint.x
                     val oy = pxPoint.y
                     if (ox in -400..(map.width + 400) && oy in -400..(map.height + 400)) {
                         val east = own.destinationPoint(1000.0, 90.0)
                         proj.toPixels(east, pxPoint)
+                        proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
                         val pxPerMeter = hypot(
                             (pxPoint.x - ox).toDouble(), (pxPoint.y - oy).toDouble()
                         ).toFloat() / 1000f
@@ -529,6 +569,7 @@ fun MapScreen(
                 // Ruler line: anchor -> crosshair
                 rulerAnchor?.let { anchor ->
                     proj.toPixels(anchor, pxPoint)
+                    proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
                     val ax = pxPoint.x.toFloat()
                     val ay = pxPoint.y.toFloat()
                     val secondary = MaterialTheme.colorScheme.secondary
@@ -544,6 +585,7 @@ fun MapScreen(
                 // Waypoints
                 visibleWaypoints.forEach { w ->
                     proj.toPixels(GeoPoint(w.lat, w.lon), pxPoint)
+                    proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
                     val wx = pxPoint.x
                     val wy = pxPoint.y
                     if (wx in -markerPx..(map.width + markerPx) && wy in -markerPx..(map.height + markerPx)) {
@@ -626,6 +668,22 @@ fun MapScreen(
             verticalArrangement = Arrangement.spacedBy(9.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            @Suppress("UNUSED_EXPRESSION")
+            cameraTick
+            val orientation = holder.map?.mapOrientation ?: 0f
+            if (orientation > 0.5f || orientation < -0.5f) {
+                MapButton(
+                    Icons.Outlined.Navigation,
+                    "Reset to north-up",
+                    true,
+                    iconRotation = orientation,
+                ) {
+                    holder.map?.let { m ->
+                        m.controller.animateTo(m.mapCenter, m.zoomLevelDouble, 400L, 0f)
+                    }
+                    cameraTick++
+                }
+            }
             MapButton(Icons.Outlined.Layers, "Layers", false) { layersOpen = true }
             MapButton(Icons.Outlined.MyLocation, "My location", following) {
                 if (!hasPermission) {
@@ -823,6 +881,15 @@ fun MapScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    crossElevation?.let { elev ->
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "▲" + Coordinates.formatAltitude(elev, settings.units),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Spacer(Modifier.height(2.dp))
                 val loc = fix.location
@@ -921,6 +988,30 @@ fun MapScreen(
                             onCheckedChange = { v -> scope.launch { mapPrefs.setGridEnabled(v) } },
                         )
                     }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Layers,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Terrain shading")
+                            Text(
+                                "Hillshade shadows over any base layer",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = p.hillshadeOverlay,
+                            onCheckedChange = { v -> scope.launch { mapPrefs.setHillshadeOverlay(v) } },
+                        )
+                    }
                     Spacer(Modifier.height(4.dp))
                     TextButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
                         Text("Import MBTiles file…")
@@ -934,6 +1025,31 @@ fun MapScreen(
                             )
                             Spacer(Modifier.width(6.dp))
                             Text("Download visible area for offline")
+                        }
+                        TextButton(onClick = {
+                            layersOpen = false
+                            val bbox = holder.map?.boundingBox
+                            if (bbox != null) {
+                                downloadStatus = "Fetching elevation…"
+                                scope.launch {
+                                    val n = Elevation.prefetchArea(
+                                        context,
+                                        bbox.latNorth, bbox.latSouth,
+                                        bbox.lonWest, bbox.lonEast,
+                                    )
+                                    downloadStatus =
+                                        if (n > 0) "Elevation cached — $n tiles"
+                                        else "Elevation fetch failed — check connection"
+                                }
+                            }
+                        }) {
+                            Icon(
+                                Icons.Outlined.Download,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Download elevation for this area")
                         }
                     }
                 }
@@ -1461,7 +1577,7 @@ fun MapScreen(
     // Auto-clear finished download status
     LaunchedEffect(downloadStatus) {
         val s = downloadStatus
-        if (s != null && (s.startsWith("Offline area") || s.startsWith("Download done") || s.startsWith("Download failed"))) {
+        if (s != null && (s.startsWith("Offline area") || s.startsWith("Download done") || s.startsWith("Download failed") || s.startsWith("Elevation"))) {
             delay(5000)
             if (downloadStatus == s) downloadStatus = null
         }
@@ -1473,6 +1589,7 @@ private fun MapButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     description: String,
     active: Boolean,
+    iconRotation: Float = 0f,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -1486,6 +1603,7 @@ private fun MapButton(
                 contentDescription = description,
                 tint = if (active) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.graphicsLayer { rotationZ = iconRotation },
             )
         }
     }

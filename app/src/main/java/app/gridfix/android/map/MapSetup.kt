@@ -135,6 +135,24 @@ object MapSetup {
     fun mbtilesDir(context: Context): File =
         File(context.filesDir, "mbtiles").apply { mkdirs() }
 
+    /** The hillshade tile source, reused by the hybrid shadow overlay. */
+    val hillshadeSource: ITileSource get() = esriHillshade
+
+    /**
+     * Hybrid-terrain blend: hillshade tiles become shadow-only — white turns
+     * transparent, dark slopes darken whatever base layer sits beneath.
+     */
+    val hillshadeShadowFilter = ColorMatrixColorFilter(
+        ColorMatrix(
+            floatArrayOf(
+                0f, 0f, 0f, 0f, 0f,
+                0f, 0f, 0f, 0f, 0f,
+                0f, 0f, 0f, 0f, 0f,
+                -0.235f, -0.235f, -0.235f, 0f, 180f,
+            )
+        )
+    )
+
     /**
      * Night-vision tile filter: collapses the basemap to shades of red on black,
      * matching the app's red-on-black night theme.

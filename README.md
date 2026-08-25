@@ -3,9 +3,10 @@
 MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
 built independently with its own design and code.
 
-**Status: 0.7.1 (field skills)** — resection & intersection, sun/moon planning (BMNT/EENT,
-phase, illumination), declination diagram, GPS integrity warnings, arrival alerts + ETA,
-one-tap MARK, back-track routes, USGS topo + hillshade layers.
+**Status: 0.7.2 (terrain + rotation)** — elevation at crosshair from open terrain tiles
+(~DTED2, offline-cached, area prefetch), hybrid terrain shading (shadow-only hillshade over
+any base layer), two-finger map rotation with north-reset. Elevation data: Mapzen/AWS
+Open Data terrain tiles.
 
 ## Roadmap
 
