@@ -560,6 +560,7 @@ fun MapScreen(
                                     size = markerDp,
                                     echelon = w.echelon,
                                     night = settings.nightMode,
+                                    rotation = w.rotation,
                                 )
                             }
                             if (showNames) {
@@ -1287,7 +1288,7 @@ fun MapScreen(
             onDismissRequest = { infoWp = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon, night = settings.nightMode)
+                    WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 30.dp, echelon = w.echelon, night = settings.nightMode, rotation = w.rotation)
                     Spacer(Modifier.width(10.dp))
                     Text(w.name)
                 }

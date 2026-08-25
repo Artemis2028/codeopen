@@ -18,6 +18,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -123,6 +124,7 @@ fun WaypointDialog(
     var echelon by remember(initial) { mutableStateOf(initial?.echelon ?: "") }
     var designation by remember(initial) { mutableStateOf(initial?.designation ?: "") }
     var kind by remember(initial) { mutableStateOf(initial?.kind ?: KIND_WP) }
+    var rotation by remember(initial) { mutableStateOf(initial?.rotation ?: 0f) }
     var usePreset by remember(initial) { mutableStateOf(initial == null && presetLat != null) }
     var gzdSquare by remember(initial) {
         mutableStateOf(baseParts?.let { "${it.gzd} ${it.square}" } ?: "")
@@ -215,6 +217,30 @@ fun WaypointDialog(
                         labelFor = { WaypointSymbols.taskLabel(it) },
                         night = night,
                     ) { symbol = it }
+
+                    if (WaypointSymbols.isTask(symbol) && WaypointSymbols.taskLetter(symbol) == null) {
+                        Text(
+                            "Direction of fire — ${rotation.toInt()}°",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            WaypointMarker(
+                                symbol = symbol,
+                                affiliation = affiliation,
+                                size = 40.dp,
+                                night = night,
+                                rotation = rotation,
+                            )
+                            Slider(
+                                value = rotation,
+                                onValueChange = { rotation = (it.toInt() % 360).toFloat() },
+                                valueRange = 0f..359f,
+                            )
+                        }
+                    }
                 } else {
                     Text("Unit symbol", style = MaterialTheme.typography.labelLarge)
                     NatoSymbols.affiliations.forEach { (aff, affLabel) ->
@@ -366,11 +392,15 @@ fun WaypointDialog(
                 } else affiliation
                 val finalEchelon = if (kind == KIND_UNIT) echelon else ""
                 val finalDesignation = if (kind == KIND_UNIT) designation.trim() else ""
+                val finalRotation =
+                    if (kind == KIND_WP && WaypointSymbols.isTask(symbol) &&
+                        WaypointSymbols.taskLetter(symbol) == null
+                    ) rotation else 0f
                 if (usePreset && presetLat != null && presetLon != null) {
                     onConfirm(
                         WaypointDraft(
                             finalName, presetLat, presetLon, finalFolder, symbol, finalAffiliation,
-                            finalEchelon, finalDesignation, kind,
+                            finalEchelon, finalDesignation, kind, finalRotation,
                         )
                     )
                 } else if (easting.isEmpty() || easting.length != northing.length) {
@@ -383,7 +413,7 @@ fun WaypointDialog(
                         onConfirm(
                             WaypointDraft(
                                 finalName, parsed.first, parsed.second, finalFolder, symbol, finalAffiliation,
-                                finalEchelon, finalDesignation, kind,
+                                finalEchelon, finalDesignation, kind, finalRotation,
                             )
                         )
                     }

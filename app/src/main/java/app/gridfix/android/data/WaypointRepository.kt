@@ -28,6 +28,7 @@ data class Waypoint(
     val echelon: String = "",       // "", tm, sqd, sec, plt, co, bn, rgt, bde
     val designation: String = "",   // free-text unit designation amplifier
     val kind: String = KIND_WP,     // KIND_WP (navigation point) or KIND_UNIT (plotted unit)
+    val rotation: Float = 0f,       // degrees clockwise from north; direction of fire for task symbols
 )
 
 const val KIND_WP = "wp"
@@ -44,6 +45,7 @@ data class WaypointDraft(
     val echelon: String = "",
     val designation: String = "",
     val kind: String = KIND_WP,
+    val rotation: Float = 0f,
 )
 
 /** A waypoint folder ("overlay"): can exist empty, and can be toggled visible/hidden. */
@@ -103,6 +105,7 @@ class WaypointRepository(private val context: Context) {
                 echelon = draft.echelon,
                 designation = draft.designation,
                 kind = draft.kind,
+                rotation = draft.rotation,
             )
             p[listKey] = encode(current + wp)
             p[foldersKey] = encodeFolders(
@@ -129,6 +132,7 @@ class WaypointRepository(private val context: Context) {
                         echelon = draft.echelon,
                         designation = draft.designation,
                         kind = draft.kind,
+                        rotation = draft.rotation,
                     ) else it
                 }
             )
@@ -178,6 +182,7 @@ class WaypointRepository(private val context: Context) {
                             // migrate pre-0.5 data: NATO symbols were always units
                             if (o.optString("symbol", "").startsWith("nato_")) KIND_UNIT else KIND_WP,
                         ),
+                        rotation = o.optDouble("rotation", 0.0).toFloat(),
                     )
                 )
             }
@@ -228,6 +233,7 @@ class WaypointRepository(private val context: Context) {
                     .put("echelon", w.echelon)
                     .put("designation", w.designation)
                     .put("kind", w.kind)
+                    .put("rotation", w.rotation.toDouble())
             )
         }
         return arr.toString()

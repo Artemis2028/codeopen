@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 /** MIL-STD-2525-style affiliation colors. */
@@ -82,6 +83,7 @@ fun WaypointMarker(
     size: Dp = 30.dp,
     echelon: String = "",
     night: Boolean = false,
+    rotation: Float = 0f,
 ) {
     if (NatoSymbols.isNato(symbol)) {
         val res = NatoSymbols.resId(symbol)
@@ -190,24 +192,58 @@ fun WaypointMarker(
             }
 
             if (isTask && taskLetter == null) {
+                rotate(rotation) {
                 when (symbol) {
                     "task_block" -> {
                         drawLine(color, Offset(w * 0.08f, h * 0.5f), Offset(w * 0.72f, h * 0.5f), glyphStroke)
                         drawLine(color, Offset(w * 0.72f, h * 0.16f), Offset(w * 0.72f, h * 0.84f), glyphStroke)
                     }
                     "task_ambush" -> {
-                        drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.86f, h * 0.5f), glyphStroke)
-                        arrowHead(Offset(w * 0.92f, h * 0.5f), 0f, w * 0.16f, color, glyphStroke)
-                        drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.08f, h * 0.16f), glyphStroke)
-                        drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.04f, h * 0.5f), glyphStroke)
-                        drawLine(color, Offset(w * 0.30f, h * 0.5f), Offset(w * 0.08f, h * 0.84f), glyphStroke)
+                        // FM 1-02.2: curved position arc with rear tick marks; the arrow
+                        // rises from the arc's center of mass in the direction of fire.
+                        val p0 = Offset(w * 0.10f, h * 0.76f)
+                        val p1 = Offset(w * 0.90f, h * 0.76f)
+                        val ccx = w * 0.5f
+                        val ccy = h * 0.42f
+                        val arc = Path().apply {
+                            moveTo(p0.x, p0.y)
+                            quadraticBezierTo(ccx, ccy, p1.x, p1.y)
+                        }
+                        drawPath(arc, color, style = Stroke(glyphStroke))
+                        for (i in 1..6) {
+                            val t = i / 7f
+                            val mt = 1f - t
+                            val x = mt * mt * p0.x + 2f * mt * t * ccx + t * t * p1.x
+                            val y = mt * mt * p0.y + 2f * mt * t * ccy + t * t * p1.y
+                            val dx = 2f * mt * (ccx - p0.x) + 2f * t * (p1.x - ccx)
+                            val dy = 2f * mt * (ccy - p0.y) + 2f * t * (p1.y - ccy)
+                            val len = hypot(dx, dy)
+                            if (len > 0f) {
+                                val nx = -dy / len
+                                val ny = dx / len
+                                drawLine(
+                                    color,
+                                    Offset(x, y),
+                                    Offset(x + nx * h * 0.11f, y + ny * h * 0.11f),
+                                    glyphStroke * 0.8f,
+                                )
+                            }
+                        }
+                        val apexY = 0.25f * p0.y + 0.5f * ccy + 0.25f * p1.y
+                        drawLine(color, Offset(w * 0.5f, apexY), Offset(w * 0.5f, h * 0.14f), glyphStroke)
+                        solidHead(Offset(w * 0.5f, h * 0.08f), -90f, w * 0.15f, color)
                     }
                     "task_sbf" -> {
-                        drawLine(color, Offset(w * 0.5f, h * 0.9f), Offset(w * 0.5f, h * 0.45f), glyphStroke)
-                        drawLine(color, Offset(w * 0.5f, h * 0.45f), Offset(w * 0.22f, h * 0.18f), glyphStroke)
-                        drawLine(color, Offset(w * 0.5f, h * 0.45f), Offset(w * 0.78f, h * 0.18f), glyphStroke)
-                        arrowHead(Offset(w * 0.20f, h * 0.16f), 225f, w * 0.13f, color, glyphStroke)
-                        arrowHead(Offset(w * 0.80f, h * 0.16f), 315f, w * 0.13f, color, glyphStroke)
+                        // FM 1-02.2 support by fire: position baseline with an arm from each
+                        // end toward the enemy (solid arrowheads) and short rear flank legs.
+                        val baseY = h * 0.66f
+                        drawLine(color, Offset(w * 0.16f, baseY), Offset(w * 0.84f, baseY), glyphStroke)
+                        drawLine(color, Offset(w * 0.16f, baseY), Offset(w * 0.05f, h * 0.86f), glyphStroke)
+                        drawLine(color, Offset(w * 0.84f, baseY), Offset(w * 0.95f, h * 0.86f), glyphStroke)
+                        drawLine(color, Offset(w * 0.16f, baseY), Offset(w * 0.16f, h * 0.18f), glyphStroke)
+                        drawLine(color, Offset(w * 0.84f, baseY), Offset(w * 0.84f, h * 0.18f), glyphStroke)
+                        solidHead(Offset(w * 0.16f, h * 0.10f), -90f, w * 0.15f, color)
+                        solidHead(Offset(w * 0.84f, h * 0.10f), -90f, w * 0.15f, color)
                     }
                     "task_fix" -> {
                         drawLine(color, Offset(w * 0.06f, h * 0.5f), Offset(w * 0.22f, h * 0.5f), glyphStroke)
@@ -232,12 +268,10 @@ fun WaypointMarker(
                         arrowHead(Offset(w * 0.5f, h * 0.16f), 180f, w * 0.16f, color, glyphStroke)
                     }
                     "task_occupy" -> {
-                        drawCircle(color, radius = w * 0.32f, style = Stroke(glyphStroke))
-                        val cx = w * 0.24f
-                        val cy = h * 0.76f
-                        val a = w * 0.11f
-                        drawLine(color, Offset(cx - a, cy - a), Offset(cx + a, cy + a), glyphStroke)
-                        drawLine(color, Offset(cx - a, cy + a), Offset(cx + a, cy - a), glyphStroke)
+                        // Occupy: the arrow enters and ends inside the position circle
+                        drawCircle(color, radius = w * 0.30f, style = Stroke(glyphStroke))
+                        drawLine(color, Offset(w * 0.05f, h * 0.95f), Offset(w * 0.40f, h * 0.60f), glyphStroke)
+                        solidHead(Offset(w * 0.45f, h * 0.55f), -45f, w * 0.14f, color)
                     }
                     "task_retain" -> {
                         drawCircle(color, radius = w * 0.28f, style = Stroke(glyphStroke))
@@ -250,6 +284,7 @@ fun WaypointMarker(
                             drawLine(color, Offset(x1, y1), Offset(x2, y2), glyphStroke * 0.75f)
                         }
                     }
+                }
                 }
             }
         }
@@ -340,6 +375,25 @@ private fun EchelonMarks(echelon: String, color: Color, halo: Color) {
             }
         }
     }
+}
+
+/** Solid (filled) arrowhead at [tip], pointing along [angleDeg] (0° = +x, clockwise). */
+private fun DrawScope.solidHead(tip: Offset, angleDeg: Float, len: Float, color: Color) {
+    val a = Math.toRadians(angleDeg.toDouble())
+    val back = 150.0 * Math.PI / 180.0
+    val p = Path().apply {
+        moveTo(tip.x, tip.y)
+        lineTo(
+            tip.x + len * cos(a + back).toFloat(),
+            tip.y + len * sin(a + back).toFloat(),
+        )
+        lineTo(
+            tip.x + len * cos(a - back).toFloat(),
+            tip.y + len * sin(a - back).toFloat(),
+        )
+        close()
+    }
+    drawPath(p, color)
 }
 
 /** Small open arrowhead at [tip], pointing along [angleDeg] (0° = +x, clockwise). */
