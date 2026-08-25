@@ -568,6 +568,7 @@ fun MapScreen(
                         t.activePoints = activeTrack?.points ?: emptyList()
                         t.viewedPoints = viewedPoints
                     }
+                    holder.viewshed?.nightMode = settings.nightMode
                     holder.visibleWps = visibleWaypoints
                     map.invalidate()
                 },
@@ -917,7 +918,10 @@ fun MapScreen(
                 StatusChip(cs) { onOpenCourse() }
             }
             if (viewshedOn) {
-                StatusChip("Viewshed: green seen · amber standing · red masked — tap to clear") {
+                StatusChip(
+                    if (settings.nightMode) "Viewshed: faint seen · mid standing · bright masked — tap to clear"
+                    else "Viewshed: green seen · amber standing · red masked — tap to clear"
+                ) {
                     holder.viewshed?.data = null
                     viewshedOn = false
                     holder.map?.invalidate()

@@ -11,26 +11,27 @@ import org.osmdroid.views.overlay.Overlay
 import kotlin.math.hypot
 
 /**
- * Draws a computed [Terrain.Viewshed] raster over the map: green where the
- * observer sees the ground, amber where only a standing target would show
- * (partial defilade), red where a 3 m target is hidden. The bitmap is placed
- * with an affine corner fit, so it stays glued under pan, zoom, and rotation.
+ * Draws a computed [Terrain.Viewshed] raster over the map. Day palette:
+ * green where the observer sees the ground, amber where only a standing
+ * target would show (partial defilade), red where a 3 m target is hidden.
+ * Night palette: a red-only intensity ramp — the brighter the red, the
+ * better masked — so the shade sits inside red-light discipline. The bitmap
+ * is placed with an affine corner fit, so it stays glued under pan, zoom,
+ * and rotation.
  */
 class ViewshedOverlay : Overlay() {
 
     var data: Terrain.Viewshed? = null
+    var nightMode = false
 
+    private val nightAccent = Color.rgb(196, 45, 36)
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f
-        color = Color.DKGRAY
-        alpha = 160
     }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.DKGRAY
-        alpha = 220
     }
     private val matrix = Matrix()
     private val gp = GeoPoint(0.0, 0.0)
@@ -40,8 +41,15 @@ class ViewshedOverlay : Overlay() {
 
     override fun draw(canvas: Canvas, projection: Projection) {
         val d = data ?: return
-        val w = d.bitmap.width.toFloat()
-        val h = d.bitmap.height.toFloat()
+        val bmp = d.bitmapFor(nightMode)
+        val w = bmp.width.toFloat()
+        val h = bmp.height.toFloat()
+
+        val accent = if (nightMode) nightAccent else Color.DKGRAY
+        ringPaint.color = accent
+        ringPaint.alpha = 160
+        dotPaint.color = accent
+        dotPaint.alpha = 220
 
         gp.setCoords(d.latN, d.lonW)
         projection.toPixels(gp, pt)
@@ -57,7 +65,7 @@ class ViewshedOverlay : Overlay() {
         srcPts[2] = w; srcPts[3] = 0f
         srcPts[4] = 0f; srcPts[5] = h
         matrix.setPolyToPoly(srcPts, 0, dstPts, 0, 3)
-        canvas.drawBitmap(d.bitmap, matrix, bmpPaint)
+        canvas.drawBitmap(bmp, matrix, bmpPaint)
 
         // observer dot + radius ring
         gp.setCoords(d.obsLat, d.obsLon)

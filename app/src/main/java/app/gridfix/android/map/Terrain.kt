@@ -148,15 +148,29 @@ object Terrain {
         val effectiveTerrain: FloatArray,
     )
 
+    const val CLS_NONE = 0
+    const val CLS_VISIBLE = 1
+    const val CLS_MARGINAL = 2
+    const val CLS_MASKED = 3
+
+    // Day palette: traffic-light. Night palette: red-family intensity ramp
+    // (faint dark red = seen, mid = standing only, bright red = masked), so
+    // the shade stays inside the night mode's red-light discipline instead of
+    // washing dark adaptation with green and amber.
+    private val DAY_PALETTE = intArrayOf(0, 0x4600C853, 0x55FFD600, 0x50FF1744)
+    private val NIGHT_PALETTE = intArrayOf(0, 0x307F231D, 0x48C42D24, 0x60FF3B30)
+
     /**
      * A computed viewshed raster: what the observer can see out to [radiusM].
-     * Pixel classes: VISIBLE (even a low target is seen), MARGINAL (only a
+     * Cell classes: VISIBLE (even a low target is seen), MARGINAL (only a
      * standing man / vehicle-height target is seen — partial defilade),
      * MASKED (full defilade for a 3 m target). Cells without elevation data
-     * stay transparent.
+     * stay transparent. Colors are applied at draw time via [bitmapFor], so
+     * the same computed shade renders with the day or night palette.
      */
     data class Viewshed(
-        val bitmap: Bitmap,
+        val classes: IntArray,
+        val gridN: Int,
         val latN: Double,
         val latS: Double,
         val lonW: Double,
@@ -165,11 +179,21 @@ object Terrain {
         val obsLon: Double,
         val radiusM: Float,
         val missing: Int,
-    )
+    ) {
+        private var cached: Bitmap? = null
+        private var cachedNight = false
 
-    private const val COLOR_VISIBLE = 0x4600C853   // translucent green
-    private const val COLOR_MARGINAL = 0x55FFD600  // translucent amber
-    private const val COLOR_MASKED = 0x50FF1744    // translucent red
+        fun bitmapFor(night: Boolean): Bitmap {
+            val c = cached
+            if (c != null && cachedNight == night) return c
+            val palette = if (night) NIGHT_PALETTE else DAY_PALETTE
+            val px = IntArray(classes.size) { palette[classes[it]] }
+            val bmp = Bitmap.createBitmap(px, gridN, gridN, Bitmap.Config.ARGB_8888)
+            cached = bmp
+            cachedNight = night
+            return bmp
+        }
+    }
 
     /**
      * Radial-sweep viewshed from one observer. Same curvature/refraction model
@@ -196,7 +220,7 @@ object Terrain {
         val lonW = obsLon - dLon
         val lonE = obsLon + dLon
 
-        val pixels = IntArray(gridN * gridN)
+        val classes = IntArray(gridN * gridN)
         val cell = 2.0 * radiusM / gridN
         val step = cell * 0.7
         val samples = ceil(radiusM / step).toInt()
@@ -222,12 +246,12 @@ object Terrain {
                     val slopeLow = (te + 0.5 - eye) / d
                     val slopeStanding = (te + 3.0 - eye) / d
                     val cls = when {
-                        slopeLow >= maxSlope -> COLOR_VISIBLE
-                        slopeStanding >= maxSlope -> COLOR_MARGINAL
-                        else -> COLOR_MASKED
+                        slopeLow >= maxSlope -> CLS_VISIBLE
+                        slopeStanding >= maxSlope -> CLS_MARGINAL
+                        else -> CLS_MASKED
                     }
                     if (px in 0 until gridN && py in 0 until gridN) {
-                        pixels[py * gridN + px] = cls
+                        classes[py * gridN + px] = cls
                     }
                     val slopeGround = (te - eye) / d
                     if (slopeGround > maxSlope) maxSlope = slopeGround
@@ -236,11 +260,11 @@ object Terrain {
             }
         }
         // observer's own cell reads visible
-        pixels[(gridN / 2) * gridN + gridN / 2] = COLOR_VISIBLE
+        classes[(gridN / 2) * gridN + gridN / 2] = CLS_VISIBLE
 
-        val bmp = Bitmap.createBitmap(pixels, gridN, gridN, Bitmap.Config.ARGB_8888)
         Viewshed(
-            bitmap = bmp,
+            classes = classes,
+            gridN = gridN,
             latN = latN, latS = latS, lonW = lonW, lonE = lonE,
             obsLat = obsLat, obsLon = obsLon,
             radiusM = radiusM.toFloat(),
