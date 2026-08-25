@@ -75,6 +75,7 @@ import app.gridfix.android.location.LocationTracker
 import app.gridfix.android.ui.screens.MapScreen
 import app.gridfix.android.ui.screens.NavigateScreen
 import app.gridfix.android.ui.screens.PositionScreen
+import app.gridfix.android.ui.screens.ReferenceScreen
 import app.gridfix.android.ui.screens.SettingsScreen
 import app.gridfix.android.ui.screens.WaypointsScreen
 import app.gridfix.android.ui.theme.GridFixTheme
@@ -188,7 +189,7 @@ fun GridFixApp() {
                         )
                     },
                     navigationIcon = {
-                        if (currentRoute == "settings") {
+                        if (currentRoute == "settings" || currentRoute == "reference") {
                             IconButton(onClick = { navController.popBackStack() }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
@@ -201,7 +202,7 @@ fun GridFixApp() {
                                 contentDescription = "Toggle night mode",
                             )
                         }
-                        if (currentRoute != "settings") {
+                        if (currentRoute != "settings" && currentRoute != "reference") {
                             IconButton(onClick = {
                                 navController.navigate("settings") { launchSingleTop = true }
                             }) {
@@ -470,7 +471,16 @@ fun GridFixApp() {
                         },
                     )
                 }
-                composable("settings") { SettingsScreen(repo, settings) }
+                composable("settings") {
+                    SettingsScreen(
+                        repo,
+                        settings,
+                        onOpenReference = {
+                            navController.navigate("reference") { launchSingleTop = true }
+                        },
+                    )
+                }
+                composable("reference") { ReferenceScreen() }
             }
         }
     }

@@ -12,8 +12,8 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 16
-        versionName = "0.7.5"
+        versionCode = 17
+        versionName = "0.7.6"
     }
 
     buildTypes {
@@ -33,6 +33,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -53,4 +54,7 @@ dependencies {
 
     // Map engine: osmdroid (Apache 2.0) — offline-first raster maps, MBTiles, tile cache
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+
+    // QR generation for position hand-off (Apache 2.0)
+    implementation("com.google.zxing:core:3.5.3")
 }

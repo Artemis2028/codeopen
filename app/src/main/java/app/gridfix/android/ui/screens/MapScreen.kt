@@ -289,6 +289,7 @@ fun MapScreen(
     var newWpAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var editingWp by remember { mutableStateOf<Waypoint?>(null) }
     var infoWp by remember { mutableStateOf<Waypoint?>(null) }
+    var qrWp by remember { mutableStateOf<Waypoint?>(null) }
     var layersOpen by remember { mutableStateOf(false) }
     var downloadOpen by remember { mutableStateOf(false) }
     var gridInterval by remember { mutableStateOf("") }
@@ -1232,7 +1233,7 @@ fun MapScreen(
                         Column(Modifier.weight(1f)) {
                             Text("Contour lines")
                             Text(
-                                "Elevation contours from terrain data, any base layer",
+                                "From newer terrain data (3DEP/lidar in the US). Topo base maps print their own, older SRTM contours — small disagreements are normal.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1825,10 +1826,20 @@ fun MapScreen(
             },
             dismissButton = {
                 Row {
+                    TextButton(onClick = { qrWp = w; infoWp = null }) { Text("QR") }
                     TextButton(onClick = { editingWp = w; infoWp = null }) { Text("Edit") }
                     TextButton(onClick = { infoWp = null }) { Text("Close") }
                 }
             },
+        )
+    }
+
+    qrWp?.let { w ->
+        app.gridfix.android.ui.QrDialog(
+            title = w.name,
+            payload = app.gridfix.android.ui.geoUri(w.lat, w.lon, w.name),
+            caption = Coordinates.mgrs(w.lat, w.lon, 10)?.full ?: "",
+            onDismiss = { qrWp = null },
         )
     }
 

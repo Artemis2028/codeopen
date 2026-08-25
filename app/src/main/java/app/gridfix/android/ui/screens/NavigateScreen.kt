@@ -31,6 +31,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -40,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,7 +65,9 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.location.CompassTracker
 import app.gridfix.android.location.FixData
+import app.gridfix.android.ui.Speech
 import app.gridfix.android.ui.WaypointMarker
+import kotlin.math.abs
 
 @Composable
 fun NavigateScreen(
@@ -124,6 +128,11 @@ fun NavigateScreen(
         Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
     } else null
 
+    val speech = remember { Speech(context.applicationContext) }
+    DisposableEffect(Unit) {
+        onDispose { speech.shutdown() }
+    }
+
     // Arrival alert: one buzz + tone when closing inside 50 m of the target;
     // re-arms after moving back out past 150 m or switching targets.
     var alertedFor by remember { mutableStateOf<String?>(null) }
@@ -133,14 +142,8 @@ fun NavigateScreen(
         if (dist < 50f && alertedFor != t.id) {
             alertedFor = t.id
             runCatching {
-                val vib = if (Build.VERSION.SDK_INT >= 31) {
-                    (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
-                        .defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                }
-                vib.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1))
+                deviceVibrator(context)
+                    ?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1))
             }
             runCatching {
                 val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
@@ -150,6 +153,42 @@ fun NavigateScreen(
             }
         } else if (dist > 150f && alertedFor == t.id) {
             alertedFor = null
+        }
+    }
+
+    // Off-azimuth haptic guide: silence means on line; two short taps = target
+    // is to your RIGHT, one long buzz = to your LEFT. Cadence quickens the
+    // further off you drift, so it works with the phone in a pocket.
+    var hapticGuide by remember { mutableStateOf(false) }
+    val deviation: Float? = if (nav != null && headingTrue != null) {
+        ((nav.bearingTrue - headingTrue + 540f) % 360f) - 180f
+    } else null
+    val devState = rememberUpdatedState(deviation)
+    LaunchedEffect(hapticGuide) {
+        if (!hapticGuide) return@LaunchedEffect
+        val vib = deviceVibrator(context) ?: return@LaunchedEffect
+        while (true) {
+            val d = devState.value
+            when {
+                d == null -> kotlinx.coroutines.delay(1500)
+                abs(d) <= 8f -> kotlinx.coroutines.delay(1200)
+                else -> {
+                    runCatching {
+                        if (d > 0f) {
+                            vib.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 70, 90, 70), -1))
+                        } else {
+                            vib.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300), -1))
+                        }
+                    }
+                    kotlinx.coroutines.delay(
+                        when {
+                            abs(d) > 60f -> 800L
+                            abs(d) > 25f -> 1300L
+                            else -> 2000L
+                        }
+                    )
+                }
+            }
         }
     }
 
@@ -361,6 +400,49 @@ fun NavigateScreen(
             )
         }
 
+        Spacer(Modifier.height(14.dp))
+
+        // Eyes-free aids: haptic azimuth guide + spoken bearing/distance
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterChip(
+                selected = hapticGuide,
+                onClick = { hapticGuide = !hapticGuide },
+                label = { Text(if (hapticGuide) "HAPTIC GUIDE ON" else "HAPTIC GUIDE") },
+            )
+            FilterChip(
+                selected = false,
+                onClick = {
+                    val t = target
+                    if (nav != null && t != null) {
+                        val ang = Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit)
+                            .replace("°", " degrees")
+                        val refWord = when (refLetter) {
+                            "M" -> "magnetic"
+                            "G" -> "grid"
+                            else -> "true"
+                        }
+                        val dist = speakableDistance(
+                            Coordinates.formatDistance(nav.distanceMeters, settings.units)
+                        )
+                        speech.speak("Target ${t.name}. Bearing $ang $refWord. Distance $dist.")
+                    }
+                },
+                label = { Text("SPEAK") },
+            )
+        }
+        if (hapticGuide) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Pocket the phone: silence = on azimuth · two taps = turn RIGHT · long buzz = turn LEFT",
+                style = MaterialTheme.typography.bodySmall,
+                color = subtle,
+                textAlign = TextAlign.Center,
+            )
+        }
+
         // Status hints
         if (loc == null) {
             Spacer(Modifier.height(12.dp))
@@ -392,6 +474,24 @@ fun NavigateScreen(
         }
     }
 }
+
+private fun deviceVibrator(context: Context): Vibrator? = runCatching {
+    if (Build.VERSION.SDK_INT >= 31) {
+        (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
+            .defaultVibrator
+    } else {
+        @Suppress("DEPRECATION")
+        context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+    }
+}.getOrNull()
+
+/** Expand unit abbreviations so the TTS engine reads them naturally. */
+private fun speakableDistance(text: String): String = text
+    .replace(Regex("\\bkm\\b"), "kilometers")
+    .replace(Regex("\\bNM\\b"), "nautical miles")
+    .replace(Regex("\\bmi\\b"), "miles")
+    .replace(Regex("\\bft\\b"), "feet")
+    .replace(Regex("\\bm\\b"), "meters")
 
 @Composable
 private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {

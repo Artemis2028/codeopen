@@ -11,14 +11,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.QrCode2
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -27,15 +33,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.coords.Coordinates
+import app.gridfix.android.coords.Phonetic
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.location.FixData
+import app.gridfix.android.ui.QrDialog
+import app.gridfix.android.ui.Speech
+import app.gridfix.android.ui.geoUri
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -48,7 +59,13 @@ fun PositionScreen(
     onMark: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var markedAt by remember { mutableStateOf(0L) }
+    var qrOpen by remember { mutableStateOf(false) }
+    val speech = remember { Speech(context.applicationContext) }
+    DisposableEffect(Unit) {
+        onDispose { speech.shutdown() }
+    }
 
     // 1 Hz ticker for the clock and fix age
     val now by produceState(initialValue = System.currentTimeMillis()) {
@@ -59,6 +76,7 @@ fun PositionScreen(
     }
 
     val loc = fix.location
+    val parts = loc?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
 
     Column(
         modifier = Modifier
@@ -122,7 +140,6 @@ fun PositionScreen(
                         )
                     }
                 } else {
-                    val parts = Coordinates.mgrs(loc.latitude, loc.longitude, settings.mgrsDigits)
                     when {
                         parts == null -> Text(
                             "—",
@@ -167,6 +184,48 @@ fun PositionScreen(
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        // ---- Phonetic spell-out + voice + QR hand-off ----
+        if (loc != null && parts != null && parts.square.isNotEmpty()) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "PHONETIC",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            letterSpacing = 1.2.sp,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            Phonetic.mgrs(parts.full),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    IconButton(onClick = { speech.speak(Phonetic.mgrsSpeech(parts.full)) }) {
+                        Icon(
+                            Icons.Outlined.VolumeUp,
+                            contentDescription = "Speak grid",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { qrOpen = true }) {
+                        Icon(
+                            Icons.Outlined.QrCode2,
+                            contentDescription = "Share as QR code",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -259,6 +318,15 @@ fun PositionScreen(
             letterSpacing = 1.2.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    if (qrOpen && loc != null) {
+        QrDialog(
+            title = "My position",
+            payload = geoUri(loc.latitude, loc.longitude, "Position " + Coordinates.dtg(now).take(7)),
+            caption = parts?.full ?: "",
+            onDismiss = { qrOpen = false },
         )
     }
 }

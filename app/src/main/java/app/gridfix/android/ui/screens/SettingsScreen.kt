@@ -1,5 +1,6 @@
 package app.gridfix.android.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,7 +34,11 @@ import app.gridfix.android.data.SettingsRepository
 import kotlinx.coroutines.launch
 
 @Composable
-fun SettingsScreen(repo: SettingsRepository, settings: AppSettings) {
+fun SettingsScreen(
+    repo: SettingsRepository,
+    settings: AppSettings,
+    onOpenReference: () -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
 
     Column(
@@ -104,8 +109,23 @@ fun SettingsScreen(repo: SettingsRepository, settings: AppSettings) {
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onOpenReference() }
+        ) {
+            Text("Field reference", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Phonetic alphabet · grid reading · pace counts · contours · symbols",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
         Text(
-            "GridFix 0.5.0 · Milestone 3\n" +
+            "GridFix " + app.gridfix.android.BuildConfig.VERSION_NAME + "\n" +
                 "Working title — the public name is decided before launch.\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
                 "GridFix is a training and recreation aid, not a primary means of navigation.",
