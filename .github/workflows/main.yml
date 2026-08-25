@@ -15,8 +15,46 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Write source files (v0.5.2 (doctrinal ambush/SBF + rotation) delta, plain text, auditable below)
+      - name: Write source files (v0.6.0 (M4a interop - GPX/KML + projection) delta, plain text, auditable below)
         run: |
+          mkdir -p '.'
+          cat > 'README.md' <<'EOF_GRIDFIX'
+          # GridFix (working title)
+
+          MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
+          built independently with its own design and code.
+
+          **Status: Milestone 4a (interop)** — GPX + KML/KMZ import/export (waypoints, routes,
+          areas, tracks), waypoint projection (azimuth + distance from any known point), smart MGRS
+          entry (auto-advance, full-grid paste). Doctrinal ambush/SBF glyphs + direction-of-fire
+          rotation landed in 0.5.2.
+
+          ## Roadmap
+
+          - **M1** — Shell + live position readout *(done)*
+          - **M2** — Waypoints + compass navigation (bearing arrow, distance, back-azimuth, mils) *(done)*
+          - **M3** — Map view with MGRS grid overlay, offline maps, MBTiles import *(this build)*
+          - **M4** — GPX import/export, waypoint projection, Play Billing (3-day trial → subscription), store launch
+
+          ## Tech
+
+          Kotlin · Jetpack Compose · Material 3 · platform LocationManager + GNSS status ·
+          [NGA MGRS library](https://github.com/ngageoint/mgrs-java) (MIT) ·
+          [osmdroid](https://github.com/osmdroid/osmdroid) (Apache 2.0) · DataStore · GitHub Actions CI
+
+          Basemaps: OpenStreetMap (streets), OpenTopoMap (topo), Esri World Imagery (satellite) —
+          attribution shown in-app. Tile sources may need commercial-use review before store launch.
+
+          ## Build
+
+          Pushes to `main` build a debug APK automatically (Actions tab → latest run → `gridfix-debug-apk` artifact).
+
+          Local build: `gradle assembleDebug` with JDK 17 and the Android SDK installed.
+
+          ## Principles
+
+          Offline-first. No accounts, no analytics, no data collection. Not a primary means of navigation.
+          EOF_GRIDFIX
           mkdir -p 'app'
           cat > 'app/build.gradle.kts' <<'EOF_GRIDFIX'
           plugins {
@@ -33,8 +71,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 10
-                  versionName = "0.5.2-nav"
+                  versionCode = 11
+                  versionName = "0.6.0-m4a"
               }
 
               buildTypes {
@@ -74,6 +112,683 @@ jobs:
 
               // Map engine: osmdroid (Apache 2.0) — offline-first raster maps, MBTiles, tile cache
               implementation("org.osmdroid:osmdroid-android:6.1.20")
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/data'
+          cat > 'app/src/main/java/app/gridfix/android/data/InterchangeFiles.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.data
+
+          import android.util.Xml
+          import org.xmlpull.v1.XmlPullParser
+          import java.io.InputStream
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import java.util.TimeZone
+          import java.util.zip.ZipInputStream
+
+          /**
+           * GPX 1.1 and KML/KMZ interchange: the file formats land-nav and TAK users
+           * actually trade. Import is tolerant (skips what it can't read); export writes
+           * plain, widely-accepted documents. Everything is streamed with XmlPullParser —
+           * no external dependencies.
+           */
+          object InterchangeFiles {
+
+              data class ImportedLine(val name: String, val folder: String, val points: List<GeoVertex>)
+              data class ImportedTrack(val name: String, val points: List<TrackPoint>)
+
+              data class ImportedData(
+                  val waypoints: List<WaypointDraft> = emptyList(),
+                  val lines: List<ImportedLine> = emptyList(),      // become route graphics
+                  val areas: List<ImportedLine> = emptyList(),      // become assembly-area graphics
+                  val tracks: List<ImportedTrack> = emptyList(),
+              ) {
+                  val isEmpty: Boolean
+                      get() = waypoints.isEmpty() && lines.isEmpty() && areas.isEmpty() && tracks.isEmpty()
+
+                  fun summary(): String {
+                      val parts = mutableListOf<String>()
+                      if (waypoints.isNotEmpty()) parts.add("${waypoints.size} waypoints")
+                      if (lines.isNotEmpty()) parts.add("${lines.size} lines")
+                      if (areas.isNotEmpty()) parts.add("${areas.size} areas")
+                      if (tracks.isNotEmpty()) parts.add("${tracks.size} tracks")
+                      return if (parts.isEmpty()) "nothing importable found" else "Imported " + parts.joinToString(", ")
+                  }
+              }
+
+              const val IMPORT_FOLDER = "Imported"
+
+              /** Route by file name; returns null when the format isn't recognized. */
+              fun parse(fileName: String, stream: InputStream): ImportedData? {
+                  val lower = fileName.lowercase(Locale.US)
+                  return when {
+                      lower.endsWith(".gpx") -> parseGpx(stream)
+                      lower.endsWith(".kml") -> parseKml(stream)
+                      lower.endsWith(".kmz") -> parseKmz(stream)
+                      else -> null
+                  }
+              }
+
+              // ---------------- GPX ----------------
+
+              fun parseGpx(stream: InputStream): ImportedData {
+                  val wps = ArrayList<WaypointDraft>()
+                  val tracks = ArrayList<ImportedTrack>()
+                  val lines = ArrayList<ImportedLine>()
+
+                  val parser = Xml.newPullParser()
+                  parser.setInput(stream, null)
+
+                  var wptLat = 0.0
+                  var wptLon = 0.0
+                  var inWpt = false
+                  var name = ""
+                  var trkName = ""
+                  var trkPts = ArrayList<TrackPoint>()
+                  var inTrk = false
+                  var rteName = ""
+                  var rtePts = ArrayList<GeoVertex>()
+                  var inRte = false
+                  var pendingTime = 0L
+                  var pendingEle = 0.0
+                  var textBuf = ""
+
+                  var event = parser.eventType
+                  while (event != XmlPullParser.END_DOCUMENT) {
+                      when (event) {
+                          XmlPullParser.START_TAG -> {
+                              textBuf = ""
+                              when (parser.name) {
+                                  "wpt" -> {
+                                      inWpt = true
+                                      name = ""
+                                      wptLat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull() ?: Double.NaN
+                                      wptLon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull() ?: Double.NaN
+                                  }
+                                  "trk" -> {
+                                      inTrk = true
+                                      trkName = ""
+                                      trkPts = ArrayList()
+                                  }
+                                  "rte" -> {
+                                      inRte = true
+                                      rteName = ""
+                                      rtePts = ArrayList()
+                                  }
+                                  "trkpt" -> {
+                                      val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
+                                      val lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull()
+                                      pendingTime = 0L
+                                      pendingEle = 0.0
+                                      if (lat != null && lon != null && inTrk) {
+                                          trkPts.add(TrackPoint(lat, lon, 0L, 0.0))
+                                      }
+                                  }
+                                  "rtept" -> {
+                                      val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
+                                      val lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull()
+                                      if (lat != null && lon != null && inRte) {
+                                          rtePts.add(GeoVertex(lat, lon))
+                                      }
+                                  }
+                              }
+                          }
+                          XmlPullParser.TEXT -> textBuf += parser.text ?: ""
+                          XmlPullParser.END_TAG -> {
+                              when (parser.name) {
+                                  "name" -> {
+                                      val t = textBuf.trim()
+                                      if (inWpt && name.isEmpty()) name = t
+                                      else if (inTrk && trkName.isEmpty()) trkName = t
+                                      else if (inRte && rteName.isEmpty()) rteName = t
+                                  }
+                                  "ele" -> pendingEle = textBuf.trim().toDoubleOrNull() ?: 0.0
+                                  "time" -> pendingTime = parseIsoTime(textBuf.trim())
+                                  "trkpt" -> {
+                                      if (inTrk && trkPts.isNotEmpty()) {
+                                          val last = trkPts.removeAt(trkPts.size - 1)
+                                          trkPts.add(last.copy(time = pendingTime, alt = pendingEle))
+                                      }
+                                  }
+                                  "wpt" -> {
+                                      if (inWpt && !wptLat.isNaN() && !wptLon.isNaN()) {
+                                          wps.add(
+                                              WaypointDraft(
+                                                  name = name.ifBlank { "WP ${wps.size + 1}" },
+                                                  lat = wptLat,
+                                                  lon = wptLon,
+                                                  folder = IMPORT_FOLDER,
+                                                  symbol = "flag",
+                                                  affiliation = "none",
+                                              )
+                                          )
+                                      }
+                                      inWpt = false
+                                  }
+                                  "trk" -> {
+                                      if (inTrk && trkPts.size >= 2) {
+                                          tracks.add(
+                                              ImportedTrack(trkName.ifBlank { "Imported track" }, trkPts)
+                                          )
+                                      }
+                                      inTrk = false
+                                  }
+                                  "rte" -> {
+                                      if (inRte && rtePts.size >= 2) {
+                                          lines.add(
+                                              ImportedLine(rteName.ifBlank { "Imported route" }, IMPORT_FOLDER, rtePts)
+                                          )
+                                      }
+                                      inRte = false
+                                  }
+                              }
+                          }
+                      }
+                      event = parser.next()
+                  }
+                  return ImportedData(waypoints = wps, lines = lines, tracks = tracks)
+              }
+
+              fun buildGpx(
+                  waypoints: List<Waypoint>,
+                  routes: List<TacGraphic>,
+                  tracks: List<Pair<TrackInfo, List<TrackPoint>>>,
+              ): String {
+                  val sb = StringBuilder()
+                  sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                  sb.append("<gpx version=\"1.1\" creator=\"GridFix\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+                  for (w in waypoints) {
+                      sb.append(
+                          String.format(
+                              Locale.US, "  <wpt lat=\"%.7f\" lon=\"%.7f\"><name>%s</name></wpt>\n",
+                              w.lat, w.lon, escapeXml(w.name),
+                          )
+                      )
+                  }
+                  for (r in routes) {
+                      sb.append("  <rte><name>").append(escapeXml(r.name)).append("</name>\n")
+                      for (p in r.points) {
+                          sb.append(
+                              String.format(Locale.US, "    <rtept lat=\"%.7f\" lon=\"%.7f\"/>\n", p.lat, p.lon)
+                          )
+                      }
+                      sb.append("  </rte>\n")
+                  }
+                  val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                  sdf.timeZone = TimeZone.getTimeZone("UTC")
+                  for ((info, pts) in tracks) {
+                      sb.append("  <trk><name>").append(escapeXml(info.name)).append("</name><trkseg>\n")
+                      for (p in pts) {
+                          sb.append(
+                              String.format(
+                                  Locale.US,
+                                  "    <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time></trkpt>\n",
+                                  p.lat, p.lon, p.alt, sdf.format(Date(p.time)),
+                              )
+                          )
+                      }
+                      sb.append("  </trkseg></trk>\n")
+                  }
+                  sb.append("</gpx>\n")
+                  return sb.toString()
+              }
+
+              // ---------------- KML / KMZ ----------------
+
+              fun parseKmz(stream: InputStream): ImportedData {
+                  ZipInputStream(stream).use { zip ->
+                      var entry = zip.nextEntry
+                      while (entry != null) {
+                          if (!entry.isDirectory && entry.name.lowercase(Locale.US).endsWith(".kml")) {
+                              return parseKml(zip)
+                          }
+                          entry = zip.nextEntry
+                      }
+                  }
+                  return ImportedData()
+              }
+
+              fun parseKml(stream: InputStream): ImportedData {
+                  val wps = ArrayList<WaypointDraft>()
+                  val lines = ArrayList<ImportedLine>()
+                  val areas = ArrayList<ImportedLine>()
+
+                  val parser = Xml.newPullParser()
+                  parser.setInput(stream, null)
+
+                  val folderStack = ArrayDeque<String>()
+                  var awaitingFolderName = false
+                  var inPlacemark = false
+                  var pmName = ""
+                  var geomType = ""        // point / line / polygon
+                  var coordText = ""
+                  var inCoordinates = false
+                  var textBuf = ""
+
+                  var event = parser.eventType
+                  while (event != XmlPullParser.END_DOCUMENT) {
+                      when (event) {
+                          XmlPullParser.START_TAG -> {
+                              textBuf = ""
+                              when (parser.name) {
+                                  "Folder" -> {
+                                      folderStack.addLast("")
+                                      awaitingFolderName = true
+                                  }
+                                  "Placemark" -> {
+                                      inPlacemark = true
+                                      pmName = ""
+                                      geomType = ""
+                                      coordText = ""
+                                  }
+                                  "Point" -> if (inPlacemark) geomType = "point"
+                                  "LineString" -> if (inPlacemark) geomType = "line"
+                                  "Polygon" -> if (inPlacemark) geomType = "polygon"
+                                  "coordinates" -> inCoordinates = true
+                              }
+                          }
+                          XmlPullParser.TEXT -> textBuf += parser.text ?: ""
+                          XmlPullParser.END_TAG -> {
+                              when (parser.name) {
+                                  "name" -> {
+                                      val t = textBuf.trim()
+                                      if (inPlacemark) {
+                                          if (pmName.isEmpty()) pmName = t
+                                      } else if (awaitingFolderName && folderStack.isNotEmpty()) {
+                                          folderStack.removeLast()
+                                          folderStack.addLast(t)
+                                          awaitingFolderName = false
+                                      }
+                                  }
+                                  "coordinates" -> {
+                                      inCoordinates = false
+                                      if (inPlacemark && coordText.isEmpty()) coordText = textBuf
+                                  }
+                                  "Folder" -> {
+                                      if (folderStack.isNotEmpty()) folderStack.removeLast()
+                                      awaitingFolderName = false
+                                  }
+                                  "Placemark" -> {
+                                      if (inPlacemark) {
+                                          val folder = folderStack.lastOrNull { it.isNotBlank() } ?: IMPORT_FOLDER
+                                          val pts = parseKmlCoordinates(coordText)
+                                          when {
+                                              geomType == "point" && pts.isNotEmpty() -> wps.add(
+                                                  WaypointDraft(
+                                                      name = pmName.ifBlank { "WP ${wps.size + 1}" },
+                                                      lat = pts[0].lat,
+                                                      lon = pts[0].lon,
+                                                      folder = folder,
+                                                      symbol = "flag",
+                                                      affiliation = "none",
+                                                  )
+                                              )
+                                              geomType == "line" && pts.size >= 2 -> lines.add(
+                                                  ImportedLine(pmName.ifBlank { "Imported line" }, folder, pts)
+                                              )
+                                              geomType == "polygon" && pts.size >= 3 -> areas.add(
+                                                  ImportedLine(pmName.ifBlank { "Imported area" }, folder, pts)
+                                              )
+                                          }
+                                      }
+                                      inPlacemark = false
+                                  }
+                              }
+                          }
+                      }
+                      event = parser.next()
+                  }
+                  return ImportedData(waypoints = wps, lines = lines, areas = areas)
+              }
+
+              /** KML coordinate lists are "lon,lat[,alt]" tuples separated by whitespace. */
+              private fun parseKmlCoordinates(text: String): List<GeoVertex> =
+                  text.trim().split(Regex("\\s+")).mapNotNull { tuple ->
+                      val parts = tuple.split(",")
+                      if (parts.size < 2) return@mapNotNull null
+                      val lon = parts[0].toDoubleOrNull() ?: return@mapNotNull null
+                      val lat = parts[1].toDoubleOrNull() ?: return@mapNotNull null
+                      if (lat in -90.0..90.0 && lon in -180.0..180.0) GeoVertex(lat, lon) else null
+                  }.let { pts ->
+                      // drop the duplicated closing vertex polygons carry
+                      if (pts.size >= 2 && pts.first() == pts.last()) pts.dropLast(1) else pts
+                  }
+
+              fun buildKml(
+                  waypoints: List<Waypoint>,
+                  graphics: List<TacGraphic>,
+                  tracks: List<Pair<TrackInfo, List<TrackPoint>>>,
+              ): String {
+                  val sb = StringBuilder()
+                  sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                  sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>\n")
+                  sb.append("<name>GridFix export</name>\n")
+
+                  for ((folder, list) in waypoints.groupBy { it.folder }) {
+                      sb.append("<Folder><name>").append(escapeXml(folder)).append("</name>\n")
+                      for (w in list) {
+                          sb.append("<Placemark><name>").append(escapeXml(w.name)).append("</name>")
+                          sb.append(
+                              String.format(
+                                  Locale.US, "<Point><coordinates>%.7f,%.7f,0</coordinates></Point>",
+                                  w.lon, w.lat,
+                              )
+                          )
+                          sb.append("</Placemark>\n")
+                      }
+                      sb.append("</Folder>\n")
+                  }
+
+                  if (graphics.isNotEmpty()) {
+                      sb.append("<Folder><name>Graphics</name>\n")
+                      for (g in graphics) {
+                          val closed = GraphicTypes.isArea(g.type) && g.points.size >= 3
+                          sb.append("<Placemark><name>")
+                              .append(escapeXml(GraphicTypes.labelPrefix(g.type) + g.name))
+                              .append("</name>")
+                          val coords = StringBuilder()
+                          for (p in g.points) {
+                              coords.append(String.format(Locale.US, "%.7f,%.7f,0 ", p.lon, p.lat))
+                          }
+                          if (closed && g.points.isNotEmpty()) {
+                              coords.append(
+                                  String.format(Locale.US, "%.7f,%.7f,0", g.points[0].lon, g.points[0].lat)
+                              )
+                          }
+                          if (closed) {
+                              sb.append("<Polygon><outerBoundaryIs><LinearRing><coordinates>")
+                                  .append(coords.toString().trim())
+                                  .append("</coordinates></LinearRing></outerBoundaryIs></Polygon>")
+                          } else {
+                              sb.append("<LineString><tessellate>1</tessellate><coordinates>")
+                                  .append(coords.toString().trim())
+                                  .append("</coordinates></LineString>")
+                          }
+                          sb.append("</Placemark>\n")
+                      }
+                      sb.append("</Folder>\n")
+                  }
+
+                  if (tracks.isNotEmpty()) {
+                      sb.append("<Folder><name>Tracks</name>\n")
+                      for ((info, pts) in tracks) {
+                          sb.append("<Placemark><name>").append(escapeXml(info.name)).append("</name>")
+                          sb.append("<LineString><tessellate>1</tessellate><coordinates>")
+                          for (p in pts) {
+                              sb.append(String.format(Locale.US, "%.7f,%.7f,0 ", p.lon, p.lat))
+                          }
+                          sb.append("</coordinates></LineString></Placemark>\n")
+                      }
+                      sb.append("</Folder>\n")
+                  }
+
+                  sb.append("</Document></kml>\n")
+                  return sb.toString()
+              }
+
+              // ---------------- helpers ----------------
+
+              private fun parseIsoTime(text: String): Long = runCatching {
+                  val cleaned = text.replace(Regex("\\.\\d+"), "").removeSuffix("Z")
+                  val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                  sdf.timeZone = TimeZone.getTimeZone("UTC")
+                  sdf.parse(cleaned)?.time ?: 0L
+              }.getOrDefault(0L)
+
+              private fun escapeXml(s: String): String = s
+                  .replace("&", "&amp;")
+                  .replace("<", "&lt;")
+                  .replace(">", "&gt;")
+                  .replace("\"", "&quot;")
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/data'
+          cat > 'app/src/main/java/app/gridfix/android/data/TrackRepository.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.data
+
+          import android.content.Context
+          import android.location.Location
+          import androidx.datastore.preferences.core.edit
+          import androidx.datastore.preferences.core.stringPreferencesKey
+          import androidx.datastore.preferences.preferencesDataStore
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.flow.Flow
+          import kotlinx.coroutines.flow.map
+          import kotlinx.coroutines.withContext
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import java.util.TimeZone
+          import java.util.UUID
+
+          private val Context.trackStore by preferencesDataStore(name = "tracks")
+
+          /** Track metadata; the point log lives in files/tracks/<id>.txt (one point per line). */
+          data class TrackInfo(
+              val id: String,
+              val name: String,
+              val startedAt: Long,
+              val endedAt: Long,        // 0 while recording
+              val distanceM: Double,
+              val pointCount: Int,
+          )
+
+          data class TrackPoint(val lat: Double, val lon: Double, val time: Long, val alt: Double)
+
+          class TrackRepository(private val context: Context) {
+
+              private val listKey = stringPreferencesKey("list")
+
+              val tracks: Flow<List<TrackInfo>> = context.trackStore.data.map { p ->
+                  decode(p[listKey] ?: "[]").sortedByDescending { it.startedAt }
+              }
+
+              suspend fun startTrack(nowMillis: Long): String {
+                  val id = UUID.randomUUID().toString()
+                  val info = TrackInfo(
+                      id = id,
+                      name = "Track " + dtgShort(nowMillis),
+                      startedAt = nowMillis,
+                      endedAt = 0L,
+                      distanceM = 0.0,
+                      pointCount = 0,
+                  )
+                  withContext(Dispatchers.IO) { pointsFile(context, id).parentFile?.mkdirs() }
+                  context.trackStore.edit { p ->
+                      p[listKey] = encode(decode(p[listKey] ?: "[]") + info)
+                  }
+                  return id
+              }
+
+              /** Close out a finished recording: compute stats from the point log. */
+              suspend fun finishTrack(id: String, name: String?, nowMillis: Long) {
+                  val pts = readPoints(context, id)
+                  var dist = 0.0
+                  for (i in 1 until pts.size) {
+                      val out = FloatArray(1)
+                      Location.distanceBetween(
+                          pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon, out
+                      )
+                      dist += out[0]
+                  }
+                  context.trackStore.edit { p ->
+                      p[listKey] = encode(
+                          decode(p[listKey] ?: "[]").map {
+                              if (it.id == id) it.copy(
+                                  name = name?.trim()?.ifBlank { it.name } ?: it.name,
+                                  endedAt = nowMillis,
+                                  distanceM = dist,
+                                  pointCount = pts.size,
+                              ) else it
+                          }
+                      )
+                  }
+              }
+
+              /** Create a finished track from imported points (GPX trk import). */
+              suspend fun importTrack(name: String, points: List<TrackPoint>, nowMillis: Long): String {
+                  val id = UUID.randomUUID().toString()
+                  withContext(Dispatchers.IO) {
+                      val f = pointsFile(context, id)
+                      f.parentFile?.mkdirs()
+                      f.bufferedWriter().use { out ->
+                          for (p in points) {
+                              out.write(
+                                  String.format(Locale.US, "%.7f %.7f %d %.1f\n", p.lat, p.lon, p.time, p.alt)
+                              )
+                          }
+                      }
+                  }
+                  var dist = 0.0
+                  for (i in 1 until points.size) {
+                      val out = FloatArray(1)
+                      Location.distanceBetween(
+                          points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon, out
+                      )
+                      dist += out[0]
+                  }
+                  val start = points.firstOrNull()?.time?.takeIf { it > 0 } ?: nowMillis
+                  val end = points.lastOrNull()?.time?.takeIf { it > 0 } ?: nowMillis
+                  val info = TrackInfo(
+                      id = id,
+                      name = name.trim().ifBlank { "Imported track" },
+                      startedAt = start,
+                      endedAt = end,
+                      distanceM = dist,
+                      pointCount = points.size,
+                  )
+                  context.trackStore.edit { p ->
+                      p[listKey] = encode(decode(p[listKey] ?: "[]") + info)
+                  }
+                  return id
+              }
+
+              suspend fun rename(id: String, name: String) {
+                  if (name.isBlank()) return
+                  context.trackStore.edit { p ->
+                      p[listKey] = encode(
+                          decode(p[listKey] ?: "[]").map {
+                              if (it.id == id) it.copy(name = name.trim()) else it
+                          }
+                      )
+                  }
+              }
+
+              suspend fun delete(id: String) {
+                  context.trackStore.edit { p ->
+                      p[listKey] = encode(decode(p[listKey] ?: "[]").filterNot { it.id == id })
+                  }
+                  withContext(Dispatchers.IO) { pointsFile(context, id).delete() }
+              }
+
+              /** Remove a recording that was discarded before saving. */
+              suspend fun discard(id: String) = delete(id)
+
+              private fun decode(json: String): List<TrackInfo> = runCatching {
+                  val arr = JSONArray(json)
+                  buildList {
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          add(
+                              TrackInfo(
+                                  id = o.getString("id"),
+                                  name = o.getString("name"),
+                                  startedAt = o.optLong("startedAt"),
+                                  endedAt = o.optLong("endedAt"),
+                                  distanceM = o.optDouble("distanceM", 0.0),
+                                  pointCount = o.optInt("pointCount", 0),
+                              )
+                          )
+                      }
+                  }
+              }.getOrDefault(emptyList())
+
+              private fun encode(list: List<TrackInfo>): String {
+                  val arr = JSONArray()
+                  for (t in list) {
+                      arr.put(
+                          JSONObject()
+                              .put("id", t.id)
+                              .put("name", t.name)
+                              .put("startedAt", t.startedAt)
+                              .put("endedAt", t.endedAt)
+                              .put("distanceM", t.distanceM)
+                              .put("pointCount", t.pointCount)
+                      )
+                  }
+                  return arr.toString()
+              }
+
+              companion object {
+                  fun pointsFile(context: Context, id: String): File =
+                      File(File(context.filesDir, "tracks"), "$id.txt")
+
+                  /** Append one point; called from the recorder service's worker thread. */
+                  fun appendPoint(context: Context, id: String, lat: Double, lon: Double, time: Long, alt: Double) {
+                      runCatching {
+                          val f = pointsFile(context, id)
+                          f.parentFile?.mkdirs()
+                          f.appendText(
+                              String.format(Locale.US, "%.7f %.7f %d %.1f\n", lat, lon, time, alt)
+                          )
+                      }
+                  }
+
+                  suspend fun readPoints(context: Context, id: String): List<TrackPoint> =
+                      withContext(Dispatchers.IO) {
+                          val f = pointsFile(context, id)
+                          if (!f.exists()) return@withContext emptyList()
+                          f.readLines().mapNotNull { line ->
+                              val parts = line.trim().split(" ")
+                              if (parts.size < 3) return@mapNotNull null
+                              runCatching {
+                                  TrackPoint(
+                                      lat = parts[0].toDouble(),
+                                      lon = parts[1].toDouble(),
+                                      time = parts[2].toLong(),
+                                      alt = parts.getOrNull(3)?.toDouble() ?: 0.0,
+                                  )
+                              }.getOrNull()
+                          }
+                      }
+
+                  /** Minimal GPX 1.1 document for one track. */
+                  fun buildGpx(name: String, points: List<TrackPoint>): String {
+                      val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                      sdf.timeZone = TimeZone.getTimeZone("UTC")
+                      val sb = StringBuilder()
+                      sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                      sb.append("<gpx version=\"1.1\" creator=\"GridFix\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+                      sb.append("  <trk>\n    <name>").append(escapeXml(name)).append("</name>\n    <trkseg>\n")
+                      for (p in points) {
+                          sb.append(
+                              String.format(
+                                  Locale.US,
+                                  "      <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time></trkpt>\n",
+                                  p.lat, p.lon, p.alt, sdf.format(Date(p.time)),
+                              )
+                          )
+                      }
+                      sb.append("    </trkseg>\n  </trk>\n</gpx>\n")
+                      return sb.toString()
+                  }
+
+                  private fun escapeXml(s: String): String = s
+                      .replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;")
+                      .replace("\"", "&quot;")
+
+                  private fun dtgShort(timeMillis: Long): String {
+                      val sdf = SimpleDateFormat("ddHHmm'Z'", Locale.US)
+                      sdf.timeZone = TimeZone.getTimeZone("UTC")
+                      return sdf.format(Date(timeMillis))
+                  }
+              }
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/data'
@@ -194,6 +909,34 @@ jobs:
                       if (p[selectedKey] == null) {
                           p[selectedKey] = wp.id
                       }
+                  }
+              }
+
+              /** Bulk add (imports): one datastore write however many points arrive. */
+              suspend fun addAll(drafts: List<WaypointDraft>, nowMillis: Long) {
+                  if (drafts.isEmpty()) return
+                  context.wpStore.edit { p ->
+                      val current = decode(p[listKey] ?: "[]")
+                      var folders = decodeFolders(p[foldersKey] ?: "[]")
+                      val added = drafts.map { draft ->
+                          folders = upsertFolder(folders, draft.folder.ifBlank { DEFAULT_FOLDER }, null)
+                          Waypoint(
+                              id = UUID.randomUUID().toString(),
+                              name = draft.name,
+                              lat = draft.lat,
+                              lon = draft.lon,
+                              createdAt = nowMillis,
+                              folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                              symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
+                              affiliation = draft.affiliation,
+                              echelon = draft.echelon,
+                              designation = draft.designation,
+                              kind = draft.kind,
+                              rotation = draft.rotation,
+                          )
+                      }
+                      p[listKey] = encode(current + added)
+                      p[foldersKey] = encodeFolders(folders)
                   }
               }
 
@@ -321,6 +1064,456 @@ jobs:
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui'
+          cat > 'app/src/main/java/app/gridfix/android/ui/GridFixApp.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui
+
+          import android.Manifest
+          import android.content.pm.PackageManager
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.automirrored.filled.ArrowBack
+          import androidx.compose.material.icons.outlined.DarkMode
+          import androidx.compose.material.icons.outlined.Explore
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material.icons.outlined.LightMode
+          import androidx.compose.material.icons.outlined.Map
+          import androidx.compose.material.icons.outlined.MyLocation
+          import androidx.compose.material.icons.outlined.Settings
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.CenterAlignedTopAppBar
+          import androidx.compose.material3.ExperimentalMaterial3Api
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.NavigationBar
+          import androidx.compose.material3.NavigationBarItem
+          import androidx.compose.material3.NavigationBarItemDefaults
+          import androidx.compose.material3.Scaffold
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TopAppBarDefaults
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.vector.ImageVector
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalView
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import androidx.navigation.compose.NavHost
+          import androidx.navigation.compose.composable
+          import androidx.navigation.compose.currentBackStackEntryAsState
+          import androidx.navigation.compose.rememberNavController
+          import androidx.core.content.FileProvider
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.GraphicsRepository
+          import app.gridfix.android.data.InterchangeFiles
+          import app.gridfix.android.data.KIND_UNIT
+          import app.gridfix.android.data.SettingsRepository
+          import app.gridfix.android.data.TrackRepository
+          import app.gridfix.android.data.WaypointRepository
+          import app.gridfix.android.location.TrackRecorderService
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import java.io.File
+          import app.gridfix.android.location.LocationTracker
+          import app.gridfix.android.ui.screens.MapScreen
+          import app.gridfix.android.ui.screens.NavigateScreen
+          import app.gridfix.android.ui.screens.PositionScreen
+          import app.gridfix.android.ui.screens.SettingsScreen
+          import app.gridfix.android.ui.screens.WaypointsScreen
+          import app.gridfix.android.ui.theme.GridFixTheme
+          import kotlinx.coroutines.launch
+
+          private data class NavItem(val route: String, val label: String, val icon: ImageVector)
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          fun GridFixApp() {
+              val context = LocalContext.current
+              val repo = remember { SettingsRepository(context.applicationContext) }
+              val settings by repo.settings.collectAsStateWithLifecycle(initialValue = AppSettings())
+              val waypointRepo = remember { WaypointRepository(context.applicationContext) }
+              val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
+              val selectedId by waypointRepo.selectedId.collectAsStateWithLifecycle(initialValue = null)
+              val folders by waypointRepo.folders.collectAsStateWithLifecycle(initialValue = emptyList())
+              val graphicsRepo = remember { GraphicsRepository(context.applicationContext) }
+              val graphics by graphicsRepo.graphics.collectAsStateWithLifecycle(initialValue = emptyList())
+              val trackRepo = remember { TrackRepository(context.applicationContext) }
+              val tracks by trackRepo.tracks.collectAsStateWithLifecycle(initialValue = emptyList())
+              var viewedTrackId by remember { mutableStateOf<String?>(null) }
+              var mapFocus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+
+              // "Armor Brigade 1"-style automatic unit names from symbol + echelon
+              val unitNameFor: (String, String) -> String = { symbol, echelon ->
+                  val func = NatoSymbols.functionLabel(symbol)
+                  val ech = if (echelon.isEmpty()) "" else " " + Echelons.label(echelon)
+                  val base = (func + ech).trim()
+                  val n = waypoints.count { it.kind == KIND_UNIT && it.name.startsWith(base) } + 1
+                  "$base $n"
+              }
+
+              // Waypoints in visible ("active") overlays are the ones offered for navigation
+              val navigableWaypoints = if (folders.isEmpty()) waypoints else {
+                  val visibleNames = folders.filter { it.visible }.map { it.name }.toSet()
+                  waypoints.filter { it.folder in visibleNames }
+              }
+              val scope = rememberCoroutineScope()
+
+              // Location permission + shared tracker, hoisted so every screen can use the fix
+              var hasPermission by remember {
+                  mutableStateOf(
+                      ContextCompat.checkSelfPermission(
+                          context, Manifest.permission.ACCESS_FINE_LOCATION
+                      ) == PackageManager.PERMISSION_GRANTED
+                  )
+              }
+              val permissionLauncher = rememberLauncherForActivityResult(
+                  ActivityResultContracts.RequestMultiplePermissions()
+              ) { result ->
+                  hasPermission = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                      result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+              }
+              val requestPermission = {
+                  permissionLauncher.launch(
+                      arrayOf(
+                          Manifest.permission.ACCESS_FINE_LOCATION,
+                          Manifest.permission.ACCESS_COARSE_LOCATION,
+                      )
+                  )
+              }
+              val tracker = remember { LocationTracker(context.applicationContext) }
+              DisposableEffect(hasPermission) {
+                  if (hasPermission) tracker.start()
+                  onDispose { tracker.stop() }
+              }
+              val fix by tracker.fix.collectAsStateWithLifecycle()
+
+              val navController = rememberNavController()
+              val backStackEntry by navController.currentBackStackEntryAsState()
+              val currentRoute = backStackEntry?.destination?.route
+
+              val view = LocalView.current
+              DisposableEffect(settings.keepScreenOn) {
+                  view.keepScreenOn = settings.keepScreenOn
+                  onDispose { view.keepScreenOn = false }
+              }
+
+              val items = listOf(
+                  NavItem("position", "Position", Icons.Outlined.MyLocation),
+                  NavItem("navigate", "Navigate", Icons.Outlined.Explore),
+                  NavItem("map", "Map", Icons.Outlined.Map),
+                  NavItem("waypoints", "Waypoints", Icons.Outlined.Flag),
+              )
+
+              fun goTo(route: String) {
+                  navController.navigate(route) {
+                      popUpTo(navController.graph.startDestinationId) { saveState = true }
+                      launchSingleTop = true
+                      restoreState = true
+                  }
+              }
+
+              GridFixTheme(nightMode = settings.nightMode) {
+                  Scaffold(
+                      containerColor = MaterialTheme.colorScheme.background,
+                      topBar = {
+                          CenterAlignedTopAppBar(
+                              title = {
+                                  Text(
+                                      "GRIDFIX",
+                                      fontFamily = FontFamily.Monospace,
+                                      fontWeight = FontWeight.Bold,
+                                      letterSpacing = 4.sp,
+                                  )
+                              },
+                              navigationIcon = {
+                                  if (currentRoute == "settings") {
+                                      IconButton(onClick = { navController.popBackStack() }) {
+                                          Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                      }
+                                  }
+                              },
+                              actions = {
+                                  IconButton(onClick = { scope.launch { repo.setNightMode(!settings.nightMode) } }) {
+                                      Icon(
+                                          if (settings.nightMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+                                          contentDescription = "Toggle night mode",
+                                      )
+                                  }
+                                  if (currentRoute != "settings") {
+                                      IconButton(onClick = {
+                                          navController.navigate("settings") { launchSingleTop = true }
+                                      }) {
+                                          Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                                      }
+                                  }
+                              },
+                              colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                                  containerColor = MaterialTheme.colorScheme.background,
+                                  titleContentColor = MaterialTheme.colorScheme.primary,
+                                  actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                              ),
+                          )
+                      },
+                      bottomBar = {
+                          NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                              items.forEach { item ->
+                                  NavigationBarItem(
+                                      selected = currentRoute == item.route,
+                                      onClick = { goTo(item.route) },
+                                      icon = { Icon(item.icon, contentDescription = item.label) },
+                                      label = { Text(item.label) },
+                                      colors = NavigationBarItemDefaults.colors(
+                                          selectedIconColor = MaterialTheme.colorScheme.primary,
+                                          selectedTextColor = MaterialTheme.colorScheme.primary,
+                                          unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          indicatorColor = MaterialTheme.colorScheme.surfaceVariant,
+                                      ),
+                                  )
+                              }
+                          }
+                      },
+                  ) { innerPadding ->
+                      NavHost(
+                          navController = navController,
+                          startDestination = "position",
+                          modifier = Modifier.padding(innerPadding),
+                      ) {
+                          composable("position") {
+                              if (!hasPermission) PermissionGate(requestPermission)
+                              else PositionScreen(fix = fix, settings = settings, repo = repo)
+                          }
+                          composable("navigate") {
+                              if (!hasPermission) PermissionGate(requestPermission)
+                              else NavigateScreen(
+                                  fix = fix,
+                                  settings = settings,
+                                  waypoints = navigableWaypoints,
+                                  selectedId = selectedId,
+                                  onSelect = { id -> scope.launch { waypointRepo.select(id) } },
+                              )
+                          }
+                          composable("map") {
+                              MapScreen(
+                                  fix = fix,
+                                  settings = settings,
+                                  waypoints = waypoints,
+                                  folders = folders,
+                                  hasPermission = hasPermission,
+                                  onRequestPermission = requestPermission,
+                                  onAdd = { draft ->
+                                      scope.launch { waypointRepo.add(draft, System.currentTimeMillis()) }
+                                  },
+                                  onUpdate = { id, draft ->
+                                      scope.launch { waypointRepo.update(id, draft) }
+                                  },
+                                  onNavigateTo = { id ->
+                                      scope.launch { waypointRepo.select(id) }
+                                      goTo("navigate")
+                                  },
+                                  graphics = graphics,
+                                  onAddGraphic = { name, type, points, folder, affiliation ->
+                                      scope.launch {
+                                          waypointRepo.addFolder(folder)   // so the overlay eye toggle exists
+                                          graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis())
+                                      }
+                                  },
+                                  onUpdateGraphic = { id, name, folder, affiliation ->
+                                      scope.launch {
+                                          waypointRepo.addFolder(folder)
+                                          graphicsRepo.rename(id, name, folder, affiliation)
+                                      }
+                                  },
+                                  onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
+                                  viewedTrackId = viewedTrackId,
+                                  onRecordStart = {
+                                      scope.launch {
+                                          val id = trackRepo.startTrack(System.currentTimeMillis())
+                                          TrackRecorderService.start(context.applicationContext, id)
+                                      }
+                                  },
+                                  onRecordStop = { name, discard ->
+                                      val id = TrackRecorderService.active.value?.trackId
+                                      TrackRecorderService.stop(context.applicationContext)
+                                      if (id != null) {
+                                          scope.launch {
+                                              kotlinx.coroutines.delay(400)
+                                              if (discard) {
+                                                  trackRepo.discard(id)
+                                              } else {
+                                                  trackRepo.finishTrack(id, name, System.currentTimeMillis())
+                                              }
+                                          }
+                                      }
+                                  },
+                                  focusAt = mapFocus,
+                                  onFocusConsumed = { mapFocus = null },
+                                  unitNameFor = unitNameFor,
+                              )
+                          }
+                          composable("waypoints") {
+                              WaypointsScreen(
+                                  fix = fix,
+                                  settings = settings,
+                                  waypoints = waypoints,
+                                  folders = folders,
+                                  onAdd = { draft ->
+                                      scope.launch { waypointRepo.add(draft, System.currentTimeMillis()) }
+                                  },
+                                  onUpdate = { id, draft ->
+                                      scope.launch { waypointRepo.update(id, draft) }
+                                  },
+                                  onDelete = { id -> scope.launch { waypointRepo.delete(id) } },
+                                  onAddFolder = { name -> scope.launch { waypointRepo.addFolder(name) } },
+                                  onSetFolderVisible = { name, visible ->
+                                      scope.launch { waypointRepo.setFolderVisible(name, visible) }
+                                  },
+                                  onNavigateTo = { id ->
+                                      scope.launch { waypointRepo.select(id) }
+                                      goTo("navigate")
+                                  },
+                                  graphics = graphics,
+                                  onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
+                                  onClearGraphics = { folder -> scope.launch { graphicsRepo.deleteFolder(folder) } },
+                                  tracks = tracks,
+                                  viewedTrackId = viewedTrackId,
+                                  onViewTrack = { id ->
+                                      viewedTrackId = id
+                                      if (id != null) goTo("map")
+                                  },
+                                  onDeleteTrack = { id ->
+                                      if (viewedTrackId == id) viewedTrackId = null
+                                      scope.launch { trackRepo.delete(id) }
+                                  },
+                                  onShowOnMap = { w ->
+                                      mapFocus = w.lat to w.lon
+                                      goTo("map")
+                                  },
+                                  onShowGraphicOnMap = { g ->
+                                      if (g.points.isNotEmpty()) {
+                                          mapFocus = g.points.map { it.lat }.average() to
+                                              g.points.map { it.lon }.average()
+                                          goTo("map")
+                                      }
+                                  },
+                                  unitNameFor = unitNameFor,
+                                  onImport = { data, onDone ->
+                                      scope.launch {
+                                          val now = System.currentTimeMillis()
+                                          waypointRepo.addAll(data.waypoints, now)
+                                          for (l in data.lines) {
+                                              waypointRepo.addFolder(l.folder)
+                                              graphicsRepo.add(l.name, "route", l.points, l.folder, "none", now)
+                                          }
+                                          for (a in data.areas) {
+                                              waypointRepo.addFolder(a.folder)
+                                              graphicsRepo.add(a.name, "aa", a.points, a.folder, "none", now)
+                                          }
+                                          for (t in data.tracks) {
+                                              trackRepo.importTrack(t.name, t.points, now)
+                                          }
+                                          onDone(data.summary())
+                                      }
+                                  },
+                                  onExport = { format, onDone ->
+                                      scope.launch {
+                                          runCatching {
+                                              val trackData = tracks.map {
+                                                  it to TrackRepository.readPoints(context, it.id)
+                                              }
+                                              val content = if (format == "gpx") {
+                                                  InterchangeFiles.buildGpx(
+                                                      waypoints,
+                                                      graphics.filter { it.type == "route" },
+                                                      trackData,
+                                                  )
+                                              } else {
+                                                  InterchangeFiles.buildKml(waypoints, graphics, trackData)
+                                              }
+                                              val fname = "gridfix-export.$format"
+                                              val file = withContext(Dispatchers.IO) {
+                                                  val dir = File(context.cacheDir, "share").apply { mkdirs() }
+                                                  File(dir, fname).apply { writeText(content) }
+                                              }
+                                              val uri = FileProvider.getUriForFile(
+                                                  context, "app.gridfix.android.fileprovider", file
+                                              )
+                                              val send = android.content.Intent(
+                                                  android.content.Intent.ACTION_SEND
+                                              ).apply {
+                                                  type = if (format == "gpx") "application/gpx+xml"
+                                                  else "application/vnd.google-earth.kml+xml"
+                                                  putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                                  addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                              }
+                                              context.startActivity(
+                                                  android.content.Intent.createChooser(send, "Share export")
+                                              )
+                                              onDone(fname)
+                                          }.getOrElse { onDone(null) }
+                                      }
+                                  },
+                              )
+                          }
+                          composable("settings") { SettingsScreen(repo, settings) }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun PermissionGate(onRequest: () -> Unit) {
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .padding(32.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.Center,
+              ) {
+                  Icon(
+                      Icons.Outlined.MyLocation,
+                      contentDescription = null,
+                      modifier = Modifier.size(56.dp),
+                      tint = MaterialTheme.colorScheme.primary,
+                  )
+                  Spacer(Modifier.height(16.dp))
+                  Text("Location access needed", style = MaterialTheme.typography.titleLarge)
+                  Spacer(Modifier.height(8.dp))
+                  Text(
+                      "GridFix reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      textAlign = TextAlign.Center,
+                  )
+                  Spacer(Modifier.height(24.dp))
+                  Button(onClick = onRequest) {
+                      Text("Grant location access")
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
           cat > 'app/src/main/java/app/gridfix/android/ui/WaypointDialog.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.ui
 
@@ -337,8 +1530,14 @@ jobs:
           import androidx.compose.foundation.shape.CircleShape
           import androidx.compose.foundation.text.KeyboardOptions
           import androidx.compose.foundation.verticalScroll
+          import android.hardware.GeomagneticField
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.ArrowDropDown
           import androidx.compose.material3.AlertDialog
+          import androidx.compose.material3.DropdownMenu
+          import androidx.compose.material3.DropdownMenuItem
           import androidx.compose.material3.FilterChip
+          import androidx.compose.material3.Icon
           import androidx.compose.material3.LocalTextStyle
           import androidx.compose.material3.MaterialTheme
           import androidx.compose.material3.OutlinedTextField
@@ -354,17 +1553,21 @@ jobs:
           import androidx.compose.ui.Modifier
           import androidx.compose.ui.draw.clip
           import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusRequester
           import androidx.compose.ui.text.input.KeyboardCapitalization
           import androidx.compose.ui.text.input.KeyboardType
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
           import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
           import app.gridfix.android.data.DEFAULT_FOLDER
           import app.gridfix.android.data.KIND_UNIT
           import app.gridfix.android.data.KIND_WP
           import app.gridfix.android.data.Waypoint
           import app.gridfix.android.data.WaypointDraft
+          import org.osmdroid.util.GeoPoint
           import java.util.Locale
 
           @Composable
@@ -430,9 +1633,11 @@ jobs:
               defaultName: String,
               onConfirm: (WaypointDraft) -> Unit,
               onDismiss: () -> Unit,
-              night: Boolean = false,
+              settings: AppSettings,
+              projectBases: List<Waypoint> = emptyList(),
               unitNameFor: (symbol: String, echelon: String) -> String = { _, _ -> defaultName },
           ) {
+              val night = settings.nightMode
               val baseParts = remember(initial) {
                   when {
                       initial != null -> Coordinates.mgrs(initial.lat, initial.lon, 10)
@@ -449,7 +1654,13 @@ jobs:
               var designation by remember(initial) { mutableStateOf(initial?.designation ?: "") }
               var kind by remember(initial) { mutableStateOf(initial?.kind ?: KIND_WP) }
               var rotation by remember(initial) { mutableStateOf(initial?.rotation ?: 0f) }
-              var usePreset by remember(initial) { mutableStateOf(initial == null && presetLat != null) }
+              // 0 = preset position, 1 = MGRS entry, 2 = project from a known point
+              var posMode by remember(initial) { mutableStateOf(if (initial == null && presetLat != null) 0 else 1) }
+              var projBaseId by remember(initial) { mutableStateOf<String?>(null) }
+              var azText by remember(initial) { mutableStateOf("") }
+              var distText by remember(initial) { mutableStateOf("") }
+              var projMenuOpen by remember { mutableStateOf(false) }
+              val northingFocus = remember { FocusRequester() }
               var gzdSquare by remember(initial) {
                   mutableStateOf(baseParts?.let { "${it.gzd} ${it.square}" } ?: "")
               }
@@ -462,6 +1673,39 @@ jobs:
                   fontSize = 22.sp,
                   textAlign = TextAlign.Center,
               )
+
+              // Projection base + live result, shared by the fields and the confirm button
+              val projBase: Triple<String, Double, Double>? = when {
+                  projBaseId != null -> projectBases.firstOrNull { it.id == projBaseId }
+                      ?.let { Triple(it.name, it.lat, it.lon) }
+                  presetLat != null && presetLon != null -> Triple(presetLabel, presetLat, presetLon)
+                  else -> projectBases.firstOrNull()?.let { Triple(it.name, it.lat, it.lon) }
+              }
+              val refLetter = when (settings.northRef) {
+                  1 -> "magnetic"
+                  2 -> "grid"
+                  else -> "true"
+              }
+              val angleLabel = if (settings.angleUnit == 1) "mils" else "degrees"
+              val projResult: Pair<Double, Double>? = run {
+                  val base = projBase ?: return@run null
+                  val az = azText.toFloatOrNull() ?: return@run null
+                  val dist = distText.toFloatOrNull() ?: return@run null
+                  if (dist <= 0f || dist > 200000f) return@run null
+                  val deg = if (settings.angleUnit == 1) az * 360f / 6400f else az
+                  val decl = GeomagneticField(
+                      base.second.toFloat(), base.third.toFloat(), 0f, System.currentTimeMillis()
+                  ).declination
+                  val conv = Coordinates.gridConvergence(base.second, base.third).toFloat()
+                  val trueDeg = when (settings.northRef) {
+                      1 -> deg + decl
+                      2 -> deg + conv
+                      else -> deg
+                  }
+                  val dest = GeoPoint(base.second, base.third)
+                      .destinationPoint(dist.toDouble(), (((trueDeg % 360f) + 360f) % 360f).toDouble())
+                  dest.latitude to dest.longitude
+              }
 
               AlertDialog(
                   onDismissRequest = onDismiss,
@@ -627,29 +1871,52 @@ jobs:
                           )
 
                           Text("Position", style = MaterialTheme.typography.labelLarge)
-                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                          Row(
+                              modifier = Modifier.horizontalScroll(rememberScrollState()),
+                              horizontalArrangement = Arrangement.spacedBy(8.dp),
+                          ) {
                               FilterChip(
-                                  selected = usePreset,
-                                  onClick = { usePreset = true },
+                                  selected = posMode == 0,
+                                  onClick = { posMode = 0 },
                                   label = { Text(presetLabel) },
                                   enabled = presetLat != null,
                               )
                               FilterChip(
-                                  selected = !usePreset,
-                                  onClick = { usePreset = false },
+                                  selected = posMode == 1,
+                                  onClick = { posMode = 1 },
                                   label = { Text("MGRS grid") },
                               )
+                              FilterChip(
+                                  selected = posMode == 2,
+                                  onClick = { posMode = 2 },
+                                  label = { Text("Project") },
+                                  enabled = presetLat != null || projectBases.isNotEmpty(),
+                              )
                           }
-                          if (!usePreset) {
+                          if (posMode == 1) {
                               OutlinedTextField(
                                   value = gzdSquare,
                                   onValueChange = { v ->
-                                      gzdSquare = v.uppercase(Locale.US)
+                                      val cleaned = v.uppercase(Locale.US)
                                           .filter { it.isLetterOrDigit() || it == ' ' }
-                                          .take(7)
+                                      var handled = false
+                                      if (cleaned.replace(" ", "").length > 7) {
+                                          // A full grid was pasted — split it into the fields
+                                          val parsed = Coordinates.parseMgrs(cleaned)
+                                          if (parsed != null) {
+                                              val parts = Coordinates.mgrs(parsed.first, parsed.second, 10)
+                                              if (parts != null && parts.easting.isNotEmpty()) {
+                                                  gzdSquare = "${parts.gzd} ${parts.square}"
+                                                  easting = parts.easting
+                                                  northing = parts.northing
+                                                  handled = true
+                                              }
+                                          }
+                                      }
+                                      if (!handled) gzdSquare = cleaned.take(7)
                                       error = null
                                   },
-                                  label = { Text("Grid zone") },
+                                  label = { Text("Grid zone (or paste a full grid)") },
                                   placeholder = { Text("39R TM") },
                                   singleLine = true,
                                   textStyle = bigDigits,
@@ -662,6 +1929,7 @@ jobs:
                                       onValueChange = { v ->
                                           easting = v.filter { it.isDigit() }.take(5)
                                           error = null
+                                          if (easting.length == 5) northingFocus.requestFocus()
                                       },
                                       label = { Text("Easting") },
                                       placeholder = { Text("23559") },
@@ -681,9 +1949,77 @@ jobs:
                                       singleLine = true,
                                       textStyle = bigDigits,
                                       keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                      modifier = Modifier
+                                          .weight(1f)
+                                          .focusRequester(northingFocus),
+                                  )
+                              }
+                          } else if (posMode == 2) {
+                              Row(
+                                  modifier = Modifier.clickable { projMenuOpen = true },
+                                  verticalAlignment = Alignment.CenterVertically,
+                              ) {
+                                  Text(
+                                      "From: " + (projBase?.first ?: "no point available"),
+                                      style = MaterialTheme.typography.bodyMedium,
+                                  )
+                                  Icon(
+                                      Icons.Outlined.ArrowDropDown,
+                                      contentDescription = "Choose base point",
+                                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  )
+                                  DropdownMenu(
+                                      expanded = projMenuOpen,
+                                      onDismissRequest = { projMenuOpen = false },
+                                  ) {
+                                      if (presetLat != null && presetLon != null) {
+                                          DropdownMenuItem(
+                                              text = { Text(presetLabel) },
+                                              onClick = { projBaseId = null; projMenuOpen = false },
+                                          )
+                                      }
+                                      projectBases.forEach { b ->
+                                          DropdownMenuItem(
+                                              text = { Text(b.name) },
+                                              onClick = { projBaseId = b.id; projMenuOpen = false },
+                                          )
+                                      }
+                                  }
+                              }
+                              Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                  OutlinedTextField(
+                                      value = azText,
+                                      onValueChange = { v ->
+                                          azText = v.filter { it.isDigit() || it == '.' }.take(6)
+                                          error = null
+                                      },
+                                      label = { Text("Azimuth ($angleLabel $refLetter)") },
+                                      singleLine = true,
+                                      textStyle = bigDigits,
+                                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                      modifier = Modifier.weight(1f),
+                                  )
+                                  OutlinedTextField(
+                                      value = distText,
+                                      onValueChange = { v ->
+                                          distText = v.filter { it.isDigit() }.take(6)
+                                          error = null
+                                      },
+                                      label = { Text("Distance (m)") },
+                                      singleLine = true,
+                                      textStyle = bigDigits,
+                                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                       modifier = Modifier.weight(1f),
                                   )
                               }
+                              Text(
+                                  projResult?.let {
+                                      "→ " + (Coordinates.mgrs(it.first, it.second, 10)?.full ?: "—")
+                                  } ?: "Enter azimuth and distance from the base point.",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  fontFamily = FontFamily.Monospace,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
                           } else if (presetLat != null && presetLon != null) {
                               Text(
                                   "$presetLabel: " + (Coordinates.mgrs(presetLat, presetLon, 10)?.full ?: "—"),
@@ -720,26 +2056,34 @@ jobs:
                               if (kind == KIND_WP && WaypointSymbols.isTask(symbol) &&
                                   WaypointSymbols.taskLetter(symbol) == null
                               ) rotation else 0f
-                          if (usePreset && presetLat != null && presetLon != null) {
+                          fun confirmAt(lat: Double, lon: Double) {
                               onConfirm(
                                   WaypointDraft(
-                                      finalName, presetLat, presetLon, finalFolder, symbol, finalAffiliation,
+                                      finalName, lat, lon, finalFolder, symbol, finalAffiliation,
                                       finalEchelon, finalDesignation, kind, finalRotation,
                                   )
                               )
-                          } else if (easting.isEmpty() || easting.length != northing.length) {
-                              error = "Easting and northing need the same number of digits."
-                          } else {
-                              val parsed = Coordinates.parseMgrs(gzdSquare + easting + northing)
-                              if (parsed == null) {
-                                  error = "Couldn't read that grid — check the zone letters and digits."
-                              } else {
-                                  onConfirm(
-                                      WaypointDraft(
-                                          finalName, parsed.first, parsed.second, finalFolder, symbol, finalAffiliation,
-                                          finalEchelon, finalDesignation, kind, finalRotation,
-                                      )
-                                  )
+                          }
+                          when {
+                              posMode == 0 && presetLat != null && presetLon != null ->
+                                  confirmAt(presetLat, presetLon)
+                              posMode == 2 -> {
+                                  val r = projResult
+                                  if (r == null) {
+                                      error = "Projection needs a base point, azimuth, and distance (max 200 km)."
+                                  } else {
+                                      confirmAt(r.first, r.second)
+                                  }
+                              }
+                              easting.isEmpty() || easting.length != northing.length ->
+                                  error = "Easting and northing need the same number of digits."
+                              else -> {
+                                  val parsed = Coordinates.parseMgrs(gzdSquare + easting + northing)
+                                  if (parsed == null) {
+                                      error = "Couldn't read that grid — check the zone letters and digits."
+                                  } else {
+                                      confirmAt(parsed.first, parsed.second)
+                                  }
                               }
                           }
                       }) { Text(if (initial == null) "Add" else "Save") }
@@ -748,416 +2092,6 @@ jobs:
                       TextButton(onClick = onDismiss) { Text("Cancel") }
                   },
               )
-          }
-          EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
-          cat > 'app/src/main/java/app/gridfix/android/ui/WaypointMarker.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.ui
-
-          import androidx.compose.foundation.Canvas
-          import androidx.compose.foundation.Image
-          import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.foundation.layout.size
-          import androidx.compose.material3.Icon
-          import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.Text
-          import androidx.compose.runtime.Composable
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.geometry.CornerRadius
-          import androidx.compose.ui.geometry.Offset
-          import androidx.compose.ui.geometry.Size
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.graphics.ColorFilter
-          import androidx.compose.ui.graphics.ColorMatrix
-          import androidx.compose.ui.graphics.FilterQuality
-          import androidx.compose.ui.graphics.Path
-          import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.graphics.drawscope.DrawScope
-          import androidx.compose.ui.graphics.drawscope.Stroke
-          import androidx.compose.ui.graphics.drawscope.rotate
-          import androidx.compose.ui.text.font.FontFamily
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.unit.Dp
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import kotlin.math.cos
-          import kotlin.math.hypot
-          import kotlin.math.sin
-
-          /** MIL-STD-2525-style affiliation colors. */
-          object Affiliations {
-              val all = listOf("none", "friendly", "hostile", "neutral", "unknown")
-
-              fun label(key: String): String = when (key) {
-                  "friendly" -> "Friendly"
-                  "hostile" -> "Hostile"
-                  "neutral" -> "Neutral"
-                  "unknown" -> "Unknown"
-                  else -> "None"
-              }
-
-              fun color(key: String, fallback: Color): Color = when (key) {
-                  "friendly" -> Color(0xFF5BC8F5)   // crystal blue
-                  "hostile" -> Color(0xFFFF6B60)    // salmon red
-                  "neutral" -> Color(0xFF8FE38F)    // bamboo green
-                  "unknown" -> Color(0xFFF0E060)    // light yellow
-                  else -> fallback
-              }
-          }
-
-          /**
-           * Renders a waypoint marker:
-           * - NATO unit keys (nato_*) render the bundled MIL-STD-2525B symbol image
-           * - tactical task keys (task_*) render drawn task glyphs or letter badges
-           * - shape keys render plain drawn shapes
-           * - everything else renders a material icon
-           * Non-NATO markers get an affiliation frame (friendly rectangle, hostile diamond,
-           * neutral square, unknown circle) except tasks, which stand alone per doctrine.
-           */
-          /** Night-vision red: luminance mapped onto the red channel, green/blue dropped. */
-          private val NightImageFilter = ColorFilter.colorMatrix(
-              ColorMatrix(
-                  floatArrayOf(
-                      0.35f, 0.50f, 0.15f, 0f, 30f,
-                      0f, 0f, 0f, 0f, 0f,
-                      0f, 0f, 0f, 0f, 0f,
-                      0f, 0f, 0f, 1f, 0f,
-                  )
-              )
-          )
-          private val NightRed = Color(0xFFFF3B30)
-
-          @Composable
-          fun WaypointMarker(
-              symbol: String,
-              affiliation: String,
-              modifier: Modifier = Modifier,
-              size: Dp = 30.dp,
-              echelon: String = "",
-              night: Boolean = false,
-              rotation: Float = 0f,
-          ) {
-              if (NatoSymbols.isNato(symbol)) {
-                  val res = NatoSymbols.resId(symbol)
-                  if (res != null) {
-                      val context = LocalContext.current
-                      Box(modifier.size(size)) {
-                          Image(
-                              bitmap = NatoSymbols.bitmap(context, res),
-                              contentDescription = NatoSymbols.label(symbol),
-                              modifier = Modifier.fillMaxSize(),
-                              colorFilter = if (night) NightImageFilter else null,
-                              filterQuality = FilterQuality.High,
-                          )
-                          EchelonMarks(
-                              echelon = echelon,
-                              color = if (night) NightRed
-                              else Affiliations.color(affiliation, MaterialTheme.colorScheme.primary),
-                              halo = MaterialTheme.colorScheme.background,
-                          )
-                      }
-                      return
-                  }
-              }
-
-              val color = if (night) NightRed
-              else Affiliations.color(affiliation, MaterialTheme.colorScheme.primary)
-              val isShape = WaypointSymbols.isShape(symbol)
-              val isTask = WaypointSymbols.isTask(symbol)
-              val taskLetter = if (isTask) WaypointSymbols.taskLetter(symbol) else null
-
-              Box(modifier.size(size), contentAlignment = Alignment.Center) {
-                  Canvas(Modifier.fillMaxSize()) {
-                      val w = this.size.width
-                      val h = this.size.height
-                      val frameStroke = Stroke(width = w * 0.07f)
-                      val glyphStroke = w * 0.08f
-
-                      if (!isTask) {
-                          when (affiliation) {
-                              "friendly" -> drawRoundRect(
-                                  color = color,
-                                  topLeft = Offset(w * 0.04f, h * 0.20f),
-                                  size = Size(w * 0.92f, h * 0.60f),
-                                  cornerRadius = CornerRadius(w * 0.08f),
-                                  style = frameStroke,
-                              )
-                              "hostile" -> {
-                                  val p = Path().apply {
-                                      moveTo(w / 2f, h * 0.05f)
-                                      lineTo(w * 0.95f, h / 2f)
-                                      lineTo(w / 2f, h * 0.95f)
-                                      lineTo(w * 0.05f, h / 2f)
-                                      close()
-                                  }
-                                  drawPath(p, color, style = frameStroke)
-                              }
-                              "neutral" -> drawRect(
-                                  color = color,
-                                  topLeft = Offset(w * 0.10f, h * 0.10f),
-                                  size = Size(w * 0.80f, h * 0.80f),
-                                  style = frameStroke,
-                              )
-                              "unknown" -> drawCircle(
-                                  color = color,
-                                  radius = w * 0.44f,
-                                  style = frameStroke,
-                              )
-                          }
-                      }
-
-                      if (isShape) {
-                          val s = w * 0.36f
-                          when (symbol) {
-                              "dot" -> drawCircle(color, radius = s * 0.45f)
-                              "square" -> drawRect(
-                                  color,
-                                  topLeft = Offset(w / 2f - s * 0.42f, h / 2f - s * 0.42f),
-                                  size = Size(s * 0.84f, s * 0.84f),
-                              )
-                              "triangle" -> {
-                                  val p = Path().apply {
-                                      moveTo(w / 2f, h / 2f - s * 0.55f)
-                                      lineTo(w / 2f + s * 0.58f, h / 2f + s * 0.42f)
-                                      lineTo(w / 2f - s * 0.58f, h / 2f + s * 0.42f)
-                                      close()
-                                  }
-                                  drawPath(p, color)
-                              }
-                              "diamond" -> {
-                                  val p = Path().apply {
-                                      moveTo(w / 2f, h / 2f - s * 0.6f)
-                                      lineTo(w / 2f + s * 0.6f, h / 2f)
-                                      lineTo(w / 2f, h / 2f + s * 0.6f)
-                                      lineTo(w / 2f - s * 0.6f, h / 2f)
-                                      close()
-                                  }
-                                  drawPath(p, color)
-                              }
-                              "cross" -> rotate(45f) {
-                                  val half = s * 0.6f
-                                  val t = s * 0.3f
-                                  drawLine(color, Offset(w / 2f - half, h / 2f), Offset(w / 2f + half, h / 2f), strokeWidth = t)
-                                  drawLine(color, Offset(w / 2f, h / 2f - half), Offset(w / 2f, h / 2f + half), strokeWidth = t)
-                              }
-                          }
-                      }
-
-                      if (isTask && taskLetter == null) {
-                          rotate(rotation) {
-                          when (symbol) {
-                              "task_block" -> {
-                                  drawLine(color, Offset(w * 0.08f, h * 0.5f), Offset(w * 0.72f, h * 0.5f), glyphStroke)
-                                  drawLine(color, Offset(w * 0.72f, h * 0.16f), Offset(w * 0.72f, h * 0.84f), glyphStroke)
-                              }
-                              "task_ambush" -> {
-                                  // FM 1-02.2: curved position arc with rear tick marks; the arrow
-                                  // rises from the arc's center of mass in the direction of fire.
-                                  val p0 = Offset(w * 0.10f, h * 0.76f)
-                                  val p1 = Offset(w * 0.90f, h * 0.76f)
-                                  val ccx = w * 0.5f
-                                  val ccy = h * 0.42f
-                                  val arc = Path().apply {
-                                      moveTo(p0.x, p0.y)
-                                      quadraticBezierTo(ccx, ccy, p1.x, p1.y)
-                                  }
-                                  drawPath(arc, color, style = Stroke(glyphStroke))
-                                  for (i in 1..6) {
-                                      val t = i / 7f
-                                      val mt = 1f - t
-                                      val x = mt * mt * p0.x + 2f * mt * t * ccx + t * t * p1.x
-                                      val y = mt * mt * p0.y + 2f * mt * t * ccy + t * t * p1.y
-                                      val dx = 2f * mt * (ccx - p0.x) + 2f * t * (p1.x - ccx)
-                                      val dy = 2f * mt * (ccy - p0.y) + 2f * t * (p1.y - ccy)
-                                      val len = hypot(dx, dy)
-                                      if (len > 0f) {
-                                          val nx = -dy / len
-                                          val ny = dx / len
-                                          drawLine(
-                                              color,
-                                              Offset(x, y),
-                                              Offset(x + nx * h * 0.11f, y + ny * h * 0.11f),
-                                              glyphStroke * 0.8f,
-                                          )
-                                      }
-                                  }
-                                  val apexY = 0.25f * p0.y + 0.5f * ccy + 0.25f * p1.y
-                                  drawLine(color, Offset(w * 0.5f, apexY), Offset(w * 0.5f, h * 0.14f), glyphStroke)
-                                  solidHead(Offset(w * 0.5f, h * 0.08f), -90f, w * 0.15f, color)
-                              }
-                              "task_sbf" -> {
-                                  // FM 1-02.2 support by fire: position baseline with an arm from each
-                                  // end toward the enemy (solid arrowheads) and short rear flank legs.
-                                  val baseY = h * 0.66f
-                                  drawLine(color, Offset(w * 0.16f, baseY), Offset(w * 0.84f, baseY), glyphStroke)
-                                  drawLine(color, Offset(w * 0.16f, baseY), Offset(w * 0.05f, h * 0.86f), glyphStroke)
-                                  drawLine(color, Offset(w * 0.84f, baseY), Offset(w * 0.95f, h * 0.86f), glyphStroke)
-                                  drawLine(color, Offset(w * 0.16f, baseY), Offset(w * 0.16f, h * 0.18f), glyphStroke)
-                                  drawLine(color, Offset(w * 0.84f, baseY), Offset(w * 0.84f, h * 0.18f), glyphStroke)
-                                  solidHead(Offset(w * 0.16f, h * 0.10f), -90f, w * 0.15f, color)
-                                  solidHead(Offset(w * 0.84f, h * 0.10f), -90f, w * 0.15f, color)
-                              }
-                              "task_fix" -> {
-                                  drawLine(color, Offset(w * 0.06f, h * 0.5f), Offset(w * 0.22f, h * 0.5f), glyphStroke)
-                                  var x = w * 0.22f
-                                  var up = true
-                                  while (x < w * 0.66f) {
-                                      val nx = x + w * 0.11f
-                                      drawLine(
-                                          color,
-                                          Offset(x, if (up) h * 0.5f else h * 0.32f),
-                                          Offset(nx, if (up) h * 0.32f else h * 0.5f),
-                                          glyphStroke,
-                                      )
-                                      x = nx
-                                      up = !up
-                                  }
-                                  drawLine(color, Offset(x, h * 0.5f), Offset(w * 0.86f, h * 0.5f), glyphStroke)
-                                  arrowHead(Offset(w * 0.92f, h * 0.5f), 0f, w * 0.15f, color, glyphStroke)
-                              }
-                              "task_secure" -> {
-                                  drawCircle(color, radius = w * 0.34f, style = Stroke(glyphStroke))
-                                  arrowHead(Offset(w * 0.5f, h * 0.16f), 180f, w * 0.16f, color, glyphStroke)
-                              }
-                              "task_occupy" -> {
-                                  // Occupy: the arrow enters and ends inside the position circle
-                                  drawCircle(color, radius = w * 0.30f, style = Stroke(glyphStroke))
-                                  drawLine(color, Offset(w * 0.05f, h * 0.95f), Offset(w * 0.40f, h * 0.60f), glyphStroke)
-                                  solidHead(Offset(w * 0.45f, h * 0.55f), -45f, w * 0.14f, color)
-                              }
-                              "task_retain" -> {
-                                  drawCircle(color, radius = w * 0.28f, style = Stroke(glyphStroke))
-                                  for (i in 0 until 10) {
-                                      val ang = Math.toRadians(i * 36.0)
-                                      val x1 = w / 2f + (w * 0.28f) * cos(ang).toFloat()
-                                      val y1 = h / 2f + (w * 0.28f) * sin(ang).toFloat()
-                                      val x2 = w / 2f + (w * 0.40f) * cos(ang).toFloat()
-                                      val y2 = h / 2f + (w * 0.40f) * sin(ang).toFloat()
-                                      drawLine(color, Offset(x1, y1), Offset(x2, y2), glyphStroke * 0.75f)
-                                  }
-                              }
-                          }
-                          }
-                      }
-                  }
-                  if (!isShape && !isTask && symbol.isNotEmpty()) {
-                      Icon(
-                          WaypointSymbols.icon(symbol),
-                          contentDescription = null,
-                          tint = color,
-                          modifier = Modifier.size(size * 0.5f),
-                      )
-                  }
-                  if (taskLetter != null) {
-                      Text(
-                          taskLetter,
-                          color = color,
-                          fontFamily = FontFamily.Monospace,
-                          fontWeight = FontWeight.Bold,
-                          fontSize = (size.value * 0.55f).sp,
-                      )
-                  }
-                  if (!isTask) {
-                      EchelonMarks(echelon = echelon, color = color, halo = MaterialTheme.colorScheme.background)
-                  }
-              }
-          }
-
-          /**
-           * MIL-STD-2525-style echelon marks drawn along the top edge of the marker:
-           * team = slashed circle, squad/section/platoon = 1–3 dots,
-           * company/battalion/regiment = 1–3 bars, brigade = X.
-           */
-          @Composable
-          private fun EchelonMarks(echelon: String, color: Color, halo: Color) {
-              if (echelon.isEmpty()) return
-              Canvas(Modifier.fillMaxSize()) {
-                  val w = this.size.width
-                  val cy = w * 0.10f
-                  val s = w * 0.19f
-                  val stroke = s * 0.30f
-
-                  fun marks(count: Int, dot: Boolean) {
-                      val gap = if (dot) s * 0.78f else s * 0.62f
-                      val x0 = w / 2f - gap * (count - 1) / 2f
-                      for (i in 0 until count) {
-                          val x = x0 + gap * i
-                          if (dot) {
-                              drawCircle(halo, radius = s * 0.30f + stroke * 0.5f, center = Offset(x, cy))
-                              drawCircle(color, radius = s * 0.30f, center = Offset(x, cy))
-                          } else {
-                              drawLine(halo, Offset(x, cy - s * 0.55f), Offset(x, cy + s * 0.55f), stroke * 1.9f)
-                              drawLine(color, Offset(x, cy - s * 0.55f), Offset(x, cy + s * 0.55f), stroke)
-                          }
-                      }
-                  }
-
-                  when (echelon) {
-                      "tm" -> {
-                          drawCircle(halo, radius = s * 0.62f, center = Offset(w / 2f, cy), style = Stroke(stroke * 1.9f))
-                          drawCircle(color, radius = s * 0.62f, center = Offset(w / 2f, cy), style = Stroke(stroke))
-                          drawLine(
-                              halo,
-                              Offset(w / 2f - s * 0.85f, cy + s * 0.85f),
-                              Offset(w / 2f + s * 0.85f, cy - s * 0.85f),
-                              stroke * 1.9f,
-                          )
-                          drawLine(
-                              color,
-                              Offset(w / 2f - s * 0.85f, cy + s * 0.85f),
-                              Offset(w / 2f + s * 0.85f, cy - s * 0.85f),
-                              stroke,
-                          )
-                      }
-                      "sqd" -> marks(1, dot = true)
-                      "sec" -> marks(2, dot = true)
-                      "plt" -> marks(3, dot = true)
-                      "co" -> marks(1, dot = false)
-                      "bn" -> marks(2, dot = false)
-                      "rgt" -> marks(3, dot = false)
-                      "bde" -> {
-                          val r = s * 0.60f
-                          listOf(
-                              Offset(w / 2f - r, cy - r) to Offset(w / 2f + r, cy + r),
-                              Offset(w / 2f - r, cy + r) to Offset(w / 2f + r, cy - r),
-                          ).forEach { (a, b) ->
-                              drawLine(halo, a, b, stroke * 1.9f)
-                              drawLine(color, a, b, stroke)
-                          }
-                      }
-                  }
-              }
-          }
-
-          /** Solid (filled) arrowhead at [tip], pointing along [angleDeg] (0° = +x, clockwise). */
-          private fun DrawScope.solidHead(tip: Offset, angleDeg: Float, len: Float, color: Color) {
-              val a = Math.toRadians(angleDeg.toDouble())
-              val back = 150.0 * Math.PI / 180.0
-              val p = Path().apply {
-                  moveTo(tip.x, tip.y)
-                  lineTo(
-                      tip.x + len * cos(a + back).toFloat(),
-                      tip.y + len * sin(a + back).toFloat(),
-                  )
-                  lineTo(
-                      tip.x + len * cos(a - back).toFloat(),
-                      tip.y + len * sin(a - back).toFloat(),
-                  )
-                  close()
-              }
-              drawPath(p, color)
-          }
-
-          /** Small open arrowhead at [tip], pointing along [angleDeg] (0° = +x, clockwise). */
-          private fun DrawScope.arrowHead(tip: Offset, angleDeg: Float, len: Float, color: Color, stroke: Float) {
-              val a = Math.toRadians(angleDeg.toDouble())
-              val back = 150.0 * Math.PI / 180.0
-              val a1 = a + back
-              val a2 = a - back
-              drawLine(color, tip, Offset(tip.x + len * cos(a1).toFloat(), tip.y + len * sin(a1).toFloat()), stroke)
-              drawLine(color, tip, Offset(tip.x + len * cos(a2).toFloat(), tip.y + len * sin(a2).toFloat()), stroke)
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
@@ -2517,7 +3451,8 @@ jobs:
                           newWpAt = null
                       },
                       onDismiss = { newWpAt = null },
-                      night = settings.nightMode,
+                      settings = settings,
+                      projectBases = waypoints,
                       unitNameFor = unitNameFor,
                   )
               }
@@ -2535,7 +3470,8 @@ jobs:
                           editingWp = null
                       },
                       onDismiss = { editingWp = null },
-                      night = settings.nightMode,
+                      settings = settings,
+                      projectBases = waypoints,
                       unitNameFor = unitNameFor,
                   )
               }
@@ -2696,9 +3632,13 @@ jobs:
           import androidx.compose.foundation.lazy.items
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.filled.Add
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.result.contract.ActivityResultContracts
           import androidx.compose.material.icons.outlined.CreateNewFolder
           import androidx.compose.material.icons.outlined.Delete
           import androidx.compose.material.icons.outlined.Description
+          import androidx.compose.material.icons.outlined.FileDownload
+          import androidx.compose.material.icons.outlined.FileUpload
           import androidx.compose.material.icons.outlined.Edit
           import androidx.compose.material.icons.outlined.ExpandLess
           import androidx.compose.material.icons.outlined.ExpandMore
@@ -2740,6 +3680,7 @@ jobs:
           import app.gridfix.android.data.AppSettings
           import app.gridfix.android.data.FolderInfo
           import app.gridfix.android.data.GraphicTypes
+          import app.gridfix.android.data.InterchangeFiles
           import app.gridfix.android.data.KIND_UNIT
           import app.gridfix.android.data.TacGraphic
           import app.gridfix.android.data.TrackInfo
@@ -2783,6 +3724,8 @@ jobs:
               onShowOnMap: (Waypoint) -> Unit,
               onShowGraphicOnMap: (TacGraphic) -> Unit,
               unitNameFor: (symbol: String, echelon: String) -> String,
+              onImport: (InterchangeFiles.ImportedData, onDone: (String) -> Unit) -> Unit,
+              onExport: (format: String, onDone: (String?) -> Unit) -> Unit,
           )
           {
               val context = LocalContext.current
@@ -2794,6 +3737,34 @@ jobs:
               var deleteTrackCandidate by remember { mutableStateOf<TrackInfo?>(null) }
               var clearFolderCandidate by remember { mutableStateOf<String?>(null) }
               var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
+              var exportOpen by remember { mutableStateOf(false) }
+              var ioMessage by remember { mutableStateOf<String?>(null) }
+
+              val importLauncher = rememberLauncherForActivityResult(
+                  ActivityResultContracts.OpenDocument()
+              ) { uri ->
+                  if (uri != null) {
+                      scope.launch {
+                          var display = "file"
+                          context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                              val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                              if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx)?.let { display = it }
+                          }
+                          val data = withContext(Dispatchers.IO) {
+                              runCatching {
+                                  context.contentResolver.openInputStream(uri)?.use { stream ->
+                                      InterchangeFiles.parse(display, stream)
+                                  }
+                              }.getOrNull()
+                          }
+                          when {
+                              data == null -> ioMessage = "Couldn't read $display — GPX, KML, or KMZ expected"
+                              data.isEmpty -> ioMessage = "Nothing importable in $display"
+                              else -> onImport(data) { summary -> ioMessage = summary }
+                          }
+                      }
+                  }
+              }
               var newFolderOpen by remember { mutableStateOf(false) }
               val collapsed = remember { mutableStateMapOf<String, Boolean>() }
               val loc = fix.location
@@ -2843,6 +3814,20 @@ jobs:
                                   letterSpacing = 2.sp,
                                   modifier = Modifier.weight(1f),
                               )
+                              IconButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
+                                  Icon(
+                                      Icons.Outlined.FileUpload,
+                                      contentDescription = "Import GPX/KML/KMZ",
+                                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  )
+                              }
+                              IconButton(onClick = { exportOpen = true }) {
+                                  Icon(
+                                      Icons.Outlined.FileDownload,
+                                      contentDescription = "Export",
+                                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  )
+                              }
                               TextButton(onClick = { newFolderOpen = true }) {
                                   Icon(
                                       Icons.Outlined.CreateNewFolder,
@@ -2851,6 +3836,26 @@ jobs:
                                   )
                                   Spacer(Modifier.size(6.dp))
                                   Text("New folder")
+                              }
+                          }
+                      }
+
+                      ioMessage?.let { msg ->
+                          item(key = "io-message") {
+                              Card(
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .clickable { ioMessage = null },
+                                  colors = CardDefaults.cardColors(
+                                      containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                  ),
+                              ) {
+                                  Text(
+                                      msg,
+                                      style = MaterialTheme.typography.bodySmall,
+                                      fontFamily = FontFamily.Monospace,
+                                      modifier = Modifier.padding(10.dp),
+                                  )
                               }
                           }
                       }
@@ -3016,7 +4021,8 @@ jobs:
                           dialogOpen = false
                       },
                       onDismiss = { dialogOpen = false },
-                      night = settings.nightMode,
+                      settings = settings,
+                      projectBases = waypoints,
                       unitNameFor = unitNameFor,
                   )
               }
@@ -3051,6 +4057,34 @@ jobs:
                       route = r,
                       settings = settings,
                       onDismiss = { routeCardFor = null },
+                  )
+              }
+
+              if (exportOpen) {
+                  AlertDialog(
+                      onDismissRequest = { exportOpen = false },
+                      title = { Text("Export") },
+                      text = {
+                          Text(
+                              "GPX carries waypoints, routes, and tracks (widest app support). " +
+                                  "KML carries everything including drawn graphics (Google Earth, ATAK).",
+                          )
+                      },
+                      confirmButton = {
+                          Row {
+                              TextButton(onClick = {
+                                  exportOpen = false
+                                  onExport("gpx") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
+                              }) { Text("GPX") }
+                              TextButton(onClick = {
+                                  exportOpen = false
+                                  onExport("kml") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
+                              }) { Text("KML") }
+                          }
+                      },
+                      dismissButton = {
+                          TextButton(onClick = { exportOpen = false }) { Text("Cancel") }
+                      },
                   )
               }
 
@@ -3342,7 +4376,7 @@ jobs:
           EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.5.2 (doctrinal ambush/SBF + rotation) source from bootstrap workflow'
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.6.0 (M4a interop - GPX/KML + projection) source from bootstrap workflow'
             git push origin HEAD:main
           fi
 
