@@ -15,7 +15,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Write source files (v0.6.0 (M4a interop - GPX/KML + projection) delta, plain text, auditable below)
+      - name: Write source files (v0.7.1 (field skills) delta, plain text, auditable below)
         run: |
           mkdir -p '.'
           cat > 'README.md' <<'EOF_GRIDFIX'
@@ -24,10 +24,9 @@ jobs:
           MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
           built independently with its own design and code.
 
-          **Status: Milestone 4a (interop)** — GPX + KML/KMZ import/export (waypoints, routes,
-          areas, tracks), waypoint projection (azimuth + distance from any known point), smart MGRS
-          entry (auto-advance, full-grid paste). Doctrinal ambush/SBF glyphs + direction-of-fire
-          rotation landed in 0.5.2.
+          **Status: 0.7.1 (field skills)** — resection & intersection, sun/moon planning (BMNT/EENT,
+          phase, illumination), declination diagram, GPS integrity warnings, arrival alerts + ETA,
+          one-tap MARK, back-track routes, USGS topo + hillshade layers.
 
           ## Roadmap
 
@@ -71,8 +70,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 11
-                  versionName = "0.6.0-m4a"
+                  versionCode = 12
+                  versionName = "0.7.1"
               }
 
               buildTypes {
@@ -114,681 +113,612 @@ jobs:
               implementation("org.osmdroid:osmdroid-android:6.1.20")
           }
           EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/data'
-          cat > 'app/src/main/java/app/gridfix/android/data/InterchangeFiles.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.data
+          mkdir -p 'app/src/main'
+          cat > 'app/src/main/AndroidManifest.xml' <<'EOF_GRIDFIX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-          import android.util.Xml
-          import org.xmlpull.v1.XmlPullParser
-          import java.io.InputStream
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <!-- Map tiles only: the app has no accounts, no analytics, no data collection -->
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <!-- Track recording continues with the screen off; the log never leaves the phone -->
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <!-- Arrival alert buzz when reaching a navigation target -->
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <uses-feature
+                  android:name="android.hardware.location.gps"
+                  android:required="false" />
+
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.GridFix">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".location.TrackRecorderService"
+                      android:exported="false"
+                      android:foregroundServiceType="location" />
+
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="app.gridfix.android.fileprovider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
+              </application>
+          </manifest>
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/coords'
+          cat > 'app/src/main/java/app/gridfix/android/coords/Coordinates.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.coords
+
+          import mil.nga.grid.features.Point
+          import mil.nga.mgrs.MGRS
+          import mil.nga.mgrs.grid.GridType
           import java.text.SimpleDateFormat
           import java.util.Date
           import java.util.Locale
           import java.util.TimeZone
-          import java.util.zip.ZipInputStream
+          import kotlin.math.abs
+          import kotlin.math.atan
+          import kotlin.math.cos
+          import kotlin.math.floor
+          import kotlin.math.pow
+          import kotlin.math.roundToLong
+          import kotlin.math.sin
+          import kotlin.math.sqrt
+          import kotlin.math.tan
 
-          /**
-           * GPX 1.1 and KML/KMZ interchange: the file formats land-nav and TAK users
-           * actually trade. Import is tolerant (skips what it can't read); export writes
-           * plain, widely-accepted documents. Everything is streamed with XmlPullParser —
-           * no external dependencies.
-           */
-          object InterchangeFiles {
+          object Coordinates {
 
-              data class ImportedLine(val name: String, val folder: String, val points: List<GeoVertex>)
-              data class ImportedTrack(val name: String, val points: List<TrackPoint>)
+              data class MgrsParts(
+                  val gzd: String,
+                  val square: String,
+                  val easting: String,
+                  val northing: String,
+                  val full: String,
+              )
 
-              data class ImportedData(
-                  val waypoints: List<WaypointDraft> = emptyList(),
-                  val lines: List<ImportedLine> = emptyList(),      // become route graphics
-                  val areas: List<ImportedLine> = emptyList(),      // become assembly-area graphics
-                  val tracks: List<ImportedTrack> = emptyList(),
-              ) {
-                  val isEmpty: Boolean
-                      get() = waypoints.isEmpty() && lines.isEmpty() && areas.isEmpty() && tracks.isEmpty()
-
-                  fun summary(): String {
-                      val parts = mutableListOf<String>()
-                      if (waypoints.isNotEmpty()) parts.add("${waypoints.size} waypoints")
-                      if (lines.isNotEmpty()) parts.add("${lines.size} lines")
-                      if (areas.isNotEmpty()) parts.add("${areas.size} areas")
-                      if (tracks.isNotEmpty()) parts.add("${tracks.size} tracks")
-                      return if (parts.isEmpty()) "nothing importable found" else "Imported " + parts.joinToString(", ")
+              /** Lat/lon (WGS84) to MGRS at the requested precision (4/6/8/10 digits). */
+              fun mgrs(lat: Double, lon: Double, digits: Int): MgrsParts? = runCatching {
+                  val mgrs = MGRS.from(Point.point(lon, lat))
+                  val gridType = when (digits) {
+                      4 -> GridType.KILOMETER
+                      6 -> GridType.HUNDRED_METER
+                      8 -> GridType.TEN_METER
+                      else -> GridType.METER
                   }
-              }
-
-              const val IMPORT_FOLDER = "Imported"
-
-              /** Route by file name; returns null when the format isn't recognized. */
-              fun parse(fileName: String, stream: InputStream): ImportedData? {
-                  val lower = fileName.lowercase(Locale.US)
-                  return when {
-                      lower.endsWith(".gpx") -> parseGpx(stream)
-                      lower.endsWith(".kml") -> parseKml(stream)
-                      lower.endsWith(".kmz") -> parseKmz(stream)
-                      else -> null
+                  val full = mgrs.coordinate(gridType).uppercase(Locale.US)
+                  val match = Regex("^(\\d{1,2}[A-Z])([A-Z]{2})(\\d*)$").find(full)
+                  if (match != null) {
+                      val (gzd, square, num) = match.destructured
+                      val half = num.length / 2
+                      MgrsParts(gzd, square, num.substring(0, half), num.substring(half), full)
+                  } else {
+                      // Polar regions (no zone number) or unexpected shape: show as-is
+                      MgrsParts(full, "", "", "", full)
                   }
-              }
+              }.getOrNull()
 
-              // ---------------- GPX ----------------
+              data class UtmCoord(val zone: Int, val hemisphere: Char, val easting: Long, val northing: Long)
 
-              fun parseGpx(stream: InputStream): ImportedData {
-                  val wps = ArrayList<WaypointDraft>()
-                  val tracks = ArrayList<ImportedTrack>()
-                  val lines = ArrayList<ImportedLine>()
+              /** Lat/lon (WGS84) to standard UTM. Valid for lat -80..84. */
+              fun utm(lat: Double, lon: Double): UtmCoord? {
+                  if (lat < -80.0 || lat > 84.0) return null
 
-                  val parser = Xml.newPullParser()
-                  parser.setInput(stream, null)
+                  val zone = utmZone(lat, lon)
 
-                  var wptLat = 0.0
-                  var wptLon = 0.0
-                  var inWpt = false
-                  var name = ""
-                  var trkName = ""
-                  var trkPts = ArrayList<TrackPoint>()
-                  var inTrk = false
-                  var rteName = ""
-                  var rtePts = ArrayList<GeoVertex>()
-                  var inRte = false
-                  var pendingTime = 0L
-                  var pendingEle = 0.0
-                  var textBuf = ""
+                  val a = 6378137.0
+                  val f = 1.0 / 298.257223563
+                  val k0 = 0.9996
+                  val e2 = f * (2.0 - f)
+                  val ep2 = e2 / (1.0 - e2)
 
-                  var event = parser.eventType
-                  while (event != XmlPullParser.END_DOCUMENT) {
-                      when (event) {
-                          XmlPullParser.START_TAG -> {
-                              textBuf = ""
-                              when (parser.name) {
-                                  "wpt" -> {
-                                      inWpt = true
-                                      name = ""
-                                      wptLat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull() ?: Double.NaN
-                                      wptLon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull() ?: Double.NaN
-                                  }
-                                  "trk" -> {
-                                      inTrk = true
-                                      trkName = ""
-                                      trkPts = ArrayList()
-                                  }
-                                  "rte" -> {
-                                      inRte = true
-                                      rteName = ""
-                                      rtePts = ArrayList()
-                                  }
-                                  "trkpt" -> {
-                                      val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
-                                      val lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull()
-                                      pendingTime = 0L
-                                      pendingEle = 0.0
-                                      if (lat != null && lon != null && inTrk) {
-                                          trkPts.add(TrackPoint(lat, lon, 0L, 0.0))
-                                      }
-                                  }
-                                  "rtept" -> {
-                                      val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
-                                      val lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull()
-                                      if (lat != null && lon != null && inRte) {
-                                          rtePts.add(GeoVertex(lat, lon))
-                                      }
-                                  }
-                              }
-                          }
-                          XmlPullParser.TEXT -> textBuf += parser.text ?: ""
-                          XmlPullParser.END_TAG -> {
-                              when (parser.name) {
-                                  "name" -> {
-                                      val t = textBuf.trim()
-                                      if (inWpt && name.isEmpty()) name = t
-                                      else if (inTrk && trkName.isEmpty()) trkName = t
-                                      else if (inRte && rteName.isEmpty()) rteName = t
-                                  }
-                                  "ele" -> pendingEle = textBuf.trim().toDoubleOrNull() ?: 0.0
-                                  "time" -> pendingTime = parseIsoTime(textBuf.trim())
-                                  "trkpt" -> {
-                                      if (inTrk && trkPts.isNotEmpty()) {
-                                          val last = trkPts.removeAt(trkPts.size - 1)
-                                          trkPts.add(last.copy(time = pendingTime, alt = pendingEle))
-                                      }
-                                  }
-                                  "wpt" -> {
-                                      if (inWpt && !wptLat.isNaN() && !wptLon.isNaN()) {
-                                          wps.add(
-                                              WaypointDraft(
-                                                  name = name.ifBlank { "WP ${wps.size + 1}" },
-                                                  lat = wptLat,
-                                                  lon = wptLon,
-                                                  folder = IMPORT_FOLDER,
-                                                  symbol = "flag",
-                                                  affiliation = "none",
-                                              )
-                                          )
-                                      }
-                                      inWpt = false
-                                  }
-                                  "trk" -> {
-                                      if (inTrk && trkPts.size >= 2) {
-                                          tracks.add(
-                                              ImportedTrack(trkName.ifBlank { "Imported track" }, trkPts)
-                                          )
-                                      }
-                                      inTrk = false
-                                  }
-                                  "rte" -> {
-                                      if (inRte && rtePts.size >= 2) {
-                                          lines.add(
-                                              ImportedLine(rteName.ifBlank { "Imported route" }, IMPORT_FOLDER, rtePts)
-                                          )
-                                      }
-                                      inRte = false
-                                  }
-                              }
-                          }
-                      }
-                      event = parser.next()
-                  }
-                  return ImportedData(waypoints = wps, lines = lines, tracks = tracks)
-              }
+                  val latRad = Math.toRadians(lat)
+                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
+                  val lonRad = Math.toRadians(lon)
 
-              fun buildGpx(
-                  waypoints: List<Waypoint>,
-                  routes: List<TacGraphic>,
-                  tracks: List<Pair<TrackInfo, List<TrackPoint>>>,
-              ): String {
-                  val sb = StringBuilder()
-                  sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                  sb.append("<gpx version=\"1.1\" creator=\"GridFix\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
-                  for (w in waypoints) {
-                      sb.append(
-                          String.format(
-                              Locale.US, "  <wpt lat=\"%.7f\" lon=\"%.7f\"><name>%s</name></wpt>\n",
-                              w.lat, w.lon, escapeXml(w.name),
+                  val n = a / sqrt(1.0 - e2 * sin(latRad).pow(2))
+                  val t = tan(latRad).pow(2)
+                  val c = ep2 * cos(latRad).pow(2)
+                  val bigA = cos(latRad) * (lonRad - lonOrigin)
+
+                  val m = a * (
+                      (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0) * latRad -
+                          (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(2.0 * latRad) +
+                          (15.0 * e2 * e2 / 256.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(4.0 * latRad) -
+                          (35.0 * e2 * e2 * e2 / 3072.0) * sin(6.0 * latRad)
+                      )
+
+                  val easting = k0 * n * (
+                      bigA + (1.0 - t + c) * bigA.pow(3) / 6.0 +
+                          (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * bigA.pow(5) / 120.0
+                      ) + 500000.0
+
+                  var northing = k0 * (
+                      m + n * tan(latRad) * (
+                          bigA.pow(2) / 2.0 +
+                              (5.0 - t + 9.0 * c + 4.0 * c * c) * bigA.pow(4) / 24.0 +
+                              (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * bigA.pow(6) / 720.0
                           )
                       )
-                  }
-                  for (r in routes) {
-                      sb.append("  <rte><name>").append(escapeXml(r.name)).append("</name>\n")
-                      for (p in r.points) {
-                          sb.append(
-                              String.format(Locale.US, "    <rtept lat=\"%.7f\" lon=\"%.7f\"/>\n", p.lat, p.lon)
-                          )
+                  if (lat < 0) northing += 10000000.0
+
+                  return UtmCoord(
+                      zone = zone,
+                      hemisphere = if (lat >= 0) 'N' else 'S',
+                      easting = easting.roundToLong(),
+                      northing = northing.roundToLong(),
+                  )
+              }
+
+              fun formatUtm(u: UtmCoord?): String =
+                  if (u == null) "—" else "${u.zone}${u.hemisphere} ${u.easting}E ${u.northing}N"
+
+              /** Lat/lon in the chosen format: 0 = DD, 1 = DDM, 2 = DMS. */
+              fun formatLatLon(lat: Double, lon: Double, format: Int): String {
+                  fun one(value: Double, positive: Char, negative: Char): String {
+                      val hemi = if (value >= 0) positive else negative
+                      val v = abs(value)
+                      return when (format) {
+                          0 -> String.format(Locale.US, "%.5f° %c", v, hemi)
+                          2 -> {
+                              val d = v.toInt()
+                              val mFull = (v - d) * 60.0
+                              val mm = mFull.toInt()
+                              val s = (mFull - mm) * 60.0
+                              String.format(Locale.US, "%d° %02d' %04.1f\" %c", d, mm, s, hemi)
+                          }
+                          else -> {
+                              val d = v.toInt()
+                              val mFull = (v - d) * 60.0
+                              String.format(Locale.US, "%d° %06.3f' %c", d, mFull, hemi)
+                          }
                       }
-                      sb.append("  </rte>\n")
                   }
-                  val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                  return one(lat, 'N', 'S') + "   " + one(lon, 'E', 'W')
+              }
+
+              /** Military date-time group in Zulu, e.g. 241435Z AUG 26 */
+              fun dtg(timeMillis: Long): String {
+                  val sdf = SimpleDateFormat("ddHHmm'Z' MMM yy", Locale.US)
                   sdf.timeZone = TimeZone.getTimeZone("UTC")
-                  for ((info, pts) in tracks) {
-                      sb.append("  <trk><name>").append(escapeXml(info.name)).append("</name><trkseg>\n")
-                      for (p in pts) {
-                          sb.append(
-                              String.format(
-                                  Locale.US,
-                                  "    <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time></trkpt>\n",
-                                  p.lat, p.lon, p.alt, sdf.format(Date(p.time)),
-                              )
+                  return sdf.format(Date(timeMillis)).uppercase(Locale.US)
+              }
+
+              fun formatAltitude(meters: Double, units: Int): String = when (units) {
+                  1 -> "${(meters * 3.28084).roundToLong()} ft"
+                  else -> "${meters.roundToLong()} m"
+              }
+
+              fun formatAccuracy(meters: Float, units: Int): String = when (units) {
+                  1 -> "±${(meters * 3.28084).roundToLong()} ft"
+                  else -> "±${meters.roundToLong()} m"
+              }
+
+              fun formatSpeed(metersPerSecond: Float, units: Int): String = when (units) {
+                  1 -> String.format(Locale.US, "%.1f mph", metersPerSecond * 2.23694)
+                  2 -> String.format(Locale.US, "%.1f kn", metersPerSecond * 1.94384)
+                  else -> String.format(Locale.US, "%.1f km/h", metersPerSecond * 3.6)
+              }
+
+              private fun utmZone(lat: Double, lon: Double): Int {
+                  var zone = (floor((lon + 180.0) / 6.0) + 1.0).toInt().coerceIn(1, 60)
+                  // Norway exception
+                  if (lat in 56.0..64.0 && lon in 3.0..12.0) zone = 32
+                  // Svalbard exceptions
+                  if (lat in 72.0..84.0) {
+                      zone = when {
+                          lon in 0.0..9.0 -> 31
+                          lon in 9.0..21.0 -> 33
+                          lon in 21.0..33.0 -> 35
+                          lon in 33.0..42.0 -> 37
+                          else -> zone
+                      }
+                  }
+                  return zone
+              }
+
+              /** Grid convergence angle (degrees): grid north minus true north for this UTM zone. */
+              fun gridConvergence(lat: Double, lon: Double): Double {
+                  val zone = utmZone(lat, lon)
+                  val lonOrigin = ((zone - 1) * 6 - 180 + 3).toDouble()
+                  return Math.toDegrees(
+                      atan(tan(Math.toRadians(lon - lonOrigin)) * sin(Math.toRadians(lat)))
+                  )
+              }
+
+              private fun gridConvergenceForZone(lat: Double, lon: Double, zone: Int): Double {
+                  val lonOrigin = ((zone - 1) * 6 - 180 + 3).toDouble()
+                  return Math.toDegrees(
+                      atan(tan(Math.toRadians(lon - lonOrigin)) * sin(Math.toRadians(lat)))
+                  )
+              }
+
+              /** Result of a two-ray fix: the intersection plus the range from each observer. */
+              data class RayFix(val lat: Double, val lon: Double, val dist1: Double, val dist2: Double)
+
+              /**
+               * Intersection of two rays given in TRUE bearings, solved in the UTM plane of
+               * the first point's zone (grid bearings via per-point convergence). Null when
+               * the rays are near-parallel, diverge, or the fix lands beyond 100 km — the
+               * cases a map-reading instructor would also reject.
+               */
+              fun rayIntersection(
+                  lat1: Double, lon1: Double, bearing1True: Double,
+                  lat2: Double, lon2: Double, bearing2True: Double,
+              ): RayFix? {
+                  val zone = utmZone(lat1, lon1)
+                  val north = lat1 >= 0
+                  val p1 = utmForZone(lat1, lon1, zone, north)
+                  val p2 = utmForZone(lat2, lon2, zone, north)
+                  val g1 = Math.toRadians(bearing1True - gridConvergenceForZone(lat1, lon1, zone))
+                  val g2 = Math.toRadians(bearing2True - gridConvergenceForZone(lat2, lon2, zone))
+                  val d1x = sin(g1)
+                  val d1y = cos(g1)
+                  val d2x = sin(g2)
+                  val d2y = cos(g2)
+                  val cross = d1x * d2y - d1y * d2x
+                  if (abs(cross) < 1e-6) return null
+                  val dx = p2[0] - p1[0]
+                  val dy = p2[1] - p1[1]
+                  val t = (dx * d2y - dy * d2x) / cross
+                  val s = (dx * d1y - dy * d1x) / cross
+                  if (t <= 0.0 || s <= 0.0 || t > 100_000.0 || s > 100_000.0) return null
+                  val ll = utmInverse(p1[0] + t * d1x, p1[1] + t * d1y, zone, north)
+                  return RayFix(ll[0], ll[1], t, s)
+              }
+
+              data class NavInfo(val distanceMeters: Float, val bearingTrue: Float)
+
+              /** Geodesic distance and initial true bearing between two points. */
+              fun navInfo(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): NavInfo {
+                  val results = FloatArray(2)
+                  android.location.Location.distanceBetween(fromLat, fromLon, toLat, toLon, results)
+                  return NavInfo(results[0], (results[1] + 360f) % 360f)
+              }
+
+              fun formatDistance(meters: Float, units: Int): String = when (units) {
+                  1 -> {
+                      val feet = meters * 3.28084f
+                      if (feet < 1000f) String.format(Locale.US, "%.0f ft", feet)
+                      else String.format(Locale.US, "%.2f mi", meters / 1609.344f)
+                  }
+                  2 -> {
+                      if (meters < 1852f) String.format(Locale.US, "%.0f m", meters)
+                      else String.format(Locale.US, "%.2f NM", meters / 1852f)
+                  }
+                  else -> {
+                      if (meters < 1000f) String.format(Locale.US, "%.0f m", meters)
+                      else if (meters < 10000f) String.format(Locale.US, "%.2f km", meters / 1000f)
+                      else String.format(Locale.US, "%.1f km", meters / 1000f)
+                  }
+              }
+
+              /** Format an angle in degrees (0..360) as degrees or NATO mils per the angle-unit setting. */
+              fun formatAngle(degrees: Float, angleUnit: Int): String = when (angleUnit) {
+                  1 -> String.format(Locale.US, "%.0f mils", (degrees * 6400f / 360f + 6400f) % 6400f)
+                  else -> String.format(Locale.US, "%03.0f°", (degrees + 360f) % 360f)
+              }
+
+              /** Parse an MGRS string (spaces allowed, case-insensitive) to lat/lon. Null if invalid. */
+              fun parseMgrs(text: String): Pair<Double, Double>? = runCatching {
+                  val cleaned = text.trim().uppercase(Locale.US).replace(" ", "")
+                  if (cleaned.isEmpty()) return null
+                  val point = MGRS.parse(cleaned).toPoint()
+                  point.latitude to point.longitude
+              }.getOrNull()
+
+              // ---- Grid-overlay math: forced-zone UTM forward and the Snyder-series inverse ----
+              // Validated by roundtrip against the forward formulas above: < 1 mm error worldwide,
+              // < 7 mm out to 4.5 degrees from the central meridian (grid lines never go further).
+
+              /** UTM easting/northing of a point projected in a SPECIFIC zone (for grid drawing). */
+              fun utmForZone(lat: Double, lon: Double, zone: Int, north: Boolean): DoubleArray {
+                  val latRad = Math.toRadians(lat)
+                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
+                  val lonRad = Math.toRadians(lon)
+                  val a = 6378137.0
+                  val f = 1.0 / 298.257223563
+                  val k0 = 0.9996
+                  val e2 = f * (2.0 - f)
+                  val ep2 = e2 / (1.0 - e2)
+                  val n = a / sqrt(1.0 - e2 * sin(latRad).pow(2))
+                  val t = tan(latRad).pow(2)
+                  val c = ep2 * cos(latRad).pow(2)
+                  val bigA = cos(latRad) * (lonRad - lonOrigin)
+                  val m = a * (
+                      (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0) * latRad -
+                          (3.0 * e2 / 8.0 + 3.0 * e2 * e2 / 32.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(2.0 * latRad) +
+                          (15.0 * e2 * e2 / 256.0 + 45.0 * e2 * e2 * e2 / 1024.0) * sin(4.0 * latRad) -
+                          (35.0 * e2 * e2 * e2 / 3072.0) * sin(6.0 * latRad)
+                      )
+                  val easting = k0 * n * (
+                      bigA + (1.0 - t + c) * bigA.pow(3) / 6.0 +
+                          (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * bigA.pow(5) / 120.0
+                      ) + 500000.0
+                  var northing = k0 * (
+                      m + n * tan(latRad) * (
+                          bigA.pow(2) / 2.0 +
+                              (5.0 - t + 9.0 * c + 4.0 * c * c) * bigA.pow(4) / 24.0 +
+                              (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * bigA.pow(6) / 720.0
                           )
-                      }
-                      sb.append("  </trkseg></trk>\n")
-                  }
-                  sb.append("</gpx>\n")
-                  return sb.toString()
+                      )
+                  if (!north) northing += 10000000.0
+                  return doubleArrayOf(easting, northing)
               }
 
-              // ---------------- KML / KMZ ----------------
-
-              fun parseKmz(stream: InputStream): ImportedData {
-                  ZipInputStream(stream).use { zip ->
-                      var entry = zip.nextEntry
-                      while (entry != null) {
-                          if (!entry.isDirectory && entry.name.lowercase(Locale.US).endsWith(".kml")) {
-                              return parseKml(zip)
-                          }
-                          entry = zip.nextEntry
-                      }
-                  }
-                  return ImportedData()
+              /** UTM easting/northing back to lat/lon (WGS84). Returns [lat, lon]. */
+              fun utmInverse(easting: Double, northing: Double, zone: Int, north: Boolean): DoubleArray {
+                  val a = 6378137.0
+                  val f = 1.0 / 298.257223563
+                  val k0 = 0.9996
+                  val e2 = f * (2.0 - f)
+                  val ep2 = e2 / (1.0 - e2)
+                  val x = easting - 500000.0
+                  val y = if (north) northing else northing - 10000000.0
+                  val m = y / k0
+                  val mu = m / (a * (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0))
+                  val e1 = (1.0 - sqrt(1.0 - e2)) / (1.0 + sqrt(1.0 - e2))
+                  val phi1 = mu +
+                      (3.0 * e1 / 2.0 - 27.0 * e1 * e1 * e1 / 32.0) * sin(2.0 * mu) +
+                      (21.0 * e1 * e1 / 16.0 - 55.0 * e1.pow(4) / 32.0) * sin(4.0 * mu) +
+                      (151.0 * e1 * e1 * e1 / 96.0) * sin(6.0 * mu) +
+                      (1097.0 * e1.pow(4) / 512.0) * sin(8.0 * mu)
+                  val sin1 = sin(phi1)
+                  val cos1 = cos(phi1)
+                  val tan1 = tan(phi1)
+                  val c1 = ep2 * cos1 * cos1
+                  val t1 = tan1 * tan1
+                  val n1 = a / sqrt(1.0 - e2 * sin1 * sin1)
+                  val r1 = a * (1.0 - e2) / (1.0 - e2 * sin1 * sin1).pow(1.5)
+                  val d = x / (n1 * k0)
+                  val lat = phi1 - (n1 * tan1 / r1) * (
+                      d * d / 2.0 -
+                          (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * ep2) * d.pow(4) / 24.0 +
+                          (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1 - 252.0 * ep2 - 3.0 * c1 * c1) * d.pow(6) / 720.0
+                      )
+                  val lonOrigin = Math.toRadians(((zone - 1) * 6 - 180 + 3).toDouble())
+                  val lon = lonOrigin + (
+                      d -
+                          (1.0 + 2.0 * t1 + c1) * d.pow(3) / 6.0 +
+                          (5.0 - 2.0 * c1 + 28.0 * t1 - 3.0 * c1 * c1 + 8.0 * ep2 + 24.0 * t1 * t1) * d.pow(5) / 120.0
+                      ) / cos1
+                  return doubleArrayOf(Math.toDegrees(lat), Math.toDegrees(lon))
               }
 
-              fun parseKml(stream: InputStream): ImportedData {
-                  val wps = ArrayList<WaypointDraft>()
-                  val lines = ArrayList<ImportedLine>()
-                  val areas = ArrayList<ImportedLine>()
-
-                  val parser = Xml.newPullParser()
-                  parser.setInput(stream, null)
-
-                  val folderStack = ArrayDeque<String>()
-                  var awaitingFolderName = false
-                  var inPlacemark = false
-                  var pmName = ""
-                  var geomType = ""        // point / line / polygon
-                  var coordText = ""
-                  var inCoordinates = false
-                  var textBuf = ""
-
-                  var event = parser.eventType
-                  while (event != XmlPullParser.END_DOCUMENT) {
-                      when (event) {
-                          XmlPullParser.START_TAG -> {
-                              textBuf = ""
-                              when (parser.name) {
-                                  "Folder" -> {
-                                      folderStack.addLast("")
-                                      awaitingFolderName = true
-                                  }
-                                  "Placemark" -> {
-                                      inPlacemark = true
-                                      pmName = ""
-                                      geomType = ""
-                                      coordText = ""
-                                  }
-                                  "Point" -> if (inPlacemark) geomType = "point"
-                                  "LineString" -> if (inPlacemark) geomType = "line"
-                                  "Polygon" -> if (inPlacemark) geomType = "polygon"
-                                  "coordinates" -> inCoordinates = true
-                              }
-                          }
-                          XmlPullParser.TEXT -> textBuf += parser.text ?: ""
-                          XmlPullParser.END_TAG -> {
-                              when (parser.name) {
-                                  "name" -> {
-                                      val t = textBuf.trim()
-                                      if (inPlacemark) {
-                                          if (pmName.isEmpty()) pmName = t
-                                      } else if (awaitingFolderName && folderStack.isNotEmpty()) {
-                                          folderStack.removeLast()
-                                          folderStack.addLast(t)
-                                          awaitingFolderName = false
-                                      }
-                                  }
-                                  "coordinates" -> {
-                                      inCoordinates = false
-                                      if (inPlacemark && coordText.isEmpty()) coordText = textBuf
-                                  }
-                                  "Folder" -> {
-                                      if (folderStack.isNotEmpty()) folderStack.removeLast()
-                                      awaitingFolderName = false
-                                  }
-                                  "Placemark" -> {
-                                      if (inPlacemark) {
-                                          val folder = folderStack.lastOrNull { it.isNotBlank() } ?: IMPORT_FOLDER
-                                          val pts = parseKmlCoordinates(coordText)
-                                          when {
-                                              geomType == "point" && pts.isNotEmpty() -> wps.add(
-                                                  WaypointDraft(
-                                                      name = pmName.ifBlank { "WP ${wps.size + 1}" },
-                                                      lat = pts[0].lat,
-                                                      lon = pts[0].lon,
-                                                      folder = folder,
-                                                      symbol = "flag",
-                                                      affiliation = "none",
-                                                  )
-                                              )
-                                              geomType == "line" && pts.size >= 2 -> lines.add(
-                                                  ImportedLine(pmName.ifBlank { "Imported line" }, folder, pts)
-                                              )
-                                              geomType == "polygon" && pts.size >= 3 -> areas.add(
-                                                  ImportedLine(pmName.ifBlank { "Imported area" }, folder, pts)
-                                              )
-                                          }
-                                      }
-                                      inPlacemark = false
-                                  }
-                              }
-                          }
-                      }
-                      event = parser.next()
-                  }
-                  return ImportedData(waypoints = wps, lines = lines, areas = areas)
+              /** MGRS latitude band letter for a latitude in -80..84, e.g. 'R' for Dubai. */
+              fun bandLetter(lat: Double): Char {
+                  val letters = "CDEFGHJKLMNPQRSTUVWX"
+                  val idx = floor((lat + 80.0) / 8.0).toInt().coerceIn(0, 19)
+                  return letters[idx]
               }
-
-              /** KML coordinate lists are "lon,lat[,alt]" tuples separated by whitespace. */
-              private fun parseKmlCoordinates(text: String): List<GeoVertex> =
-                  text.trim().split(Regex("\\s+")).mapNotNull { tuple ->
-                      val parts = tuple.split(",")
-                      if (parts.size < 2) return@mapNotNull null
-                      val lon = parts[0].toDoubleOrNull() ?: return@mapNotNull null
-                      val lat = parts[1].toDoubleOrNull() ?: return@mapNotNull null
-                      if (lat in -90.0..90.0 && lon in -180.0..180.0) GeoVertex(lat, lon) else null
-                  }.let { pts ->
-                      // drop the duplicated closing vertex polygons carry
-                      if (pts.size >= 2 && pts.first() == pts.last()) pts.dropLast(1) else pts
-                  }
-
-              fun buildKml(
-                  waypoints: List<Waypoint>,
-                  graphics: List<TacGraphic>,
-                  tracks: List<Pair<TrackInfo, List<TrackPoint>>>,
-              ): String {
-                  val sb = StringBuilder()
-                  sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                  sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>\n")
-                  sb.append("<name>GridFix export</name>\n")
-
-                  for ((folder, list) in waypoints.groupBy { it.folder }) {
-                      sb.append("<Folder><name>").append(escapeXml(folder)).append("</name>\n")
-                      for (w in list) {
-                          sb.append("<Placemark><name>").append(escapeXml(w.name)).append("</name>")
-                          sb.append(
-                              String.format(
-                                  Locale.US, "<Point><coordinates>%.7f,%.7f,0</coordinates></Point>",
-                                  w.lon, w.lat,
-                              )
-                          )
-                          sb.append("</Placemark>\n")
-                      }
-                      sb.append("</Folder>\n")
-                  }
-
-                  if (graphics.isNotEmpty()) {
-                      sb.append("<Folder><name>Graphics</name>\n")
-                      for (g in graphics) {
-                          val closed = GraphicTypes.isArea(g.type) && g.points.size >= 3
-                          sb.append("<Placemark><name>")
-                              .append(escapeXml(GraphicTypes.labelPrefix(g.type) + g.name))
-                              .append("</name>")
-                          val coords = StringBuilder()
-                          for (p in g.points) {
-                              coords.append(String.format(Locale.US, "%.7f,%.7f,0 ", p.lon, p.lat))
-                          }
-                          if (closed && g.points.isNotEmpty()) {
-                              coords.append(
-                                  String.format(Locale.US, "%.7f,%.7f,0", g.points[0].lon, g.points[0].lat)
-                              )
-                          }
-                          if (closed) {
-                              sb.append("<Polygon><outerBoundaryIs><LinearRing><coordinates>")
-                                  .append(coords.toString().trim())
-                                  .append("</coordinates></LinearRing></outerBoundaryIs></Polygon>")
-                          } else {
-                              sb.append("<LineString><tessellate>1</tessellate><coordinates>")
-                                  .append(coords.toString().trim())
-                                  .append("</coordinates></LineString>")
-                          }
-                          sb.append("</Placemark>\n")
-                      }
-                      sb.append("</Folder>\n")
-                  }
-
-                  if (tracks.isNotEmpty()) {
-                      sb.append("<Folder><name>Tracks</name>\n")
-                      for ((info, pts) in tracks) {
-                          sb.append("<Placemark><name>").append(escapeXml(info.name)).append("</name>")
-                          sb.append("<LineString><tessellate>1</tessellate><coordinates>")
-                          for (p in pts) {
-                              sb.append(String.format(Locale.US, "%.7f,%.7f,0 ", p.lon, p.lat))
-                          }
-                          sb.append("</coordinates></LineString></Placemark>\n")
-                      }
-                      sb.append("</Folder>\n")
-                  }
-
-                  sb.append("</Document></kml>\n")
-                  return sb.toString()
-              }
-
-              // ---------------- helpers ----------------
-
-              private fun parseIsoTime(text: String): Long = runCatching {
-                  val cleaned = text.replace(Regex("\\.\\d+"), "").removeSuffix("Z")
-                  val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-                  sdf.timeZone = TimeZone.getTimeZone("UTC")
-                  sdf.parse(cleaned)?.time ?: 0L
-              }.getOrDefault(0L)
-
-              private fun escapeXml(s: String): String = s
-                  .replace("&", "&amp;")
-                  .replace("<", "&lt;")
-                  .replace(">", "&gt;")
-                  .replace("\"", "&quot;")
           }
           EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/data'
-          cat > 'app/src/main/java/app/gridfix/android/data/TrackRepository.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.data
+          mkdir -p 'app/src/main/java/app/gridfix/android/coords'
+          cat > 'app/src/main/java/app/gridfix/android/coords/SunMoon.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.coords
 
-          import android.content.Context
-          import android.location.Location
-          import androidx.datastore.preferences.core.edit
-          import androidx.datastore.preferences.core.stringPreferencesKey
-          import androidx.datastore.preferences.preferencesDataStore
-          import kotlinx.coroutines.Dispatchers
-          import kotlinx.coroutines.flow.Flow
-          import kotlinx.coroutines.flow.map
-          import kotlinx.coroutines.withContext
-          import org.json.JSONArray
-          import org.json.JSONObject
-          import java.io.File
-          import java.text.SimpleDateFormat
-          import java.util.Date
-          import java.util.Locale
+          import java.util.Calendar
           import java.util.TimeZone
-          import java.util.UUID
+          import kotlin.math.acos
+          import kotlin.math.asin
+          import kotlin.math.atan2
+          import kotlin.math.cos
+          import kotlin.math.roundToInt
+          import kotlin.math.sin
+          import kotlin.math.tan
 
-          private val Context.trackStore by preferencesDataStore(name = "tracks")
+          /**
+           * Offline sun and moon planning data: BMNT/EENT (nautical twilight), civil
+           * twilight, sunrise/sunset (NOAA solar equations — validated to the minute),
+           * moon phase + illumination (validated < 0.1° against eclipse epochs), and
+           * approximate moonrise/set (truncated Meeus series, about ±5 minutes).
+           */
+          object SunMoon {
 
-          /** Track metadata; the point log lives in files/tracks/<id>.txt (one point per line). */
-          data class TrackInfo(
-              val id: String,
-              val name: String,
-              val startedAt: Long,
-              val endedAt: Long,        // 0 while recording
-              val distanceM: Double,
-              val pointCount: Int,
-          )
+              private const val D2R = Math.PI / 180.0
+              private const val R2D = 180.0 / Math.PI
 
-          data class TrackPoint(val lat: Double, val lon: Double, val time: Long, val alt: Double)
+              data class SunTimes(
+                  val bmnt: Double?,        // UT hours, null when the sun never crosses that altitude
+                  val civilDawn: Double?,
+                  val sunrise: Double?,
+                  val sunset: Double?,
+                  val civilDusk: Double?,
+                  val eent: Double?,
+              )
 
-          class TrackRepository(private val context: Context) {
+              data class MoonInfo(
+                  val phaseName: String,
+                  val illuminationPct: Int,
+                  val rises: List<Double>,  // UT hours within the requested day
+                  val sets: List<Double>,
+              )
 
-              private val listKey = stringPreferencesKey("list")
-
-              val tracks: Flow<List<TrackInfo>> = context.trackStore.data.map { p ->
-                  decode(p[listKey] ?: "[]").sortedByDescending { it.startedAt }
+              fun julianDay(y0: Int, m0: Int, d: Int, hourUtc: Double): Double {
+                  var y = y0
+                  var m = m0
+                  if (m <= 2) {
+                      y -= 1
+                      m += 12
+                  }
+                  val a = y / 100
+                  val b = 2 - a + a / 4
+                  return (365.25 * (y + 4716)).toInt() + (30.6001 * (m + 1)).toInt() + d + b - 1524.5 + hourUtc / 24.0
               }
 
-              suspend fun startTrack(nowMillis: Long): String {
-                  val id = UUID.randomUUID().toString()
-                  val info = TrackInfo(
-                      id = id,
-                      name = "Track " + dtgShort(nowMillis),
-                      startedAt = nowMillis,
-                      endedAt = 0L,
-                      distanceM = 0.0,
-                      pointCount = 0,
-                  )
-                  withContext(Dispatchers.IO) { pointsFile(context, id).parentFile?.mkdirs() }
-                  context.trackStore.edit { p ->
-                      p[listKey] = encode(decode(p[listKey] ?: "[]") + info)
-                  }
-                  return id
-              }
+              fun sunTimes(y: Int, m: Int, d: Int, lat: Double, lon: Double): SunTimes = SunTimes(
+                  bmnt = solarCrossing(y, m, d, lat, lon, -12.0, morning = true),
+                  civilDawn = solarCrossing(y, m, d, lat, lon, -6.0, morning = true),
+                  sunrise = solarCrossing(y, m, d, lat, lon, -0.833, morning = true),
+                  sunset = solarCrossing(y, m, d, lat, lon, -0.833, morning = false),
+                  civilDusk = solarCrossing(y, m, d, lat, lon, -6.0, morning = false),
+                  eent = solarCrossing(y, m, d, lat, lon, -12.0, morning = false),
+              )
 
-              /** Close out a finished recording: compute stats from the point log. */
-              suspend fun finishTrack(id: String, name: String?, nowMillis: Long) {
-                  val pts = readPoints(context, id)
-                  var dist = 0.0
-                  for (i in 1 until pts.size) {
-                      val out = FloatArray(1)
-                      Location.distanceBetween(
-                          pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon, out
-                      )
-                      dist += out[0]
-                  }
-                  context.trackStore.edit { p ->
-                      p[listKey] = encode(
-                          decode(p[listKey] ?: "[]").map {
-                              if (it.id == id) it.copy(
-                                  name = name?.trim()?.ifBlank { it.name } ?: it.name,
-                                  endedAt = nowMillis,
-                                  distanceM = dist,
-                                  pointCount = pts.size,
-                              ) else it
-                          }
-                      )
-                  }
-              }
-
-              /** Create a finished track from imported points (GPX trk import). */
-              suspend fun importTrack(name: String, points: List<TrackPoint>, nowMillis: Long): String {
-                  val id = UUID.randomUUID().toString()
-                  withContext(Dispatchers.IO) {
-                      val f = pointsFile(context, id)
-                      f.parentFile?.mkdirs()
-                      f.bufferedWriter().use { out ->
-                          for (p in points) {
-                              out.write(
-                                  String.format(Locale.US, "%.7f %.7f %d %.1f\n", p.lat, p.lon, p.time, p.alt)
-                              )
-                          }
-                      }
-                  }
-                  var dist = 0.0
-                  for (i in 1 until points.size) {
-                      val out = FloatArray(1)
-                      Location.distanceBetween(
-                          points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon, out
-                      )
-                      dist += out[0]
-                  }
-                  val start = points.firstOrNull()?.time?.takeIf { it > 0 } ?: nowMillis
-                  val end = points.lastOrNull()?.time?.takeIf { it > 0 } ?: nowMillis
-                  val info = TrackInfo(
-                      id = id,
-                      name = name.trim().ifBlank { "Imported track" },
-                      startedAt = start,
-                      endedAt = end,
-                      distanceM = dist,
-                      pointCount = points.size,
-                  )
-                  context.trackStore.edit { p ->
-                      p[listKey] = encode(decode(p[listKey] ?: "[]") + info)
-                  }
-                  return id
-              }
-
-              suspend fun rename(id: String, name: String) {
-                  if (name.isBlank()) return
-                  context.trackStore.edit { p ->
-                      p[listKey] = encode(
-                          decode(p[listKey] ?: "[]").map {
-                              if (it.id == id) it.copy(name = name.trim()) else it
-                          }
-                      )
-                  }
-              }
-
-              suspend fun delete(id: String) {
-                  context.trackStore.edit { p ->
-                      p[listKey] = encode(decode(p[listKey] ?: "[]").filterNot { it.id == id })
-                  }
-                  withContext(Dispatchers.IO) { pointsFile(context, id).delete() }
-              }
-
-              /** Remove a recording that was discarded before saving. */
-              suspend fun discard(id: String) = delete(id)
-
-              private fun decode(json: String): List<TrackInfo> = runCatching {
-                  val arr = JSONArray(json)
-                  buildList {
-                      for (i in 0 until arr.length()) {
-                          val o = arr.getJSONObject(i)
-                          add(
-                              TrackInfo(
-                                  id = o.getString("id"),
-                                  name = o.getString("name"),
-                                  startedAt = o.optLong("startedAt"),
-                                  endedAt = o.optLong("endedAt"),
-                                  distanceM = o.optDouble("distanceM", 0.0),
-                                  pointCount = o.optInt("pointCount", 0),
-                              )
+              private fun solarCrossing(
+                  y: Int, m: Int, d: Int, lat: Double, lon: Double, altDeg: Double, morning: Boolean,
+              ): Double? {
+                  var tUt = 12.0 - lon / 15.0
+                  repeat(3) {
+                      val jd = julianDay(y, m, d, tUt)
+                      val t = (jd - 2451545.0) / 36525.0
+                      val l0 = norm360(280.46646 + 36000.76983 * t + 0.0003032 * t * t)
+                      val ma = 357.52911 + 35999.05029 * t - 0.0001537 * t * t
+                      val e = 0.016708634 - 0.000042037 * t
+                      val c = (1.914602 - 0.004817 * t) * sin(ma * D2R) +
+                          (0.019993 - 0.000101 * t) * sin(2 * ma * D2R) +
+                          0.000289 * sin(3 * ma * D2R)
+                      val trueLong = l0 + c
+                      val omega = 125.04 - 1934.136 * t
+                      val lambda = trueLong - 0.00569 - 0.00478 * sin(omega * D2R)
+                      val eps0 = 23.0 + 26.0 / 60.0 + 21.448 / 3600.0 - 46.815 * t / 3600.0
+                      val eps = eps0 + 0.00256 * cos(omega * D2R)
+                      val decl = asin(sin(eps * D2R) * sin(lambda * D2R)) * R2D
+                      val yv = tan(eps * D2R / 2.0).let { it * it }
+                      val eqTime = 4.0 * R2D * (
+                          yv * sin(2 * l0 * D2R) - 2.0 * e * sin(ma * D2R) +
+                              4.0 * e * yv * sin(ma * D2R) * cos(2 * l0 * D2R) -
+                              0.5 * yv * yv * sin(4 * l0 * D2R) - 1.25 * e * e * sin(2 * ma * D2R)
                           )
-                      }
+                      val cosH = (sin(altDeg * D2R) - sin(lat * D2R) * sin(decl * D2R)) /
+                          (cos(lat * D2R) * cos(decl * D2R))
+                      if (cosH < -1.0 || cosH > 1.0) return null
+                      val h = acos(cosH) * R2D
+                      val solarNoonUt = 12.0 - lon / 15.0 - eqTime / 60.0
+                      tUt = if (morning) solarNoonUt - h / 15.0 else solarNoonUt + h / 15.0
                   }
-              }.getOrDefault(emptyList())
-
-              private fun encode(list: List<TrackInfo>): String {
-                  val arr = JSONArray()
-                  for (t in list) {
-                      arr.put(
-                          JSONObject()
-                              .put("id", t.id)
-                              .put("name", t.name)
-                              .put("startedAt", t.startedAt)
-                              .put("endedAt", t.endedAt)
-                              .put("distanceM", t.distanceM)
-                              .put("pointCount", t.pointCount)
-                      )
-                  }
-                  return arr.toString()
+                  return ((tUt % 24.0) + 24.0) % 24.0
               }
 
-              companion object {
-                  fun pointsFile(context: Context, id: String): File =
-                      File(File(context.filesDir, "tracks"), "$id.txt")
+              // ---------------- Moon ----------------
 
-                  /** Append one point; called from the recorder service's worker thread. */
-                  fun appendPoint(context: Context, id: String, lat: Double, lon: Double, time: Long, alt: Double) {
-                      runCatching {
-                          val f = pointsFile(context, id)
-                          f.parentFile?.mkdirs()
-                          f.appendText(
-                              String.format(Locale.US, "%.7f %.7f %d %.1f\n", lat, lon, time, alt)
-                          )
-                      }
-                  }
-
-                  suspend fun readPoints(context: Context, id: String): List<TrackPoint> =
-                      withContext(Dispatchers.IO) {
-                          val f = pointsFile(context, id)
-                          if (!f.exists()) return@withContext emptyList()
-                          f.readLines().mapNotNull { line ->
-                              val parts = line.trim().split(" ")
-                              if (parts.size < 3) return@mapNotNull null
-                              runCatching {
-                                  TrackPoint(
-                                      lat = parts[0].toDouble(),
-                                      lon = parts[1].toDouble(),
-                                      time = parts[2].toLong(),
-                                      alt = parts.getOrNull(3)?.toDouble() ?: 0.0,
-                                  )
-                              }.getOrNull()
-                          }
-                      }
-
-                  /** Minimal GPX 1.1 document for one track. */
-                  fun buildGpx(name: String, points: List<TrackPoint>): String {
-                      val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                      sdf.timeZone = TimeZone.getTimeZone("UTC")
-                      val sb = StringBuilder()
-                      sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                      sb.append("<gpx version=\"1.1\" creator=\"GridFix\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
-                      sb.append("  <trk>\n    <name>").append(escapeXml(name)).append("</name>\n    <trkseg>\n")
-                      for (p in points) {
-                          sb.append(
-                              String.format(
-                                  Locale.US,
-                                  "      <trkpt lat=\"%.7f\" lon=\"%.7f\"><ele>%.1f</ele><time>%s</time></trkpt>\n",
-                                  p.lat, p.lon, p.alt, sdf.format(Date(p.time)),
-                              )
-                          )
-                      }
-                      sb.append("    </trkseg>\n  </trk>\n</gpx>\n")
-                      return sb.toString()
-                  }
-
-                  private fun escapeXml(s: String): String = s
-                      .replace("&", "&amp;")
-                      .replace("<", "&lt;")
-                      .replace(">", "&gt;")
-                      .replace("\"", "&quot;")
-
-                  private fun dtgShort(timeMillis: Long): String {
-                      val sdf = SimpleDateFormat("ddHHmm'Z'", Locale.US)
-                      sdf.timeZone = TimeZone.getTimeZone("UTC")
-                      return sdf.format(Date(timeMillis))
-                  }
+              /** Moon RA (deg), declination (deg), ecliptic longitude (deg). */
+              private fun moonPos(jd: Double): Triple<Double, Double, Double> {
+                  val t = (jd - 2451545.0) / 36525.0
+                  val lp = norm360(218.3164477 + 481267.88123421 * t)
+                  val dd = norm360(297.8501921 + 445267.1114034 * t)
+                  val ms = norm360(357.5291092 + 35999.0502909 * t)
+                  val mp = norm360(134.9633964 + 477198.8675055 * t)
+                  val f = norm360(93.2720950 + 483202.0175233 * t)
+                  val lon = lp +
+                      6.288774 * sin(mp * D2R) +
+                      1.274027 * sin((2 * dd - mp) * D2R) +
+                      0.658314 * sin(2 * dd * D2R) +
+                      0.213618 * sin(2 * mp * D2R) -
+                      0.185116 * sin(ms * D2R) -
+                      0.114332 * sin(2 * f * D2R) +
+                      0.058793 * sin((2 * dd - 2 * mp) * D2R) +
+                      0.057066 * sin((2 * dd - ms - mp) * D2R) +
+                      0.053322 * sin((2 * dd + mp) * D2R) +
+                      0.045758 * sin((2 * dd - ms) * D2R)
+                  val lat = 5.128122 * sin(f * D2R) +
+                      0.280602 * sin((mp + f) * D2R) +
+                      0.277693 * sin((mp - f) * D2R) +
+                      0.173237 * sin((2 * dd - f) * D2R) +
+                      0.055413 * sin((2 * dd - mp + f) * D2R) +
+                      0.046271 * sin((2 * dd - mp - f) * D2R)
+                  val eps = (23.4393 - 0.0130 * t) * D2R
+                  val lam = lon * D2R
+                  val beta = lat * D2R
+                  val ra = atan2(
+                      sin(lam) * cos(eps) - tan(beta) * sin(eps),
+                      cos(lam),
+                  ).let { ((it * R2D) % 360.0 + 360.0) % 360.0 }
+                  val dec = asin(sin(beta) * cos(eps) + cos(beta) * sin(eps) * sin(lam)) * R2D
+                  return Triple(ra, dec, norm360(lon))
               }
+
+              private fun sunEclipticLon(jd: Double): Double {
+                  val t = (jd - 2451545.0) / 36525.0
+                  val l0 = norm360(280.46646 + 36000.76983 * t)
+                  val ma = 357.52911 + 35999.05029 * t
+                  return norm360(l0 + 1.914602 * sin(ma * D2R) + 0.019993 * sin(2 * ma * D2R))
+              }
+
+              private fun gmstDeg(jd: Double): Double {
+                  val t = (jd - 2451545.0) / 36525.0
+                  return norm360(280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * t * t)
+              }
+
+              private fun moonAltitude(jd: Double, lat: Double, lon: Double): Double {
+                  val (ra, dec, _) = moonPos(jd)
+                  val lst = norm360(gmstDeg(jd) + lon)
+                  val h = (lst - ra) * D2R
+                  return asin(
+                      sin(lat * D2R) * sin(dec * D2R) + cos(lat * D2R) * cos(dec * D2R) * cos(h)
+                  ) * R2D
+              }
+
+              fun moonInfo(y: Int, m: Int, d: Int, lat: Double, lon: Double): MoonInfo {
+                  val noon = julianDay(y, m, d, 12.0)
+                  val elong = norm360(moonPos(noon).third - sunEclipticLon(noon))
+                  val illum = ((1.0 - cos(elong * D2R)) / 2.0 * 100.0).roundToInt()
+                  val name = when {
+                      elong < 22.5 || elong >= 337.5 -> "New moon"
+                      elong < 67.5 -> "Waxing crescent"
+                      elong < 112.5 -> "First quarter"
+                      elong < 157.5 -> "Waxing gibbous"
+                      elong < 202.5 -> "Full moon"
+                      elong < 247.5 -> "Waning gibbous"
+                      elong < 292.5 -> "Last quarter"
+                      else -> "Waning crescent"
+                  }
+
+                  val rises = ArrayList<Double>()
+                  val sets = ArrayList<Double>()
+                  val std = 0.125   // net standard altitude for the moon (parallax vs refraction)
+                  var prev = moonAltitude(julianDay(y, m, d, 0.0), lat, lon) - std
+                  for (i in 1..144) {
+                      val tHour = i * 10.0 / 60.0
+                      val cur = moonAltitude(julianDay(y, m, d, tHour), lat, lon) - std
+                      if (prev <= 0 && cur > 0) rises.add(tHour - (10.0 / 60.0) * cur / (cur - prev))
+                      if (prev > 0 && cur <= 0) sets.add(tHour - (10.0 / 60.0) * cur / (cur - prev))
+                      prev = cur
+                  }
+                  return MoonInfo(name, illum, rises, sets)
+              }
+
+              // ---------------- formatting ----------------
+
+              /** "0453" style; UT hour → local clock via the device zone's offset on that date. */
+              fun formatLocal(utHours: Double?, y: Int, m: Int, d: Int): String {
+                  if (utHours == null) return "----"
+                  val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                  cal.set(y, m - 1, d, utHours.toInt(), ((utHours % 1.0) * 60.0).roundToInt(), 0)
+                  val offsetMin = TimeZone.getDefault().getOffset(cal.timeInMillis) / 60000
+                  var total = (utHours * 60.0).roundToInt() + offsetMin
+                  total = ((total % 1440) + 1440) % 1440
+                  return String.format(java.util.Locale.US, "%02d%02d", total / 60, total % 60)
+              }
+
+              fun formatZulu(utHours: Double?): String {
+                  if (utHours == null) return "----"
+                  val total = ((utHours * 60.0).roundToInt() % 1440 + 1440) % 1440
+                  return String.format(java.util.Locale.US, "%02d%02dZ", total / 60, total % 60)
+              }
+
+              private fun norm360(v: Double): Double = ((v % 360.0) + 360.0) % 360.0
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/data'
@@ -885,11 +815,12 @@ jobs:
                   }
               }
 
-              suspend fun add(draft: WaypointDraft, nowMillis: Long) {
+              suspend fun add(draft: WaypointDraft, nowMillis: Long): String {
+                  val newId = UUID.randomUUID().toString()
                   context.wpStore.edit { p ->
                       val current = decode(p[listKey] ?: "[]")
                       val wp = Waypoint(
-                          id = UUID.randomUUID().toString(),
+                          id = newId,
                           name = draft.name,
                           lat = draft.lat,
                           lon = draft.lon,
@@ -910,6 +841,7 @@ jobs:
                           p[selectedKey] = wp.id
                       }
                   }
+                  return newId
               }
 
               /** Bulk add (imports): one datastore write however many points arrive. */
@@ -1063,6 +995,644 @@ jobs:
               }
           }
           EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/map'
+          cat > 'app/src/main/java/app/gridfix/android/map/MapSetup.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.map
+
+          import android.content.Context
+          import android.graphics.ColorMatrix
+          import android.graphics.ColorMatrixColorFilter
+          import org.osmdroid.config.Configuration
+          import org.osmdroid.tileprovider.tilesource.ITileSource
+          import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
+          import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+          import org.osmdroid.util.MapTileIndex
+          import java.io.File
+
+          /** One selectable online base layer. */
+          data class BaseLayer(
+              val key: String,
+              val label: String,
+              val source: ITileSource,
+              val attribution: String,
+              /** Highest zoom worth bulk-downloading from this provider. */
+              val maxDownloadZoom: Int,
+          )
+
+          object MapSetup {
+
+              private var initialized = false
+
+              /** One-time osmdroid configuration: cache location, size, and the required user agent. */
+              fun init(context: Context) {
+                  if (initialized) return
+                  initialized = true
+                  val base = File(context.filesDir, "osmdroid")
+                  base.mkdirs()
+                  val tiles = File(base, "tiles")
+                  tiles.mkdirs()
+                  Configuration.getInstance().apply {
+                      osmdroidBasePath = base
+                      osmdroidTileCache = tiles
+                      userAgentValue = "GridFix/0.3 (github.com/Artemis2028/gridfix)"
+                      tileFileSystemCacheMaxBytes = 600L * 1024 * 1024
+                      tileFileSystemCacheTrimBytes = 500L * 1024 * 1024
+                      // Keep serving cached tiles long after their nominal expiry — offline-first.
+                      expirationExtendedDuration = 30L * 24 * 60 * 60 * 1000
+                  }
+              }
+
+              private val esriWorldImagery = object : OnlineTileSourceBase(
+                  "EsriWorldImagery",
+                  0,
+                  19,
+                  256,
+                  "",
+                  arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/"),
+                  "Esri, Maxar, Earthstar Geographics",
+              ) {
+                  override fun getTileURLString(pMapTileIndex: Long): String =
+                      baseUrl +
+                          MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                          MapTileIndex.getY(pMapTileIndex) + "/" +
+                          MapTileIndex.getX(pMapTileIndex)
+              }
+
+              private val usgsTopo = object : OnlineTileSourceBase(
+                  "USGSTopo",
+                  0,
+                  16,
+                  256,
+                  "",
+                  arrayOf("https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/"),
+                  "USGS The National Map",
+              ) {
+                  override fun getTileURLString(pMapTileIndex: Long): String =
+                      baseUrl +
+                          MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                          MapTileIndex.getY(pMapTileIndex) + "/" +
+                          MapTileIndex.getX(pMapTileIndex)
+              }
+
+              private val esriHillshade = object : OnlineTileSourceBase(
+                  "EsriHillshade",
+                  0,
+                  16,
+                  256,
+                  "",
+                  arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/"),
+                  "Esri, USGS, NASA",
+              ) {
+                  override fun getTileURLString(pMapTileIndex: Long): String =
+                      baseUrl +
+                          MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                          MapTileIndex.getY(pMapTileIndex) + "/" +
+                          MapTileIndex.getX(pMapTileIndex)
+              }
+
+              val baseLayers: List<BaseLayer> = listOf(
+                  BaseLayer(
+                      key = "streets",
+                      label = "Streets",
+                      source = TileSourceFactory.MAPNIK,
+                      attribution = "© OpenStreetMap contributors",
+                      maxDownloadZoom = 16,
+                  ),
+                  BaseLayer(
+                      key = "topo",
+                      label = "Topographic",
+                      source = TileSourceFactory.OpenTopo,
+                      attribution = "© OpenStreetMap contributors, SRTM — style © OpenTopoMap (CC-BY-SA)",
+                      maxDownloadZoom = 15,
+                  ),
+                  BaseLayer(
+                      key = "sat",
+                      label = "Satellite",
+                      source = esriWorldImagery,
+                      attribution = "Esri, Maxar, Earthstar Geographics",
+                      maxDownloadZoom = 17,
+                  ),
+                  BaseLayer(
+                      key = "usgs",
+                      label = "USGS Topo (US only)",
+                      source = usgsTopo,
+                      attribution = "USGS The National Map",
+                      maxDownloadZoom = 15,
+                  ),
+                  BaseLayer(
+                      key = "hillshade",
+                      label = "Hillshade",
+                      source = esriHillshade,
+                      attribution = "Esri, USGS, NASA",
+                      maxDownloadZoom = 14,
+                  ),
+              )
+
+              fun layerFor(key: String): BaseLayer = baseLayers.firstOrNull { it.key == key } ?: baseLayers[1]
+
+              /** Folder where imported MBTiles files live. */
+              fun mbtilesDir(context: Context): File =
+                  File(context.filesDir, "mbtiles").apply { mkdirs() }
+
+              /**
+               * Night-vision tile filter: collapses the basemap to shades of red on black,
+               * matching the app's red-on-black night theme.
+               */
+              val nightTileFilter = ColorMatrixColorFilter(
+                  ColorMatrix(
+                      floatArrayOf(
+                          0.42f, 0.34f, 0.14f, 0f, 0f,
+                          0f, 0f, 0f, 0f, 0f,
+                          0f, 0f, 0f, 0f, 0f,
+                          0f, 0f, 0f, 1f, 0f,
+                      )
+                  )
+              )
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui'
+          cat > 'app/src/main/java/app/gridfix/android/ui/FieldTools.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui
+
+          import android.hardware.GeomagneticField
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.ArrowDropDown
+          import androidx.compose.material3.AlertDialog
+          import androidx.compose.material3.DropdownMenu
+          import androidx.compose.material3.DropdownMenuItem
+          import androidx.compose.material3.HorizontalDivider
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.TextButton
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.KeyboardType
+          import androidx.compose.ui.unit.dp
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.coords.SunMoon
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.DEFAULT_FOLDER
+          import app.gridfix.android.data.Waypoint
+          import app.gridfix.android.data.WaypointDraft
+          import java.util.Calendar
+          import java.util.Locale
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.min
+          import kotlin.math.sin
+
+          /** Chooser for the map's field-tools button. */
+          @Composable
+          fun FieldToolsChooser(onPick: (String) -> Unit, onDismiss: () -> Unit) {
+              AlertDialog(
+                  onDismissRequest = onDismiss,
+                  title = { Text("Field tools") },
+                  text = {
+                      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                          listOf(
+                              "resection" to "Resection — find yourself from two known points",
+                              "intersection" to "Intersection — plot a target from two observers",
+                              "sunmoon" to "Sun & moon — BMNT, EENT, rise/set, illumination",
+                              "declination" to "Declination diagram — true / grid / magnetic",
+                          ).forEach { (key, label) ->
+                              Text(
+                                  label,
+                                  style = MaterialTheme.typography.bodyLarge,
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .clickable { onPick(key) }
+                                      .padding(vertical = 10.dp),
+                              )
+                          }
+                      }
+                  },
+                  confirmButton = {
+                      TextButton(onClick = onDismiss) { Text("Cancel") }
+                  },
+              )
+          }
+
+          private data class RayPoint(val name: String, val lat: Double, val lon: Double)
+
+          /**
+           * Resection (two azimuths TO known points locate you) and intersection (two
+           * observers' azimuths locate a target) share one solver and one dialog.
+           * Azimuths are entered in the user's angle unit and north reference and
+           * converted per point; resection applies the back-azimuth automatically.
+           */
+          @Composable
+          fun RayFixDialog(
+              resection: Boolean,
+              settings: AppSettings,
+              bases: List<Waypoint>,
+              myPosition: Pair<Double, Double>?,
+              crosshair: Pair<Double, Double>,
+              onSaveWaypoint: (WaypointDraft) -> Unit,
+              onShowOnMap: (Double, Double) -> Unit,
+              onDismiss: () -> Unit,
+          ) {
+              val options: List<RayPoint> = buildList {
+                  if (!resection && myPosition != null) add(RayPoint("My position", myPosition.first, myPosition.second))
+                  add(RayPoint("Crosshair", crosshair.first, crosshair.second))
+                  bases.forEach { add(RayPoint(it.name, it.lat, it.lon)) }
+              }
+              var sel1 by remember { mutableStateOf(0) }
+              var sel2 by remember { mutableStateOf(if (options.size > 1) 1 else 0) }
+              var az1 by remember { mutableStateOf("") }
+              var az2 by remember { mutableStateOf("") }
+
+              val angleLabel = if (settings.angleUnit == 1) "mils" else "deg"
+              val refLetter = when (settings.northRef) {
+                  1 -> "M"
+                  2 -> "G"
+                  else -> "T"
+              }
+
+              fun trueBearing(point: RayPoint, entered: Float): Double {
+                  val deg = if (settings.angleUnit == 1) entered * 360f / 6400f else entered
+                  val adjusted = when (settings.northRef) {
+                      1 -> deg + GeomagneticField(
+                          point.lat.toFloat(), point.lon.toFloat(), 0f, System.currentTimeMillis()
+                      ).declination
+                      2 -> deg + Coordinates.gridConvergence(point.lat, point.lon).toFloat()
+                      else -> deg
+                  }
+                  val asTrue = (((adjusted % 360f) + 360f) % 360f).toDouble()
+                  return if (resection) (asTrue + 180.0) % 360.0 else asTrue
+              }
+
+              val p1 = options.getOrNull(sel1)
+              val p2 = options.getOrNull(sel2)
+              val fix = run {
+                  val a1 = az1.toFloatOrNull() ?: return@run null
+                  val a2 = az2.toFloatOrNull() ?: return@run null
+                  val q1 = p1 ?: return@run null
+                  val q2 = p2 ?: return@run null
+                  if (sel1 == sel2) return@run null
+                  Coordinates.rayIntersection(
+                      q1.lat, q1.lon, trueBearing(q1, a1),
+                      q2.lat, q2.lon, trueBearing(q2, a2),
+                  )
+              }
+
+              AlertDialog(
+                  onDismissRequest = onDismiss,
+                  title = { Text(if (resection) "Resection" else "Intersection") },
+                  text = {
+                      Column(
+                          Modifier.verticalScroll(rememberScrollState()),
+                          verticalArrangement = Arrangement.spacedBy(10.dp),
+                      ) {
+                          Text(
+                              if (resection) {
+                                  "Shoot an azimuth to each of two known points; GridFix runs the back-azimuths and plots your position."
+                              } else {
+                                  "From two observation points, enter the azimuth to the target; GridFix plots where they cross."
+                              },
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                          RayInputRow(
+                              label = if (resection) "Known point 1" else "Observer 1",
+                              options = options,
+                              selected = sel1,
+                              onSelect = { sel1 = it },
+                              az = az1,
+                              onAz = { az1 = it },
+                              angleLabel = angleLabel,
+                              refLetter = refLetter,
+                          )
+                          RayInputRow(
+                              label = if (resection) "Known point 2" else "Observer 2",
+                              options = options,
+                              selected = sel2,
+                              onSelect = { sel2 = it },
+                              az = az2,
+                              onAz = { az2 = it },
+                              angleLabel = angleLabel,
+                              refLetter = refLetter,
+                          )
+                          HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                          if (fix != null) {
+                              Text(
+                                  (Coordinates.mgrs(fix.lat, fix.lon, 10)?.full ?: "—"),
+                                  fontFamily = FontFamily.Monospace,
+                                  fontWeight = FontWeight.Bold,
+                                  style = MaterialTheme.typography.titleMedium,
+                                  color = MaterialTheme.colorScheme.primary,
+                              )
+                              Text(
+                                  "Ranges: " + Coordinates.formatDistance(fix.dist1.toFloat(), settings.units) +
+                                      " / " + Coordinates.formatDistance(fix.dist2.toFloat(), settings.units),
+                                  style = MaterialTheme.typography.bodySmall,
+                                  fontFamily = FontFamily.Monospace,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          } else {
+                              Text(
+                                  "Enter both azimuths from two different points. If the rays don't cross ahead of both points (within 100 km), no fix is shown.",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          }
+                      }
+                  },
+                  confirmButton = {
+                      Row {
+                          TextButton(
+                              enabled = fix != null,
+                              onClick = {
+                                  fix?.let { onShowOnMap(it.lat, it.lon) }
+                                  onDismiss()
+                              },
+                          ) { Text("Show") }
+                          TextButton(
+                              enabled = fix != null,
+                              onClick = {
+                                  fix?.let {
+                                      onSaveWaypoint(
+                                          WaypointDraft(
+                                              name = (if (resection) "RESECTION " else "TGT ") +
+                                                  Coordinates.dtg(System.currentTimeMillis()).take(7),
+                                              lat = it.lat,
+                                              lon = it.lon,
+                                              folder = DEFAULT_FOLDER,
+                                              symbol = "target",
+                                              affiliation = if (resection) "none" else "hostile",
+                                          )
+                                      )
+                                  }
+                                  onDismiss()
+                              },
+                          ) { Text("Save") }
+                      }
+                  },
+                  dismissButton = {
+                      TextButton(onClick = onDismiss) { Text("Close") }
+                  },
+              )
+          }
+
+          @Composable
+          private fun RayInputRow(
+              label: String,
+              options: List<RayPoint>,
+              selected: Int,
+              onSelect: (Int) -> Unit,
+              az: String,
+              onAz: (String) -> Unit,
+              angleLabel: String,
+              refLetter: String,
+          ) {
+              var menuOpen by remember { mutableStateOf(false) }
+              Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                  Text(label, style = MaterialTheme.typography.labelLarge)
+                  Row(
+                      modifier = Modifier.clickable { menuOpen = true },
+                      verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                      Text(
+                          options.getOrNull(selected)?.name ?: "—",
+                          style = MaterialTheme.typography.bodyMedium,
+                      )
+                      Icon(
+                          Icons.Outlined.ArrowDropDown,
+                          contentDescription = "Choose point",
+                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                      DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                          options.forEachIndexed { i, o ->
+                              DropdownMenuItem(
+                                  text = { Text(o.name) },
+                                  onClick = {
+                                      onSelect(i)
+                                      menuOpen = false
+                                  },
+                              )
+                          }
+                      }
+                  }
+                  OutlinedTextField(
+                      value = az,
+                      onValueChange = { v -> onAz(v.filter { it.isDigit() || it == '.' }.take(6)) },
+                      label = { Text("Azimuth ($angleLabel $refLetter)") },
+                      singleLine = true,
+                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                  )
+              }
+          }
+
+          /** Sun & moon planning table for the map-center location. */
+          @Composable
+          fun SunMoonDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
+              var dayOffset by remember { mutableStateOf(0) }
+              val cal = remember(dayOffset) {
+                  Calendar.getInstance().apply { add(Calendar.DAY_OF_MONTH, dayOffset) }
+              }
+              val y = cal.get(Calendar.YEAR)
+              val m = cal.get(Calendar.MONTH) + 1
+              val d = cal.get(Calendar.DAY_OF_MONTH)
+              val sun = remember(y, m, d, lat, lon) { SunMoon.sunTimes(y, m, d, lat, lon) }
+              val moon = remember(y, m, d, lat, lon) { SunMoon.moonInfo(y, m, d, lat, lon) }
+
+              AlertDialog(
+                  onDismissRequest = onDismiss,
+                  title = {
+                      Text(String.format(Locale.US, "Sun & moon — %02d %s %d", d, MONTHS[m - 1], y))
+                  },
+                  text = {
+                      Column(
+                          Modifier.verticalScroll(rememberScrollState()),
+                          verticalArrangement = Arrangement.spacedBy(4.dp),
+                      ) {
+                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                              TextButton(onClick = { dayOffset-- }) { Text("◀ Prev") }
+                              TextButton(onClick = { dayOffset = 0 }) { Text("Today") }
+                              TextButton(onClick = { dayOffset++ }) { Text("Next ▶") }
+                          }
+                          Text(
+                              "            LOCAL   ZULU",
+                              fontFamily = FontFamily.Monospace,
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                          listOf(
+                              "BMNT      " to sun.bmnt,
+                              "Civil dawn" to sun.civilDawn,
+                              "Sunrise   " to sun.sunrise,
+                              "Sunset    " to sun.sunset,
+                              "Civil dusk" to sun.civilDusk,
+                              "EENT      " to sun.eent,
+                          ).forEach { (name, t) ->
+                              Text(
+                                  "$name  ${SunMoon.formatLocal(t, y, m, d)}   ${SunMoon.formatZulu(t)}",
+                                  fontFamily = FontFamily.Monospace,
+                                  style = MaterialTheme.typography.bodyMedium,
+                              )
+                          }
+                          HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                          Text(
+                              "${moon.phaseName} — ${moon.illuminationPct}% illumination",
+                              style = MaterialTheme.typography.bodyMedium,
+                              fontWeight = FontWeight.Bold,
+                          )
+                          Text(
+                              "Moonrise  " + (moon.rises.firstOrNull()?.let {
+                                  "${SunMoon.formatLocal(it, y, m, d)}   ${SunMoon.formatZulu(it)}"
+                              } ?: "----"),
+                              fontFamily = FontFamily.Monospace,
+                              style = MaterialTheme.typography.bodyMedium,
+                          )
+                          Text(
+                              "Moonset   " + (moon.sets.firstOrNull()?.let {
+                                  "${SunMoon.formatLocal(it, y, m, d)}   ${SunMoon.formatZulu(it)}"
+                              } ?: "----"),
+                              fontFamily = FontFamily.Monospace,
+                              style = MaterialTheme.typography.bodyMedium,
+                          )
+                          Text(
+                              "For the map-center location. Moon times ±5 min.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                      }
+                  },
+                  confirmButton = {
+                      TextButton(onClick = onDismiss) { Text("Close") }
+                  },
+              )
+          }
+
+          private val MONTHS = listOf(
+              "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+              "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+          )
+
+          /** The map-margin declination diagram, computed for the map center. */
+          @Composable
+          fun DeclinationDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
+              val decl = remember(lat, lon) {
+                  GeomagneticField(lat.toFloat(), lon.toFloat(), 0f, System.currentTimeMillis()).declination
+              }
+              val conv = remember(lat, lon) { Coordinates.gridConvergence(lat, lon).toFloat() }
+              val gm = decl - conv
+
+              fun ew(v: Float): String = String.format(
+                  Locale.US, "%.1f° %s", abs(v), if (v >= 0) "E" else "W"
+              )
+
+              val lineColor = MaterialTheme.colorScheme.onSurface
+              val accent = MaterialTheme.colorScheme.primary
+
+              AlertDialog(
+                  onDismissRequest = onDismiss,
+                  title = { Text("Declination — map center") },
+                  text = {
+                      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                          Canvas(
+                              Modifier
+                                  .fillMaxWidth()
+                                  .height(150.dp),
+                          ) {
+                              val ox = size.width / 2f
+                              val oy = size.height - 8.dp.toPx()
+                              val len = size.height - 24.dp.toPx()
+                              val stroke = 2.dp.toPx()
+
+                              fun arm(angleDeg: Float): Offset {
+                                  val a = Math.toRadians(angleDeg.toDouble() - 90.0)
+                                  return Offset(
+                                      ox + (len * cos(a)).toFloat(),
+                                      oy + (len * sin(a)).toFloat(),
+                                  )
+                              }
+                              // exaggerate small angles so the diagram reads; labels carry truth
+                              fun display(v: Float): Float =
+                                  if (v == 0f) 0f else (if (v > 0) 1 else -1) * (8f + min(24f, abs(v) * 2f))
+
+                              // True north: straight up, star at tip
+                              val tn = arm(0f)
+                              drawLine(lineColor, Offset(ox, oy), tn, stroke)
+                              for (k in 0 until 5) {
+                                  val a = Math.toRadians(k * 72.0 - 90.0)
+                                  drawLine(
+                                      lineColor,
+                                      tn,
+                                      Offset(
+                                          tn.x + (7.dp.toPx() * cos(a)).toFloat(),
+                                          tn.y + (7.dp.toPx() * sin(a)).toFloat(),
+                                      ),
+                                      stroke * 0.7f,
+                                  )
+                              }
+                              // Grid north
+                              val gn = arm(display(conv))
+                              drawLine(lineColor, Offset(ox, oy), gn, stroke)
+                              // Magnetic north: half arrowhead
+                              val mn = arm(display(decl))
+                              drawLine(accent, Offset(ox, oy), mn, stroke)
+                              val maDir = Math.toRadians(display(decl).toDouble() - 90.0)
+                              drawLine(
+                                  accent,
+                                  mn,
+                                  Offset(
+                                      mn.x + (10.dp.toPx() * cos(maDir + 2.6)).toFloat(),
+                                      mn.y + (10.dp.toPx() * sin(maDir + 2.6)).toFloat(),
+                                  ),
+                                  stroke,
+                              )
+                              drawCircle(lineColor, radius = 3.dp.toPx(), center = Offset(ox, oy), style = Stroke(stroke))
+                          }
+                          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                              Text("★ TN", style = MaterialTheme.typography.labelMedium)
+                              Text("GN", style = MaterialTheme.typography.labelMedium)
+                              Text("MN", style = MaterialTheme.typography.labelMedium, color = accent)
+                          }
+                          Text(
+                              "Magnetic declination  ${ew(decl)}\n" +
+                                  "Grid convergence      ${ew(conv)}\n" +
+                                  "G-M angle             " + String.format(Locale.US, "%.1f°", abs(gm)),
+                              fontFamily = FontFamily.Monospace,
+                              style = MaterialTheme.typography.bodyMedium,
+                          )
+                          Text(
+                              "Diagram not to scale — use the printed values. World Magnetic Model via Android.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          )
+                          Spacer(Modifier.width(0.dp))
+                      }
+                  },
+                  confirmButton = {
+                      TextButton(onClick = onDismiss) { Text("Close") }
+                  },
+              )
+          }
+          EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui'
           cat > 'app/src/main/java/app/gridfix/android/ui/GridFixApp.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.ui
@@ -1123,12 +1693,16 @@ jobs:
           import androidx.navigation.compose.currentBackStackEntryAsState
           import androidx.navigation.compose.rememberNavController
           import androidx.core.content.FileProvider
+          import app.gridfix.android.coords.Coordinates
           import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.DEFAULT_FOLDER
+          import app.gridfix.android.data.GeoVertex
           import app.gridfix.android.data.GraphicsRepository
           import app.gridfix.android.data.InterchangeFiles
           import app.gridfix.android.data.KIND_UNIT
           import app.gridfix.android.data.SettingsRepository
           import app.gridfix.android.data.TrackRepository
+          import app.gridfix.android.data.WaypointDraft
           import app.gridfix.android.data.WaypointRepository
           import app.gridfix.android.location.TrackRecorderService
           import kotlinx.coroutines.Dispatchers
@@ -1162,13 +1736,18 @@ jobs:
               var viewedTrackId by remember { mutableStateOf<String?>(null) }
               var mapFocus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
-              // "Armor Brigade 1"-style automatic unit names from symbol + echelon
+              // Automatic names: "Armor Brigade 1" for units, "Support by fire 1" for task symbols
               val unitNameFor: (String, String) -> String = { symbol, echelon ->
-                  val func = NatoSymbols.functionLabel(symbol)
-                  val ech = if (echelon.isEmpty()) "" else " " + Echelons.label(echelon)
-                  val base = (func + ech).trim()
-                  val n = waypoints.count { it.kind == KIND_UNIT && it.name.startsWith(base) } + 1
-                  "$base $n"
+                  if (WaypointSymbols.isTask(symbol)) {
+                      val base = WaypointSymbols.taskLabel(symbol)
+                      "$base ${waypoints.count { it.name.startsWith(base) } + 1}"
+                  } else {
+                      val func = NatoSymbols.functionLabel(symbol)
+                      val ech = if (echelon.isEmpty()) "" else " " + Echelons.label(echelon)
+                      val base = (func + ech).trim()
+                      val n = waypoints.count { it.kind == KIND_UNIT && it.name.startsWith(base) } + 1
+                      "$base $n"
+                  }
               }
 
               // Waypoints in visible ("active") overlays are the ones offered for navigation
@@ -1302,7 +1881,29 @@ jobs:
                       ) {
                           composable("position") {
                               if (!hasPermission) PermissionGate(requestPermission)
-                              else PositionScreen(fix = fix, settings = settings, repo = repo)
+                              else PositionScreen(
+                                  fix = fix,
+                                  settings = settings,
+                                  repo = repo,
+                                  onMark = {
+                                      fix.location?.let { loc ->
+                                          scope.launch {
+                                              val id = waypointRepo.add(
+                                                  WaypointDraft(
+                                                      name = "MARK " + Coordinates.dtg(System.currentTimeMillis()).take(7),
+                                                      lat = loc.latitude,
+                                                      lon = loc.longitude,
+                                                      folder = DEFAULT_FOLDER,
+                                                      symbol = "target",
+                                                      affiliation = "none",
+                                                  ),
+                                                  System.currentTimeMillis(),
+                                              )
+                                              waypointRepo.select(id)
+                                          }
+                                      }
+                                  },
+                              )
                           }
                           composable("navigate") {
                               if (!hasPermission) PermissionGate(requestPermission)
@@ -1405,6 +2006,33 @@ jobs:
                                   onDeleteTrack = { id ->
                                       if (viewedTrackId == id) viewedTrackId = null
                                       scope.launch { trackRepo.delete(id) }
+                                  },
+                                  onBacktrackTrack = { t ->
+                                      scope.launch {
+                                          val pts = TrackRepository.readPoints(context, t.id)
+                                          if (pts.size >= 2) {
+                                              val reversed = pts.reversed()
+                                              val stride = kotlin.math.max(1, reversed.size / 19)
+                                              val dec = ArrayList<GeoVertex>()
+                                              var i = 0
+                                              while (i < reversed.size) {
+                                                  dec.add(GeoVertex(reversed[i].lat, reversed[i].lon))
+                                                  i += stride
+                                              }
+                                              val last = reversed.last()
+                                              if (dec.last().lat != last.lat || dec.last().lon != last.lon) {
+                                                  dec.add(GeoVertex(last.lat, last.lon))
+                                              }
+                                              waypointRepo.addFolder("Graphics")
+                                              graphicsRepo.add(
+                                                  ("Back " + t.name).take(20), "route",
+                                                  dec.take(64), "Graphics", "none",
+                                                  System.currentTimeMillis(),
+                                              )
+                                              mapFocus = dec.first().lat to dec.first().lon
+                                              goTo("map")
+                                          }
+                                      }
                                   },
                                   onShowOnMap = { w ->
                                       mapFocus = w.lat to w.lon
@@ -1748,7 +2376,13 @@ jobs:
                               onValueChange = { name = it },
                               label = { Text("Name") },
                               placeholder = {
-                                  Text(if (kind == KIND_UNIT) unitNameFor(symbol, echelon) else defaultName)
+                                  Text(
+                                      when {
+                                          kind == KIND_UNIT -> unitNameFor(symbol, echelon)
+                                          WaypointSymbols.isTask(symbol) -> unitNameFor(symbol, "")
+                                          else -> defaultName
+                                      }
+                                  )
                               },
                               singleLine = true,
                           )
@@ -2039,7 +2673,13 @@ jobs:
                   },
                   confirmButton = {
                       TextButton(onClick = {
-                          val finalName = name.ifBlank { if (kind == KIND_UNIT) unitNameFor(symbol, echelon) else defaultName }
+                          val finalName = name.ifBlank {
+                              when {
+                                  kind == KIND_UNIT -> unitNameFor(symbol, echelon)
+                                  WaypointSymbols.isTask(symbol) -> unitNameFor(symbol, "")
+                                  else -> defaultName
+                              }
+                          }
                           val finalFolder = folder.ifBlank { DEFAULT_FOLDER }
                           // A unit's affiliation comes from its chosen symbol frame
                           val finalAffiliation = if (kind == KIND_UNIT) {
@@ -2129,6 +2769,7 @@ jobs:
           import androidx.compose.foundation.combinedClickable
           import androidx.compose.foundation.horizontalScroll
           import androidx.compose.material.icons.outlined.AddLocationAlt
+          import androidx.compose.material.icons.outlined.Calculate
           import androidx.compose.material.icons.outlined.Download
           import androidx.compose.material.icons.outlined.FiberManualRecord
           import androidx.compose.material.icons.outlined.GridOn
@@ -2193,7 +2834,11 @@ jobs:
           import app.gridfix.android.map.MgrsGridOverlay
           import app.gridfix.android.map.TracksOverlay
           import app.gridfix.android.ui.Affiliations
+          import app.gridfix.android.ui.DeclinationDialog
+          import app.gridfix.android.ui.FieldToolsChooser
+          import app.gridfix.android.ui.RayFixDialog
           import app.gridfix.android.ui.RouteCardDialog
+          import app.gridfix.android.ui.SunMoonDialog
           import app.gridfix.android.ui.WaypointDialog
           import app.gridfix.android.ui.WaypointMarker
           import kotlinx.coroutines.Dispatchers
@@ -2288,6 +2933,8 @@ jobs:
               var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
               var gotoOpen by remember { mutableStateOf(false) }
               var stopTrackOpen by remember { mutableStateOf(false) }
+              var fieldToolsOpen by remember { mutableStateOf(false) }
+              var fieldTool by remember { mutableStateOf<String?>(null) }
               var notice by remember { mutableStateOf<String?>(null) }
               var viewedPoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
               val activeTrack by TrackRecorderService.active.collectAsStateWithLifecycle()
@@ -2650,7 +3297,17 @@ jobs:
                                               .clickable(
                                                   interactionSource = remember { MutableInteractionSource() },
                                                   indication = null,
-                                              ) { infoWp = w }
+                                              ) {
+                                                  if (drawType != null) {
+                                                      // Drawing: tapping a waypoint adds its exact
+                                                      // position as the next vertex, no popup
+                                                      drawPoints = drawPoints + GeoVertex(w.lat, w.lon)
+                                                      notice = "Added ${w.name}"
+                                                      holder.map?.invalidate()
+                                                  } else {
+                                                      infoWp = w
+                                                  }
+                                              }
                                       ) {
                                           WaypointMarker(
                                               symbol = w.symbol,
@@ -2702,8 +3359,9 @@ jobs:
                   Column(
                       modifier = Modifier
                           .align(Alignment.CenterEnd)
-                          .padding(end = 10.dp),
-                      verticalArrangement = Arrangement.spacedBy(10.dp),
+                          .padding(end = 10.dp)
+                          .verticalScroll(rememberScrollState()),
+                      verticalArrangement = Arrangement.spacedBy(9.dp),
                       horizontalAlignment = Alignment.CenterHorizontally,
                   ) {
                       MapButton(Icons.Outlined.Layers, "Layers", false) { layersOpen = true }
@@ -2737,6 +3395,9 @@ jobs:
                               onRecordStart()
                           }
                       }
+                      MapButton(Icons.Outlined.Calculate, "Field tools", fieldTool != null) {
+                          fieldToolsOpen = true
+                      }
                       MapButton(Icons.Outlined.AddLocationAlt, "Waypoint at crosshair", false) {
                           holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
                       }
@@ -2765,6 +3426,23 @@ jobs:
                               if (km < 1.0) String.format(java.util.Locale.US, "● REC  %.0f m", at.distanceM)
                               else String.format(java.util.Locale.US, "● REC  %.2f km", km)
                           ) { stopTrackOpen = true }
+                      }
+                      run {
+                          val loc = fix.location
+                          val mock = loc != null && (
+                              if (android.os.Build.VERSION.SDK_INT >= 31) loc.isMock
+                              else @Suppress("DEPRECATION") loc.isFromMockProvider
+                              )
+                          val warning = when {
+                              loc == null -> null
+                              mock -> "MOCK LOCATION ACTIVE"
+                              loc.hasAccuracy() && loc.accuracy > 50f ->
+                                  "GPS DEGRADED ±${loc.accuracy.toInt()} m — trust your pace count"
+                              fix.satellitesUsed in 1..3 ->
+                                  "GPS WEAK — ${fix.satellitesUsed} satellites in fix"
+                              else -> null
+                          }
+                          warning?.let { StatusChip(it) {} }
                       }
                       if (!hasPermission) {
                           StatusChip("Location off — tap to enable") { onRequestPermission() }
@@ -3283,6 +3961,39 @@ jobs:
                   )
               }
 
+              if (fieldToolsOpen) {
+                  FieldToolsChooser(
+                      onPick = {
+                          fieldTool = it
+                          fieldToolsOpen = false
+                      },
+                      onDismiss = { fieldToolsOpen = false },
+                  )
+              }
+
+              fieldTool?.let { tool ->
+                  val c = holder.map?.mapCenter
+                  val crossLat = c?.latitude ?: p.lastLat
+                  val crossLon = c?.longitude ?: p.lastLon
+                  when (tool) {
+                      "resection", "intersection" -> RayFixDialog(
+                          resection = tool == "resection",
+                          settings = settings,
+                          bases = visibleWaypoints,
+                          myPosition = fix.location?.let { it.latitude to it.longitude },
+                          crosshair = crossLat to crossLon,
+                          onSaveWaypoint = { draft -> onAdd(draft) },
+                          onShowOnMap = { la, lo ->
+                              following = false
+                              holder.map?.controller?.animateTo(GeoPoint(la, lo))
+                          },
+                          onDismiss = { fieldTool = null },
+                      )
+                      "sunmoon" -> SunMoonDialog(crossLat, crossLon) { fieldTool = null }
+                      "declination" -> DeclinationDialog(crossLat, crossLon) { fieldTool = null }
+                  }
+              }
+
               if (gotoOpen) {
                   var gridText by remember { mutableStateOf("") }
                   var gotoError by remember { mutableStateOf(false) }
@@ -3613,6 +4324,732 @@ jobs:
               }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/NavigateScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import android.content.Context
+          import android.hardware.GeomagneticField
+          import android.hardware.SensorManager
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.Build
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.os.VibratorManager
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.ArrowDropDown
+          import androidx.compose.material.icons.outlined.Flag
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.DropdownMenu
+          import androidx.compose.material3.DropdownMenuItem
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.drawText
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.rememberTextMeasurer
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.Waypoint
+          import app.gridfix.android.location.CompassTracker
+          import app.gridfix.android.location.FixData
+          import app.gridfix.android.ui.WaypointMarker
+
+          @Composable
+          fun NavigateScreen(
+              fix: FixData,
+              settings: AppSettings,
+              waypoints: List<Waypoint>,
+              selectedId: String?,
+              onSelect: (String) -> Unit,
+          ) {
+              val context = LocalContext.current
+              val compass = remember { CompassTracker(context.applicationContext) }
+              DisposableEffect(Unit) {
+                  compass.start()
+                  onDispose { compass.stop() }
+              }
+              val compassData by compass.data.collectAsStateWithLifecycle()
+
+              val loc = fix.location
+              val target = waypoints.firstOrNull { it.id == selectedId } ?: waypoints.firstOrNull()
+
+              // Magnetic declination from the World Magnetic Model, refreshed when we move ~10 km
+              val declination = remember(
+                  loc?.latitude?.let { (it * 10).toInt() },
+                  loc?.longitude?.let { (it * 10).toInt() },
+              ) {
+                  if (loc == null) 0f else GeomagneticField(
+                      loc.latitude.toFloat(),
+                      loc.longitude.toFloat(),
+                      if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
+                      loc.time,
+                  ).declination
+              }
+              val convergence = if (loc == null) 0f else {
+                  Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
+              }
+
+              // Heading: compass sensor preferred, GPS course as fallback while moving
+              val headingTrue: Float? = when {
+                  compassData.hasSensor && compassData.hasReading ->
+                      (compassData.azimuthMagnetic + declination + 360f) % 360f
+                  loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f ->
+                      (loc.bearing + 360f) % 360f
+                  else -> null
+              }
+
+              fun toRef(angleTrue: Float): Float = when (settings.northRef) {
+                  1 -> (angleTrue - declination + 360f) % 360f
+                  2 -> (angleTrue - convergence + 360f) % 360f
+                  else -> angleTrue
+              }
+              val refLetter = when (settings.northRef) {
+                  1 -> "M"
+                  2 -> "G"
+                  else -> "T"
+              }
+
+              val nav = if (loc != null && target != null) {
+                  Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
+              } else null
+
+              // Arrival alert: one buzz + tone when closing inside 50 m of the target;
+              // re-arms after moving back out past 150 m or switching targets.
+              var alertedFor by remember { mutableStateOf<String?>(null) }
+              LaunchedEffect(nav?.distanceMeters?.toInt(), target?.id) {
+                  val t = target ?: return@LaunchedEffect
+                  val dist = nav?.distanceMeters ?: return@LaunchedEffect
+                  if (dist < 50f && alertedFor != t.id) {
+                      alertedFor = t.id
+                      runCatching {
+                          val vib = if (Build.VERSION.SDK_INT >= 31) {
+                              (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
+                                  .defaultVibrator
+                          } else {
+                              @Suppress("DEPRECATION")
+                              context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                          }
+                          vib.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1))
+                      }
+                      runCatching {
+                          val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
+                          tg.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 500)
+                          kotlinx.coroutines.delay(700)
+                          tg.release()
+                      }
+                  } else if (dist > 150f && alertedFor == t.id) {
+                      alertedFor = null
+                  }
+              }
+
+              if (waypoints.isEmpty()) {
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .padding(32.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.Center,
+                  ) {
+                      Icon(
+                          Icons.Outlined.Flag,
+                          contentDescription = null,
+                          modifier = Modifier.size(56.dp),
+                          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                      Spacer(Modifier.height(16.dp))
+                      Text("No waypoints yet", style = MaterialTheme.typography.titleLarge)
+                      Spacer(Modifier.height(8.dp))
+                      Text(
+                          "Create your first waypoint in the Waypoints tab, then come back here to navigate to it.",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          textAlign = TextAlign.Center,
+                      )
+                  }
+                  return
+              }
+
+              // Colors captured outside the Canvas draw scope
+              val ringColor = MaterialTheme.colorScheme.outline
+              val onSurface = MaterialTheme.colorScheme.onSurface
+              val subtle = MaterialTheme.colorScheme.onSurfaceVariant
+              val primary = MaterialTheme.colorScheme.primary
+              val textMeasurer = rememberTextMeasurer()
+              val cardinalStyle = TextStyle(
+                  fontSize = 15.sp,
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.Bold,
+              )
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(16.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                  // Target selector
+                  var menuOpen by remember { mutableStateOf(false) }
+                  Box {
+                      Row(
+                          modifier = Modifier.clickable { menuOpen = true },
+                          verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                          WaypointMarker(
+                              symbol = target?.symbol ?: "flag",
+                              affiliation = target?.affiliation ?: "none",
+                              size = 32.dp,
+                              echelon = target?.echelon ?: "",
+                              night = settings.nightMode,
+                          )
+                          Spacer(Modifier.width(8.dp))
+                          Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
+                          Icon(Icons.Outlined.ArrowDropDown, contentDescription = "Change target", tint = subtle)
+                      }
+                      DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                          waypoints.forEach { w ->
+                              DropdownMenuItem(
+                                  text = { Text(w.name) },
+                                  leadingIcon = {
+                                      WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon, night = settings.nightMode)
+                                  },
+                                  onClick = {
+                                      onSelect(w.id)
+                                      menuOpen = false
+                                  },
+                              )
+                          }
+                      }
+                  }
+                  target?.let { t ->
+                      val parts = Coordinates.mgrs(t.lat, t.lon, 8)
+                      Text(
+                          parts?.full ?: "",
+                          style = MaterialTheme.typography.bodySmall,
+                          fontFamily = FontFamily.Monospace,
+                          color = subtle,
+                      )
+                  }
+
+                  Spacer(Modifier.height(12.dp))
+
+                  // Compass rose with target arrow
+                  Canvas(Modifier.size(280.dp)) {
+                      val c = center
+                      val r = size.minDimension / 2f - 8.dp.toPx()
+                      drawCircle(ringColor, radius = r, center = c, style = Stroke(width = 2.dp.toPx()))
+
+                      val ringHeading = headingTrue?.let { toRef(it) } ?: 0f
+                      rotate(-ringHeading, pivot = c) {
+                          for (i in 0 until 72) {
+                              val major = i % 18 == 0
+                              val medium = i % 6 == 0
+                              rotate(i * 5f, pivot = c) {
+                                  drawLine(
+                                      color = if (major) onSurface else subtle,
+                                      start = Offset(c.x, c.y - r),
+                                      end = Offset(
+                                          c.x,
+                                          c.y - r + (if (major) 14.dp else if (medium) 10.dp else 5.dp).toPx(),
+                                      ),
+                                      strokeWidth = if (major) 3f else 1.5f,
+                                  )
+                              }
+                          }
+                          listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f).forEach { (label, ang) ->
+                              rotate(ang, pivot = c) {
+                                  val layout = textMeasurer.measure(AnnotatedString(label), style = cardinalStyle)
+                                  drawText(
+                                      layout,
+                                      color = if (label == "N") primary else subtle,
+                                      topLeft = Offset(
+                                          c.x - layout.size.width / 2f,
+                                          c.y - r + 18.dp.toPx(),
+                                      ),
+                                  )
+                              }
+                          }
+                      }
+
+                      if (nav != null && headingTrue != null) {
+                          rotate((nav.bearingTrue - headingTrue + 360f) % 360f, pivot = c) {
+                              val path = Path().apply {
+                                  moveTo(c.x, c.y - r + 34.dp.toPx())
+                                  lineTo(c.x - 16.dp.toPx(), c.y + 12.dp.toPx())
+                                  lineTo(c.x, c.y - 4.dp.toPx())
+                                  lineTo(c.x + 16.dp.toPx(), c.y + 12.dp.toPx())
+                                  close()
+                              }
+                              drawPath(path, primary)
+                          }
+                      }
+                      drawCircle(onSurface, radius = 3.dp.toPx(), center = c)
+                  }
+
+                  Spacer(Modifier.height(8.dp))
+
+                  // Distance
+                  Text(
+                      if (nav != null) Coordinates.formatDistance(nav.distanceMeters, settings.units) else "—",
+                      fontSize = 44.sp,
+                      lineHeight = 50.sp,
+                      fontFamily = FontFamily.Monospace,
+                      fontWeight = FontWeight.Bold,
+                      color = primary,
+                  )
+                  Text(
+                      "DISTANCE",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = subtle,
+                      letterSpacing = 1.5.sp,
+                  )
+
+                  Spacer(Modifier.height(14.dp))
+
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      MiniStat(
+                          label = "BEARING",
+                          value = if (nav != null) {
+                              Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      MiniStat(
+                          label = "BACK-AZ",
+                          value = if (nav != null) {
+                              Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Spacer(Modifier.height(12.dp))
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      MiniStat(
+                          label = "YOUR HEADING",
+                          value = if (headingTrue != null) {
+                              Coordinates.formatAngle(toRef(headingTrue), settings.angleUnit) + " " + refLetter
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      val speed = loc?.takeIf { it.hasSpeed() && it.speed > 0.4f }?.speed
+                      MiniStat(
+                          label = "ETA",
+                          value = when {
+                              nav != null && nav.distanceMeters < 50f -> "HERE"
+                              nav != null && speed != null -> {
+                                  val secs = (nav.distanceMeters / speed).toInt()
+                                  if (secs >= 3600) {
+                                      String.format(java.util.Locale.US, "%d:%02d h", secs / 3600, (secs % 3600) / 60)
+                                  } else {
+                                      String.format(java.util.Locale.US, "%d:%02d", secs / 60, secs % 60)
+                                  }
+                              }
+                              else -> "—"
+                          },
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+
+                  // Status hints
+                  if (loc == null) {
+                      Spacer(Modifier.height(12.dp))
+                      Text(
+                          "Acquiring GPS signal…",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = subtle,
+                      )
+                  }
+                  if (!compassData.hasSensor) {
+                      Spacer(Modifier.height(12.dp))
+                      Text(
+                          "No compass sensor on this device — heading uses your direction of travel while moving.",
+                          style = MaterialTheme.typography.bodySmall,
+                          color = subtle,
+                          textAlign = TextAlign.Center,
+                      )
+                  } else if (compassData.accuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW) {
+                      Spacer(Modifier.height(12.dp))
+                      Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                          Text(
+                              "Compass needs calibration — move your phone in a figure-8 a few times.",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurface,
+                              modifier = Modifier.padding(12.dp),
+                              textAlign = TextAlign.Center,
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {
+              Card(
+                  modifier = modifier,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Column(
+                      Modifier
+                          .fillMaxWidth()
+                          .padding(14.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                  ) {
+                      Text(
+                          value,
+                          style = MaterialTheme.typography.titleLarge,
+                          fontFamily = FontFamily.Monospace,
+                          color = MaterialTheme.colorScheme.onSurface,
+                      )
+                      Spacer(Modifier.height(4.dp))
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          letterSpacing = 1.2.sp,
+                      )
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/PositionScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
+
+          import android.location.Location
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.AssistChip
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.ButtonDefaults
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.produceState
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.SettingsRepository
+          import app.gridfix.android.location.FixData
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import kotlin.math.roundToInt
+
+          @Composable
+          fun PositionScreen(
+              fix: FixData,
+              settings: AppSettings,
+              repo: SettingsRepository,
+              onMark: (() -> Unit)? = null,
+          ) {
+              val scope = rememberCoroutineScope()
+              var markedAt by remember { mutableStateOf(0L) }
+
+              // 1 Hz ticker for the clock and fix age
+              val now by produceState(initialValue = System.currentTimeMillis()) {
+                  while (true) {
+                      value = System.currentTimeMillis()
+                      delay(1000)
+                  }
+              }
+
+              val loc = fix.location
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(16.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp),
+              ) {
+                  // ---- Main MGRS card ----
+                  Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                      Column(
+                          Modifier
+                              .fillMaxWidth()
+                              .padding(20.dp)
+                      ) {
+                          Row(
+                              Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.SpaceBetween,
+                              verticalAlignment = Alignment.CenterVertically,
+                          ) {
+                              Text(
+                                  "MGRS · WGS84",
+                                  style = MaterialTheme.typography.labelMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  letterSpacing = 1.5.sp,
+                              )
+                              AssistChip(
+                                  onClick = {
+                                      val next = when (settings.mgrsDigits) {
+                                          4 -> 6
+                                          6 -> 8
+                                          8 -> 10
+                                          else -> 4
+                                      }
+                                      scope.launch { repo.setMgrsDigits(next) }
+                                  },
+                                  label = { Text("${settings.mgrsDigits}-DIGIT") },
+                              )
+                          }
+                          Spacer(Modifier.height(10.dp))
+
+                          if (loc == null) {
+                              Text(
+                                  "ACQUIRING SIGNAL",
+                                  style = MaterialTheme.typography.headlineSmall,
+                                  fontFamily = FontFamily.Monospace,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                              Spacer(Modifier.height(6.dp))
+                              Text(
+                                  "${fix.satellitesUsed}/${fix.satellitesVisible} satellites",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                              if (!fix.gpsEnabled) {
+                                  Spacer(Modifier.height(6.dp))
+                                  Text(
+                                      "GPS is off — enable Location in your phone's settings.",
+                                      style = MaterialTheme.typography.bodyMedium,
+                                      color = MaterialTheme.colorScheme.error,
+                                  )
+                              }
+                          } else {
+                              val parts = Coordinates.mgrs(loc.latitude, loc.longitude, settings.mgrsDigits)
+                              when {
+                                  parts == null -> Text(
+                                      "—",
+                                      style = MaterialTheme.typography.headlineLarge,
+                                      fontFamily = FontFamily.Monospace,
+                                  )
+                                  parts.square.isEmpty() -> Text(
+                                      parts.full,
+                                      style = MaterialTheme.typography.headlineMedium,
+                                      fontFamily = FontFamily.Monospace,
+                                      fontWeight = FontWeight.Bold,
+                                      color = MaterialTheme.colorScheme.primary,
+                                  )
+                                  else -> {
+                                      // Stacked land-nav layout: grid zone line, then easting
+                                      // and northing on their own big lines
+                                      Text(
+                                          "${parts.gzd} ${parts.square}",
+                                          style = MaterialTheme.typography.headlineMedium,
+                                          fontFamily = FontFamily.Monospace,
+                                          letterSpacing = 3.sp,
+                                          color = MaterialTheme.colorScheme.onSurface,
+                                      )
+                                      Spacer(Modifier.height(10.dp))
+                                      Text(
+                                          parts.easting,
+                                          fontSize = 54.sp,
+                                          lineHeight = 58.sp,
+                                          fontFamily = FontFamily.Monospace,
+                                          fontWeight = FontWeight.Bold,
+                                          letterSpacing = 6.sp,
+                                          color = MaterialTheme.colorScheme.primary,
+                                      )
+                                      Spacer(Modifier.height(6.dp))
+                                      Text(
+                                          parts.northing,
+                                          fontSize = 54.sp,
+                                          lineHeight = 58.sp,
+                                          fontFamily = FontFamily.Monospace,
+                                          fontWeight = FontWeight.Bold,
+                                          letterSpacing = 6.sp,
+                                          color = MaterialTheme.colorScheme.primary,
+                                      )
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  // ---- One-tap MARK: timestamped waypoint at the current fix ----
+                  if (onMark != null) {
+                      Button(
+                          onClick = {
+                              onMark()
+                              markedAt = now
+                          },
+                          enabled = loc != null,
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .height(52.dp),
+                          colors = ButtonDefaults.buttonColors(
+                              containerColor = MaterialTheme.colorScheme.secondary,
+                              contentColor = MaterialTheme.colorScheme.onSecondary,
+                          ),
+                      ) {
+                          Text(
+                              if (now - markedAt < 3000) "MARKED — set as Navigate target" else "MARK",
+                              fontFamily = FontFamily.Monospace,
+                              fontWeight = FontWeight.Bold,
+                              letterSpacing = 2.sp,
+                          )
+                      }
+                  }
+
+                  // ---- Secondary readouts ----
+                  InfoCard(
+                      label = "LAT / LON",
+                      value = loc?.let { Coordinates.formatLatLon(it.latitude, it.longitude, settings.latLonFormat) } ?: "—",
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+                  InfoCard(
+                      label = "UTM",
+                      value = loc?.let { Coordinates.formatUtm(Coordinates.utm(it.latitude, it.longitude)) } ?: "—",
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      InfoCard(
+                          label = "ALTITUDE MSL",
+                          value = if (loc != null && loc.hasAltitude()) {
+                              Coordinates.formatAltitude(loc.altitude, settings.units)
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      InfoCard(
+                          label = "ACCURACY",
+                          value = if (loc != null && loc.hasAccuracy()) {
+                              Coordinates.formatAccuracy(loc.accuracy, settings.units)
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      InfoCard(
+                          label = "SPEED",
+                          value = if (loc != null && loc.hasSpeed()) {
+                              Coordinates.formatSpeed(loc.speed, settings.units)
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                      InfoCard(
+                          label = "HEADING",
+                          value = if (loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f) {
+                              "${loc.bearing.roundToInt()}° T"
+                          } else "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                      InfoCard(
+                          label = "DTG ZULU",
+                          value = Coordinates.dtg(now),
+                          modifier = Modifier.weight(1f),
+                      )
+                      InfoCard(
+                          label = "FIX AGE",
+                          value = loc?.let { fixAge(it, now) } ?: "—",
+                          modifier = Modifier.weight(1f),
+                      )
+                  }
+                  Text(
+                      "GNSS ${fix.satellitesUsed}/${fix.satellitesVisible} SATELLITES IN FIX",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      letterSpacing = 1.2.sp,
+                      textAlign = TextAlign.Center,
+                      modifier = Modifier.fillMaxWidth(),
+                  )
+              }
+          }
+
+          private fun fixAge(loc: Location, now: Long): String {
+              val s = ((now - loc.time) / 1000).coerceAtLeast(0)
+              return when {
+                  s < 60 -> "${s}s"
+                  s < 3600 -> "${s / 60}m ${s % 60}s"
+                  else -> ">1h"
+              }
+          }
+
+          @Composable
+          private fun InfoCard(label: String, value: String, modifier: Modifier = Modifier) {
+              Card(
+                  modifier = modifier,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Column(Modifier.padding(14.dp)) {
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          letterSpacing = 1.2.sp,
+                      )
+                      Spacer(Modifier.height(6.dp))
+                      Text(
+                          value,
+                          style = MaterialTheme.typography.titleMedium,
+                          fontFamily = FontFamily.Monospace,
+                          color = MaterialTheme.colorScheme.onSurface,
+                      )
+                  }
+              }
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
           cat > 'app/src/main/java/app/gridfix/android/ui/screens/WaypointsScreen.kt' <<'EOF_GRIDFIX'
           package app.gridfix.android.ui.screens
 
@@ -3721,6 +5158,7 @@ jobs:
               viewedTrackId: String?,
               onViewTrack: (String?) -> Unit,
               onDeleteTrack: (String) -> Unit,
+              onBacktrackTrack: (TrackInfo) -> Unit,
               onShowOnMap: (Waypoint) -> Unit,
               onShowGraphicOnMap: (TacGraphic) -> Unit,
               unitNameFor: (symbol: String, echelon: String) -> String,
@@ -3976,6 +5414,7 @@ jobs:
                                   onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
                                   onShare = { shareGpx(t) },
                                   onDelete = { deleteTrackCandidate = t },
+                                  onBacktrack = { onBacktrackTrack(t) },
                               )
                           }
                       }
@@ -4166,6 +5605,7 @@ jobs:
               onView: () -> Unit,
               onShare: () -> Unit,
               onDelete: () -> Unit,
+              onBacktrack: () -> Unit,
           ) {
               Card(
                   modifier = Modifier
@@ -4201,19 +5641,32 @@ jobs:
                               else MaterialTheme.colorScheme.onSurfaceVariant,
                           )
                       }
-                      IconButton(onClick = onShare) {
-                          Icon(
-                              Icons.Outlined.Share,
-                              contentDescription = "Share GPX",
-                              tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                          )
-                      }
-                      IconButton(onClick = onDelete) {
-                          Icon(
-                              Icons.Outlined.Delete,
-                              contentDescription = "Delete track",
-                              tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                          )
+                      var menuOpen by remember { mutableStateOf(false) }
+                      Box {
+                          IconButton(onClick = { menuOpen = true }) {
+                              Icon(
+                                  Icons.Outlined.MoreVert,
+                                  contentDescription = "Track options",
+                                  tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          }
+                          DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                              DropdownMenuItem(
+                                  text = { Text("Back-track route") },
+                                  leadingIcon = { Icon(Icons.Outlined.Timeline, contentDescription = null) },
+                                  onClick = { menuOpen = false; onBacktrack() },
+                              )
+                              DropdownMenuItem(
+                                  text = { Text("Share GPX") },
+                                  leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                                  onClick = { menuOpen = false; onShare() },
+                              )
+                              DropdownMenuItem(
+                                  text = { Text("Delete") },
+                                  leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                                  onClick = { menuOpen = false; onDelete() },
+                              )
+                          }
                       }
                   }
               }
@@ -4376,7 +5829,7 @@ jobs:
           EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.6.0 (M4a interop - GPX/KML + projection) source from bootstrap workflow'
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.7.1 (field skills) source from bootstrap workflow'
             git push origin HEAD:main
           fi
 
