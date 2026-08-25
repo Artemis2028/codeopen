@@ -86,9 +86,9 @@ fun WaypointMarker(
     rotation: Float = 0f,
 ) {
     if (NatoSymbols.isNato(symbol)) {
-        val res = NatoSymbols.resId(symbol)
+        val context = LocalContext.current
+        val res = NatoSymbols.resId(context, symbol)
         if (res != null) {
-            val context = LocalContext.current
             Box(modifier.size(size)) {
                 Image(
                     bitmap = NatoSymbols.bitmap(context, res),
@@ -264,25 +264,166 @@ fun WaypointMarker(
                         arrowHead(Offset(w * 0.92f, h * 0.5f), 0f, w * 0.15f, color, glyphStroke)
                     }
                     "task_secure" -> {
-                        drawCircle(color, radius = w * 0.34f, style = Stroke(glyphStroke))
-                        arrowHead(Offset(w * 0.5f, h * 0.16f), 180f, w * 0.16f, color, glyphStroke)
+                        // FM 1-02.2: a circular arrow — the arc ENDS in the arrowhead
+                        val r = w * 0.32f
+                        drawArc(
+                            color, startAngle = -60f, sweepAngle = 300f, useCenter = false,
+                            topLeft = Offset(w / 2f - r, h / 2f - r),
+                            size = Size(2f * r, 2f * r),
+                            style = Stroke(glyphStroke),
+                        )
+                        val end = Math.toRadians(240.0)
+                        solidHead(
+                            Offset(w / 2f + r * cos(end).toFloat(), h / 2f + r * sin(end).toFloat()),
+                            240f + 90f, w * 0.15f, color,
+                        )
                     }
                     "task_occupy" -> {
-                        // Occupy: the arrow enters and ends inside the position circle
+                        // Arrow enters the position; per doctrine its tip is a crossed (+) mark
                         drawCircle(color, radius = w * 0.30f, style = Stroke(glyphStroke))
-                        drawLine(color, Offset(w * 0.05f, h * 0.95f), Offset(w * 0.40f, h * 0.60f), glyphStroke)
-                        solidHead(Offset(w * 0.45f, h * 0.55f), -45f, w * 0.14f, color)
+                        drawLine(color, Offset(w * 0.05f, h * 0.95f), Offset(w * 0.45f, h * 0.55f), glyphStroke)
+                        val t = w * 0.10f
+                        drawLine(color, Offset(w * 0.45f - t, h * 0.55f - t), Offset(w * 0.45f + t, h * 0.55f + t), glyphStroke)
+                        drawLine(color, Offset(w * 0.45f - t, h * 0.55f + t), Offset(w * 0.45f + t, h * 0.55f - t), glyphStroke)
                     }
                     "task_retain" -> {
-                        drawCircle(color, radius = w * 0.28f, style = Stroke(glyphStroke))
-                        for (i in 0 until 10) {
-                            val ang = Math.toRadians(i * 36.0)
-                            val x1 = w / 2f + (w * 0.28f) * cos(ang).toFloat()
-                            val y1 = h / 2f + (w * 0.28f) * sin(ang).toFloat()
-                            val x2 = w / 2f + (w * 0.40f) * cos(ang).toFloat()
-                            val y2 = h / 2f + (w * 0.40f) * sin(ang).toFloat()
-                            drawLine(color, Offset(x1, y1), Offset(x2, y2), glyphStroke * 0.75f)
+                        // Arc with tick marks plus the entry arrow through the gap
+                        val r = w * 0.26f
+                        drawArc(
+                            color, startAngle = -50f, sweepAngle = 280f, useCenter = false,
+                            topLeft = Offset(w / 2f - r, h / 2f - r),
+                            size = Size(2f * r, 2f * r),
+                            style = Stroke(glyphStroke),
+                        )
+                        for (i in 0..9) {
+                            val ang = Math.toRadians(-50.0 + 280.0 * i / 9.0)
+                            drawLine(
+                                color,
+                                Offset(w / 2f + r * cos(ang).toFloat(), h / 2f + r * sin(ang).toFloat()),
+                                Offset(w / 2f + r * 1.40f * cos(ang).toFloat(), h / 2f + r * 1.40f * sin(ang).toFloat()),
+                                glyphStroke * 0.75f,
+                            )
                         }
+                        drawLine(color, Offset(w / 2f, h * 0.02f), Offset(w / 2f, h * 0.28f), glyphStroke)
+                        solidHead(Offset(w / 2f, h * 0.34f), 90f, w * 0.13f, color)
+                    }
+                    "task_abf" -> {
+                        // Attack by fire: single arrow with angled rear legs
+                        drawLine(color, Offset(w * 0.5f, h * 0.70f), Offset(w * 0.5f, h * 0.16f), glyphStroke)
+                        solidHead(Offset(w * 0.5f, h * 0.10f), -90f, w * 0.15f, color)
+                        drawLine(color, Offset(w * 0.5f, h * 0.70f), Offset(w * 0.18f, h * 0.92f), glyphStroke)
+                        drawLine(color, Offset(w * 0.5f, h * 0.70f), Offset(w * 0.82f, h * 0.92f), glyphStroke)
+                    }
+                    "task_seize" -> {
+                        // Circle with a curved arrow sweeping onto it
+                        val cx = w * 0.66f
+                        val cyy = h * 0.34f
+                        drawCircle(color, radius = w * 0.16f, center = Offset(cx, cyy), style = Stroke(glyphStroke))
+                        val ar = w * 0.40f
+                        drawArc(
+                            color, startAngle = 100f, sweepAngle = 130f, useCenter = false,
+                            topLeft = Offset(cx - ar, cyy - ar),
+                            size = Size(2f * ar, 2f * ar),
+                            style = Stroke(glyphStroke),
+                        )
+                        val end = Math.toRadians(230.0)
+                        solidHead(
+                            Offset(cx + ar * cos(end).toFloat(), cyy + ar * sin(end).toFloat()),
+                            230f + 90f, w * 0.14f, color,
+                        )
+                    }
+                    "task_clear" -> {
+                        drawLine(color, Offset(w * 0.86f, h * 0.18f), Offset(w * 0.86f, h * 0.82f), glyphStroke)
+                        for (i in 0..2) {
+                            val y = h * (0.26f + 0.24f * i)
+                            drawLine(color, Offset(w * 0.86f, y), Offset(w * 0.24f, y), glyphStroke)
+                            solidHead(Offset(w * 0.16f, y), 180f, w * 0.13f, color)
+                        }
+                    }
+                    "task_destroy" -> {
+                        drawLine(color, Offset(w * 0.16f, h * 0.16f), Offset(w * 0.84f, h * 0.84f), glyphStroke)
+                        drawLine(color, Offset(w * 0.16f, h * 0.84f), Offset(w * 0.84f, h * 0.16f), glyphStroke)
+                    }
+                    "task_contain" -> {
+                        // Arc over the enemy, arrows down at both ends
+                        val r = w * 0.32f
+                        val cyy = h * 0.52f
+                        drawArc(
+                            color, startAngle = 180f, sweepAngle = 180f, useCenter = false,
+                            topLeft = Offset(w / 2f - r, cyy - r),
+                            size = Size(2f * r, 2f * r),
+                            style = Stroke(glyphStroke),
+                        )
+                        drawLine(color, Offset(w / 2f - r, cyy), Offset(w / 2f - r, cyy + h * 0.16f), glyphStroke)
+                        drawLine(color, Offset(w / 2f + r, cyy), Offset(w / 2f + r, cyy + h * 0.16f), glyphStroke)
+                        solidHead(Offset(w / 2f - r, cyy + h * 0.22f), 90f, w * 0.12f, color)
+                        solidHead(Offset(w / 2f + r, cyy + h * 0.22f), 90f, w * 0.12f, color)
+                    }
+                    "task_isolate" -> {
+                        // Circle with outward teeth; the arc ends in an arrowhead
+                        val r = w * 0.26f
+                        drawArc(
+                            color, startAngle = -70f, sweepAngle = 320f, useCenter = false,
+                            topLeft = Offset(w / 2f - r, h / 2f - r),
+                            size = Size(2f * r, 2f * r),
+                            style = Stroke(glyphStroke),
+                        )
+                        for (i in 0..7) {
+                            val ang = Math.toRadians(-60.0 + 300.0 * i / 7.0)
+                            val tp = Path().apply {
+                                moveTo(
+                                    w / 2f + r * cos(ang - 0.10).toFloat(),
+                                    h / 2f + r * sin(ang - 0.10).toFloat(),
+                                )
+                                lineTo(
+                                    w / 2f + r * 1.35f * cos(ang).toFloat(),
+                                    h / 2f + r * 1.35f * sin(ang).toFloat(),
+                                )
+                                lineTo(
+                                    w / 2f + r * cos(ang + 0.10).toFloat(),
+                                    h / 2f + r * sin(ang + 0.10).toFloat(),
+                                )
+                                close()
+                            }
+                            drawPath(tp, color)
+                        }
+                        val end = Math.toRadians(250.0)
+                        solidHead(
+                            Offset(w / 2f + r * cos(end).toFloat(), h / 2f + r * sin(end).toFloat()),
+                            250f + 90f, w * 0.13f, color,
+                        )
+                    }
+                    "task_disrupt" -> {
+                        drawLine(color, Offset(w * 0.28f, h * 0.14f), Offset(w * 0.28f, h * 0.86f), glyphStroke)
+                        val lens = floatArrayOf(0.66f, 0.86f, 0.66f)
+                        for (i in 0..2) {
+                            val y = h * (0.24f + 0.26f * i)
+                            drawLine(color, Offset(w * 0.28f, y), Offset(w * lens[i], y), glyphStroke)
+                            solidHead(Offset(w * (lens[i] + 0.06f), y), 0f, w * 0.12f, color)
+                        }
+                    }
+                    "task_breach" -> {
+                        drawLine(color, Offset(w * 0.32f, h * 0.12f), Offset(w * 0.32f, h * 0.38f), glyphStroke)
+                        drawLine(color, Offset(w * 0.68f, h * 0.12f), Offset(w * 0.68f, h * 0.38f), glyphStroke)
+                        drawLine(color, Offset(w * 0.32f, h * 0.62f), Offset(w * 0.32f, h * 0.88f), glyphStroke)
+                        drawLine(color, Offset(w * 0.68f, h * 0.62f), Offset(w * 0.68f, h * 0.88f), glyphStroke)
+                        drawLine(color, Offset(w * 0.06f, h * 0.5f), Offset(w * 0.82f, h * 0.5f), glyphStroke)
+                        solidHead(Offset(w * 0.90f, h * 0.5f), 0f, w * 0.14f, color)
+                    }
+                    "task_bypass" -> {
+                        drawLine(color, Offset(w * 0.40f, h * 0.46f), Offset(w * 0.40f, h * 0.88f), glyphStroke)
+                        drawLine(color, Offset(w * 0.60f, h * 0.46f), Offset(w * 0.60f, h * 0.88f), glyphStroke)
+                        val p = Path().apply {
+                            moveTo(w * 0.10f, h * 0.86f)
+                            quadraticBezierTo(w * 0.5f, -h * 0.14f, w * 0.90f, h * 0.72f)
+                        }
+                        drawPath(p, color, style = Stroke(glyphStroke))
+                        solidHead(Offset(w * 0.92f, h * 0.80f), 78f, w * 0.13f, color)
+                    }
+                    "task_penetrate" -> {
+                        drawLine(color, Offset(w * 0.14f, h * 0.38f), Offset(w * 0.86f, h * 0.38f), glyphStroke)
+                        drawLine(color, Offset(w * 0.5f, h * 0.92f), Offset(w * 0.5f, h * 0.20f), glyphStroke)
+                        solidHead(Offset(w * 0.5f, h * 0.12f), -90f, w * 0.15f, color)
                     }
                 }
                 }
@@ -363,16 +504,35 @@ private fun EchelonMarks(echelon: String, color: Color, halo: Color) {
             "co" -> marks(1, dot = false)
             "bn" -> marks(2, dot = false)
             "rgt" -> marks(3, dot = false)
-            "bde" -> {
-                val r = s * 0.60f
-                listOf(
-                    Offset(w / 2f - r, cy - r) to Offset(w / 2f + r, cy + r),
-                    Offset(w / 2f - r, cy + r) to Offset(w / 2f + r, cy - r),
-                ).forEach { (a, b) ->
-                    drawLine(halo, a, b, stroke * 1.9f)
-                    drawLine(color, a, b, stroke)
-                }
-            }
+            "bde" -> xMarks(1, cy, s, stroke, color, halo)
+            "div" -> xMarks(2, cy, s, stroke, color, halo)
+            "corps" -> xMarks(3, cy, s, stroke, color, halo)
+            "army" -> xMarks(4, cy, s, stroke, color, halo)
+        }
+    }
+}
+
+/** One or more X size indicators centered along the top edge (X / XX / XXX / XXXX). */
+private fun DrawScope.xMarks(
+    count: Int,
+    cy: Float,
+    s: Float,
+    stroke: Float,
+    color: Color,
+    halo: Color,
+) {
+    val w = this.size.width
+    val r = s * 0.55f
+    val gap = s * 1.35f
+    val x0 = w / 2f - gap * (count - 1) / 2f
+    for (i in 0 until count) {
+        val cx = x0 + gap * i
+        listOf(
+            Offset(cx - r, cy - r) to Offset(cx + r, cy + r),
+            Offset(cx - r, cy + r) to Offset(cx + r, cy - r),
+        ).forEach { (a, b) ->
+            drawLine(halo, a, b, stroke * 1.9f)
+            drawLine(color, a, b, stroke)
         }
     }
 }

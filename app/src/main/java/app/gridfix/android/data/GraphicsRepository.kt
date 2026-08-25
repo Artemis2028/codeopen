@@ -42,11 +42,19 @@ object GraphicTypes {
         Triple("route", "Route", 2),
         Triple("lz", "Landing zone", 3),
         Triple("pz", "Pickup zone", 3),
+        Triple("bp", "Battle position", 3),
+        Triple("ea", "Engagement area", 3),
+        Triple("nai", "NAI", 3),
+        Triple("tai", "TAI", 3),
         Triple("area", "Area (sketch)", 3),
+        Triple("screen_l", "Screen line", 2),
+        Triple("guard_l", "Guard line", 2),
+        Triple("cover_l", "Cover line", 2),
         Triple("ring", "Range ring", 2),
         Triple("sector", "Sector of fire", 3),
         Triple("trp", "Target ref point", 1),
         Triple("checkpoint", "Checkpoint", 1),
+        Triple("dp", "Decision point", 1),
         Triple("text", "Text label", 1),
     )
 
@@ -54,8 +62,17 @@ object GraphicTypes {
 
     fun minPoints(type: String): Int = all.firstOrNull { it.first == type }?.third ?: 2
 
-    fun isArea(type: String): Boolean =
-        type == "objective" || type == "aa" || type == "lz" || type == "pz" || type == "area"
+    fun isArea(type: String): Boolean = type in setOf(
+        "objective", "aa", "lz", "pz", "area", "bp", "ea", "nai", "tai",
+    )
+
+    /** Security line graphics: letter box mid-line, arrows outward both ends. */
+    fun securityLetter(type: String): String? = when (type) {
+        "screen_l" -> "S"
+        "guard_l" -> "G"
+        "cover_l" -> "C"
+        else -> null
+    }
 
     /**
      * Types placed with a fixed number of taps finish themselves — no Done press.
@@ -64,7 +81,7 @@ object GraphicTypes {
     fun fixedPoints(type: String): Int? = when (type) {
         "ring" -> 2
         "sector" -> 3
-        "trp", "checkpoint", "text" -> 1
+        "trp", "checkpoint", "dp", "text" -> 1
         else -> null
     }
 
@@ -72,8 +89,9 @@ object GraphicTypes {
     fun placeHint(type: String): String? = when (type) {
         "ring" -> "Tap the center, then the range edge"
         "sector" -> "Tap the apex, then left limit, then right limit"
-        "trp", "checkpoint" -> "Tap the map to place it"
+        "trp", "checkpoint", "dp" -> "Tap the map to place it"
         "text" -> "Tap the map where the text goes"
+        "screen_l", "guard_l", "cover_l" -> "Tap along the security line, then Done"
         else -> null
     }
 
@@ -84,8 +102,13 @@ object GraphicTypes {
         "aa" -> "AA "
         "lz" -> "LZ "
         "pz" -> "PZ "
+        "bp" -> "BP "
+        "ea" -> "EA "
+        "nai" -> "NAI "
+        "tai" -> "TAI "
         "trp" -> "TRP "
         "checkpoint" -> "CP "
+        "dp" -> "DP "
         else -> ""
     }
 }

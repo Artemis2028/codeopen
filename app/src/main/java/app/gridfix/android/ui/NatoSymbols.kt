@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import app.gridfix.android.R
 
 /**
  * Curated MIL-STD-2525B land unit symbols, bundled as 32px renders
@@ -19,14 +18,29 @@ object NatoSymbols {
         "mechinf" to "Mech infantry",
         "armor" to "Armor",
         "recon" to "Recon",
+        "armcav" to "Armored cavalry",
+        "sniper" to "Sniper team",
         "arty" to "Artillery",
+        "mortar" to "Mortar",
+        "rocket" to "Rocket artillery",
         "airdef" to "Air defense",
+        "sam" to "SAM",
         "antiarmor" to "Anti-armor",
         "engineer" to "Engineer",
         "avn" to "Aviation",
+        "atkavn" to "Attack aviation",
+        "uav" to "UAV",
         "medical" to "Medical",
         "supply" to "Supply",
+        "trans" to "Transportation",
+        "maint" to "Maintenance",
         "signal" to "Signal",
+        "ew" to "Electronic warfare",
+        "intel" to "Mil intelligence",
+        "mp" to "Military police",
+        "eod" to "EOD",
+        "cbrn" to "CBRN",
+        "hq" to "Headquarters",
         "unit" to "Unit",
     )
 
@@ -56,62 +70,17 @@ object NatoSymbols {
         return functions.firstOrNull { it.first == parts[2] }?.second ?: parts[2]
     }
 
-    private val resMap: Map<String, Int> = mapOf(
-        "nato_f_inf" to R.drawable.nato_f_inf,
-        "nato_f_mechinf" to R.drawable.nato_f_mechinf,
-        "nato_f_armor" to R.drawable.nato_f_armor,
-        "nato_f_recon" to R.drawable.nato_f_recon,
-        "nato_f_arty" to R.drawable.nato_f_arty,
-        "nato_f_airdef" to R.drawable.nato_f_airdef,
-        "nato_f_antiarmor" to R.drawable.nato_f_antiarmor,
-        "nato_f_engineer" to R.drawable.nato_f_engineer,
-        "nato_f_avn" to R.drawable.nato_f_avn,
-        "nato_f_medical" to R.drawable.nato_f_medical,
-        "nato_f_supply" to R.drawable.nato_f_supply,
-        "nato_f_signal" to R.drawable.nato_f_signal,
-        "nato_f_unit" to R.drawable.nato_f_unit,
-        "nato_h_inf" to R.drawable.nato_h_inf,
-        "nato_h_mechinf" to R.drawable.nato_h_mechinf,
-        "nato_h_armor" to R.drawable.nato_h_armor,
-        "nato_h_recon" to R.drawable.nato_h_recon,
-        "nato_h_arty" to R.drawable.nato_h_arty,
-        "nato_h_airdef" to R.drawable.nato_h_airdef,
-        "nato_h_antiarmor" to R.drawable.nato_h_antiarmor,
-        "nato_h_engineer" to R.drawable.nato_h_engineer,
-        "nato_h_avn" to R.drawable.nato_h_avn,
-        "nato_h_medical" to R.drawable.nato_h_medical,
-        "nato_h_supply" to R.drawable.nato_h_supply,
-        "nato_h_signal" to R.drawable.nato_h_signal,
-        "nato_h_unit" to R.drawable.nato_h_unit,
-        "nato_n_inf" to R.drawable.nato_n_inf,
-        "nato_n_mechinf" to R.drawable.nato_n_mechinf,
-        "nato_n_armor" to R.drawable.nato_n_armor,
-        "nato_n_recon" to R.drawable.nato_n_recon,
-        "nato_n_arty" to R.drawable.nato_n_arty,
-        "nato_n_airdef" to R.drawable.nato_n_airdef,
-        "nato_n_antiarmor" to R.drawable.nato_n_antiarmor,
-        "nato_n_engineer" to R.drawable.nato_n_engineer,
-        "nato_n_avn" to R.drawable.nato_n_avn,
-        "nato_n_medical" to R.drawable.nato_n_medical,
-        "nato_n_supply" to R.drawable.nato_n_supply,
-        "nato_n_signal" to R.drawable.nato_n_signal,
-        "nato_n_unit" to R.drawable.nato_n_unit,
-        "nato_u_inf" to R.drawable.nato_u_inf,
-        "nato_u_mechinf" to R.drawable.nato_u_mechinf,
-        "nato_u_armor" to R.drawable.nato_u_armor,
-        "nato_u_recon" to R.drawable.nato_u_recon,
-        "nato_u_arty" to R.drawable.nato_u_arty,
-        "nato_u_airdef" to R.drawable.nato_u_airdef,
-        "nato_u_antiarmor" to R.drawable.nato_u_antiarmor,
-        "nato_u_engineer" to R.drawable.nato_u_engineer,
-        "nato_u_avn" to R.drawable.nato_u_avn,
-        "nato_u_medical" to R.drawable.nato_u_medical,
-        "nato_u_supply" to R.drawable.nato_u_supply,
-        "nato_u_signal" to R.drawable.nato_u_signal,
-        "nato_u_unit" to R.drawable.nato_u_unit,
-    )
+    // Symbol PNGs are looked up by name so the curated set can grow without a
+    // hand-written map (112 as of the v0.7.8 doctrine pack). Ids are cached.
+    private val idCache = HashMap<String, Int>()
 
-    fun resId(key: String): Int? = resMap[key]
+    fun resId(context: Context, key: String): Int? {
+        val cached = idCache[key]
+        if (cached != null) return if (cached == 0) null else cached
+        val id = context.resources.getIdentifier(key, "drawable", context.packageName)
+        idCache[key] = id
+        return if (id == 0) null else id
+    }
 
     // The bundled renders have opaque black backgrounds; strip them to
     // transparent once per symbol so units sit directly on the map.

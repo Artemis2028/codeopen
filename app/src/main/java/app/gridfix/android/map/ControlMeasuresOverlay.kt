@@ -299,7 +299,50 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
                 canvas.drawText(name, xs[0] - tw / 2f, ys[0] + size / 3f, textHalo)
                 canvas.drawText(name, xs[0] - tw / 2f, ys[0] + size / 3f, textFill)
             }
-            "objective", "aa", "lz", "pz", "area" -> if (n >= 2) {
+            "screen_l", "guard_l", "cover_l" -> if (n >= 2) {
+                // Security missions drawn doctrinally: the line, arrows pointing
+                // OUTWARD from both ends, boxed letter (S/G/C) at the midpoint.
+                buildPolyline(n, closed = false)
+                if (selected) canvas.drawPath(path, glowPaint)
+                canvas.drawPath(path, linePaint)
+                solidHeadAt(canvas, xs[0], ys[0], atan2((ys[0] - ys[1]).toDouble(), (xs[0] - xs[1]).toDouble()), color)
+                solidHeadAt(canvas, xs[n - 1], ys[n - 1], atan2((ys[n - 1] - ys[n - 2]).toDouble(), (xs[n - 1] - xs[n - 2]).toDouble()), color)
+                val letter = GraphicTypes.securityLetter(type) ?: ""
+                val bx = xs[n / 2]
+                val by = ys[n / 2]
+                val half = 8f * density
+                fillPaint.color = haloColor
+                fillPaint.alpha = 220
+                canvas.drawRect(bx - half, by - half, bx + half, by + half, fillPaint)
+                val pe = linePaint.pathEffect
+                linePaint.pathEffect = null
+                canvas.drawRect(bx - half, by - half, bx + half, by + half, linePaint)
+                linePaint.pathEffect = pe
+                val size = 11f * density
+                textFill.textSize = size
+                textFill.color = color
+                textFill.alpha = 245
+                canvas.drawText(letter, bx - textFill.measureText(letter) / 2f, by + size / 3f, textFill)
+                label(canvas, name, xs[0], ys[0], color, haloColor, above = true)
+            }
+            "dp" -> {
+                // Decision point: five-point star with the DP number beside it
+                val r = 11f * density
+                path.reset()
+                for (i in 0 until 5) {
+                    val ao = Math.toRadians(-90.0 + i * 72.0)
+                    val ai = Math.toRadians(-90.0 + i * 72.0 + 36.0)
+                    val ox = xs[0] + (r * cos(ao)).toFloat()
+                    val oy = ys[0] + (r * sin(ao)).toFloat()
+                    if (i == 0) path.moveTo(ox, oy) else path.lineTo(ox, oy)
+                    path.lineTo(xs[0] + (r * 0.42f * cos(ai)).toFloat(), ys[0] + (r * 0.42f * sin(ai)).toFloat())
+                }
+                path.close()
+                if (selected) canvas.drawPath(path, glowPaint)
+                canvas.drawPath(path, linePaint)
+                label(canvas, GraphicTypes.labelPrefix(type) + name.uppercase(Locale.US), xs[0] + r, ys[0] - r * 0.6f, color, haloColor, above = true)
+            }
+            "objective", "aa", "lz", "pz", "bp", "ea", "nai", "tai", "area" -> if (n >= 2) {
                 buildPolyline(n, closed = n >= 3)
                 fillPaint.color = color
                 fillPaint.alpha = 26
@@ -442,6 +485,26 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
         val len = hypot(dx, dy)
         if (len == 0f) return 0f to 0f
         return (-dy / len) to (dx / len)
+    }
+
+    /** Filled arrowhead at (tx, ty) pointing along [angleRad]. */
+    private fun solidHeadAt(canvas: Canvas, tx: Float, ty: Float, angleRad: Double, color: Int) {
+        val len = 10f * density
+        val spread = Math.toRadians(150.0)
+        path.reset()
+        path.moveTo(tx, ty)
+        path.lineTo(
+            tx + len * cos(angleRad + spread).toFloat(),
+            ty + len * sin(angleRad + spread).toFloat(),
+        )
+        path.lineTo(
+            tx + len * cos(angleRad - spread).toFloat(),
+            ty + len * sin(angleRad - spread).toFloat(),
+        )
+        path.close()
+        fillPaint.color = color
+        fillPaint.alpha = 235
+        canvas.drawPath(path, fillPaint)
     }
 
     private fun drawSolidArrowHead(canvas: Canvas, n: Int, color: Int) {
