@@ -44,6 +44,124 @@ object NatoSymbols {
         "unit" to "Unit",
     )
 
+    /**
+     * Extended symbol tree (M5): functions materialized at CI time from the
+     * bundled MIL-STD-2525B icon pack per app/symbol-manifest.tsv. Reachable
+     * through search in the unit picker; `functions` above stays the common
+     * quick grid.
+     */
+    val extended: List<Pair<String, String>> = listOf(
+        "inf_abn" to "Airborne infantry",
+        "inf_ifv" to "Mech infantry (IFV)",
+        "inf_light" to "Light infantry",
+        "inf_mot" to "Motorized infantry",
+        "inf_naval" to "Naval infantry",
+        "inf_mtn" to "Mountain infantry",
+        "armor_abn" to "Airborne armor",
+        "armor_hv" to "Heavy armor",
+        "armor_lt" to "Light armor",
+        "armor_med" to "Medium armor",
+        "armor_rec" to "Armored recovery",
+        "armor_whd" to "Wheeled armor",
+        "aa_arm" to "Anti-armor (armored)",
+        "aa_abn" to "Anti-armor (airborne)",
+        "aa_dis" to "Anti-armor (dismounted)",
+        "aa_mot" to "Anti-armor (motorized)",
+        "recon_abn" to "Airborne recon",
+        "recon_amph" to "Amphibious recon",
+        "cav" to "Cavalry",
+        "aircav" to "Air cavalry",
+        "lrs" to "Long-range surveillance",
+        "how" to "Howitzer battery",
+        "how_sp" to "SP howitzer",
+        "mlrs" to "MLRS",
+        "arty_met" to "Artillery meteorology",
+        "arty_svy" to "Artillery survey",
+        "ta_arty" to "Target acquisition",
+        "cbradar" to "Fire-finding radar",
+        "anglico" to "ANGLICO",
+        "ada_gun" to "ADA gun",
+        "ada_radar" to "ADA radar",
+        "sam_hv" to "SAM (heavy)",
+        "sam_lt" to "SAM (light)",
+        "sam_med" to "SAM (medium)",
+        "ssm" to "Surface-to-surface missile",
+        "ssm_str" to "SSM (strategic)",
+        "ssm_tac" to "SSM (tactical)",
+        "avn_fw" to "Fixed-wing aviation",
+        "avn_rw" to "Rotary-wing aviation",
+        "utilhelo" to "Utility helicopter",
+        "vstol" to "VSTOL aviation",
+        "eng_cbt" to "Combat engineer",
+        "eng_cbt_h" to "Combat engineer (heavy)",
+        "eng_cbt_l" to "Combat engineer (light)",
+        "eng_cbt_m" to "Combat engineer (mech)",
+        "eng_con" to "Construction engineer",
+        "security" to "Security unit",
+        "bio_recon" to "Biological recon",
+        "decon" to "Decontamination",
+        "nuc" to "Nuclear (CBRN)",
+        "iw" to "Information warfare",
+        "ci" to "Counterintelligence",
+        "ipw" to "Interrogation (HUMINT)",
+        "gsr" to "Ground surveillance radar",
+        "sig_area" to "Area signal",
+        "sig_ops" to "Signal operations",
+        "admin" to "Administrative",
+        "finance" to "Finance",
+        "jag" to "Legal (JAG)",
+        "labor" to "Labor",
+        "mail" to "Mail & courier",
+        "pubaff" to "Public affairs",
+        "chaplain" to "Religious support",
+        "persvc" to "Personnel services",
+        "mwr" to "MWR",
+        "rhu" to "Replacement holding",
+        "dental" to "Dental",
+        "medfac" to "Medical treatment facility",
+        "vet" to "Veterinary",
+        "sup1" to "Supply Class I (rations)",
+        "sup2" to "Supply Class II (equipment)",
+        "sup3" to "Supply Class III (POL)",
+        "sup4" to "Supply Class IV (construction)",
+        "sup5" to "Supply Class V (ammo)",
+        "sup6" to "Supply Class VI (personal)",
+        "sup7" to "Supply Class VII (end items)",
+        "sup8" to "Supply Class VIII (medical)",
+        "sup9" to "Supply Class IX (repair parts)",
+        "laundry" to "Laundry & bath",
+        "water" to "Water supply",
+        "waterpur" to "Water purification",
+        "aport" to "Aerial port",
+        "mcc" to "Movement control",
+        "rail" to "Railway",
+        "seaport" to "Seaport",
+        "maint_eo" to "Electro-optical maint",
+        "maint_hv" to "Heavy maintenance",
+        "ordnance" to "Ordnance",
+        "recovery" to "Recovery",
+        "sof_avn" to "SOF aviation",
+        "sf" to "Special Forces",
+        "ranger" to "Rangers",
+        "psyop" to "PSYOP",
+        "psyop_abn" to "PSYOP (airborne)",
+        "seal" to "SEAL",
+        "udt" to "UDT",
+    )
+
+    private val allLabels: Map<String, String> by lazy {
+        (functions + extended).toMap()
+    }
+
+    /** Case-insensitive search over every function label (common + extended). */
+    fun search(query: String): List<Pair<String, String>> {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return emptyList()
+        return (functions + extended).filter { (key, label) ->
+            label.lowercase().contains(q) || key.contains(q)
+        }
+    }
+
     val affiliations = listOf(
         "f" to "Friendly",
         "h" to "Hostile",
@@ -55,19 +173,21 @@ object NatoSymbols {
 
     fun keysFor(aff: String): List<String> = functions.map { "nato_${aff}_${it.first}" }
 
+    private fun funcPart(key: String): String =
+        key.removePrefix("nato_").substringAfter("_")
+
     fun label(key: String): String {
-        val parts = key.split("_")
-        if (parts.size != 3) return key
-        val aff = affiliations.firstOrNull { it.first == parts[1] }?.second ?: parts[1]
-        val func = functions.firstOrNull { it.first == parts[2] }?.second ?: parts[2]
+        if (!isNato(key)) return key
+        val affKey = key.removePrefix("nato_").substringBefore("_")
+        val aff = affiliations.firstOrNull { it.first == affKey }?.second ?: affKey
+        val func = allLabels[funcPart(key)] ?: funcPart(key)
         return "$aff $func"
     }
 
     /** Function-only label ("Infantry", "Air defense") for compact picker captions. */
     fun functionLabel(key: String): String {
-        val parts = key.split("_")
-        if (parts.size != 3) return key
-        return functions.firstOrNull { it.first == parts[2] }?.second ?: parts[2]
+        if (!isNato(key)) return key
+        return allLabels[funcPart(key)] ?: funcPart(key)
     }
 
     // Symbol PNGs are looked up by name so the curated set can grow without a

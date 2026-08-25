@@ -300,19 +300,56 @@ fun WaypointDialog(
                     }
                 } else {
                     Text("Unit symbol", style = MaterialTheme.typography.labelLarge)
-                    NatoSymbols.affiliations.forEach { (aff, affLabel) ->
+                    var unitQuery by remember { mutableStateOf("") }
+                    OutlinedTextField(
+                        value = unitQuery,
+                        onValueChange = { unitQuery = it.take(30) },
+                        label = {
+                            Text("Search ${NatoSymbols.functions.size + NatoSymbols.extended.size} unit types")
+                        },
+                        placeholder = { Text("e.g. mortar, airborne, supply") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    val unitResults = remember(unitQuery) {
+                        NatoSymbols.search(unitQuery).take(12)
+                    }
+                    if (unitQuery.isBlank()) {
+                        NatoSymbols.affiliations.forEach { (aff, affLabel) ->
+                            Text(
+                                affLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            SymbolRow(
+                                keys = NatoSymbols.keysFor(aff),
+                                selected = symbol,
+                                affiliation = affiliation,
+                                labelFor = { NatoSymbols.functionLabel(it) },
+                                night = night,
+                            ) { symbol = it }
+                        }
+                    } else if (unitResults.isEmpty()) {
                         Text(
-                            affLabel,
+                            "No matching unit types.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        SymbolRow(
-                            keys = NatoSymbols.keysFor(aff),
-                            selected = symbol,
-                            affiliation = affiliation,
-                            labelFor = { NatoSymbols.functionLabel(it) },
-                            night = night,
-                        ) { symbol = it }
+                    } else {
+                        NatoSymbols.affiliations.forEach { (aff, affLabel) ->
+                            Text(
+                                affLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            SymbolRow(
+                                keys = unitResults.map { "nato_${aff}_${it.first}" },
+                                selected = symbol,
+                                affiliation = affiliation,
+                                labelFor = { NatoSymbols.functionLabel(it) },
+                                night = night,
+                            ) { symbol = it }
+                        }
                     }
 
                     Text("Echelon", style = MaterialTheme.typography.labelLarge)

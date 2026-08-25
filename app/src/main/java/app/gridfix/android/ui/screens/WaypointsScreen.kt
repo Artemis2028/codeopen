@@ -1,6 +1,8 @@
 package app.gridfix.android.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -143,7 +145,7 @@ fun WaypointsScreen(
                     }.getOrNull()
                 }
                 when {
-                    data == null -> ioMessage = "Couldn't read $display — GPX, KML, or KMZ expected"
+                    data == null -> ioMessage = "Couldn't read $display — GPX, KML, KMZ, or ATAK zip expected"
                     data.isEmpty -> ioMessage = "Nothing importable in $display"
                     else -> onImport(data) { summary -> ioMessage = summary }
                 }
@@ -453,11 +455,13 @@ fun WaypointsScreen(
             text = {
                 Text(
                     "GPX carries waypoints, routes, and tracks (widest app support). " +
-                        "KML carries everything including drawn graphics (Google Earth, ATAK).",
+                        "KML carries everything including drawn graphics (Google Earth, ATAK). " +
+                        "ATAK PKG is a mission data package — waypoints as CoT plus routes, " +
+                        "imported directly by ATAK/CivTAK.",
                 )
             },
             confirmButton = {
-                Row {
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
                     TextButton(onClick = {
                         exportOpen = false
                         onExport("gpx") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
@@ -466,6 +470,10 @@ fun WaypointsScreen(
                         exportOpen = false
                         onExport("kml") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
                     }) { Text("KML") }
+                    TextButton(onClick = {
+                        exportOpen = false
+                        onExport("atak") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
+                    }) { Text("ATAK PKG") }
                 }
             },
             dismissButton = {

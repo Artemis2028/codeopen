@@ -61,6 +61,7 @@ import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.CourseRepository
 import app.gridfix.android.data.CourseResult
+import app.gridfix.android.data.DataPackage
 import app.gridfix.android.data.DEFAULT_FOLDER
 import app.gridfix.android.data.GeoVertex
 import app.gridfix.android.data.GraphicsRepository
@@ -452,19 +453,34 @@ fun GridFixApp() {
                                     val trackData = tracks.map {
                                         it to TrackRepository.readPoints(context, it.id)
                                     }
-                                    val content = if (format == "gpx") {
-                                        InterchangeFiles.buildGpx(
-                                            waypoints,
-                                            graphics.filter { it.type == "route" },
-                                            trackData,
-                                        )
-                                    } else {
-                                        InterchangeFiles.buildKml(waypoints, graphics, trackData)
+                                    val fname = when (format) {
+                                        "atak" -> "gridfix-datapackage.zip"
+                                        else -> "gridfix-export.$format"
                                     }
-                                    val fname = "gridfix-export.$format"
                                     val file = withContext(Dispatchers.IO) {
                                         val dir = File(context.cacheDir, "share").apply { mkdirs() }
-                                        File(dir, fname).apply { writeText(content) }
+                                        File(dir, fname).apply {
+                                            when (format) {
+                                                "atak" -> outputStream().use { os ->
+                                                    DataPackage.build(
+                                                        os,
+                                                        waypoints,
+                                                        graphics.filter { it.type == "route" },
+                                                        System.currentTimeMillis(),
+                                                    )
+                                                }
+                                                "gpx" -> writeText(
+                                                    InterchangeFiles.buildGpx(
+                                                        waypoints,
+                                                        graphics.filter { it.type == "route" },
+                                                        trackData,
+                                                    )
+                                                )
+                                                else -> writeText(
+                                                    InterchangeFiles.buildKml(waypoints, graphics, trackData)
+                                                )
+                                            }
+                                        }
                                     }
                                     val uri = FileProvider.getUriForFile(
                                         context, "app.gridfix.android.fileprovider", file
@@ -472,8 +488,11 @@ fun GridFixApp() {
                                     val send = android.content.Intent(
                                         android.content.Intent.ACTION_SEND
                                     ).apply {
-                                        type = if (format == "gpx") "application/gpx+xml"
-                                        else "application/vnd.google-earth.kml+xml"
+                                        type = when (format) {
+                                            "gpx" -> "application/gpx+xml"
+                                            "atak" -> "application/zip"
+                                            else -> "application/vnd.google-earth.kml+xml"
+                                        }
                                         putExtra(android.content.Intent.EXTRA_STREAM, uri)
                                         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }

@@ -48,6 +48,8 @@ object InterchangeFiles {
             lower.endsWith(".gpx") -> parseGpx(stream)
             lower.endsWith(".kml") -> parseKml(stream)
             lower.endsWith(".kmz") -> parseKmz(stream)
+            // ATAK mission data packages (and generic zips of the above)
+            lower.endsWith(".zip") || lower.endsWith(".dpk") -> DataPackage.parse(stream)
             else -> null
         }
     }
