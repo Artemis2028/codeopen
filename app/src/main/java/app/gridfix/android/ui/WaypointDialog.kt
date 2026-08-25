@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -52,6 +53,60 @@ import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import org.osmdroid.util.GeoPoint
 import java.util.Locale
+
+/** Wrapped grid of symbol tiles — the browse-everything unit picker. */
+@Composable
+fun SymbolGrid(
+    keys: List<String>,
+    selected: String,
+    affiliation: String,
+    labelFor: ((String) -> String)? = null,
+    night: Boolean = false,
+    onSelect: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        keys.chunked(5).forEach { rowKeys ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                rowKeys.forEach { key ->
+                    val isSelected = key == selected
+                    Column(
+                        modifier = Modifier.width(58.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline,
+                                    shape = CircleShape,
+                                )
+                                .clickable { onSelect(key) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            WaypointMarker(symbol = key, affiliation = affiliation, size = 32.dp, night = night)
+                        }
+                        labelFor?.let { f ->
+                            Text(
+                                f(key),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 8.sp,
+                                lineHeight = 9.sp,
+                                maxLines = 2,
+                                textAlign = TextAlign.Center,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun SymbolRow(
@@ -299,56 +354,38 @@ fun WaypointDialog(
                         }
                     }
                 } else {
-                    Text("Unit symbol", style = MaterialTheme.typography.labelLarge)
-                    var unitQuery by remember { mutableStateOf("") }
-                    OutlinedTextField(
-                        value = unitQuery,
-                        onValueChange = { unitQuery = it.take(30) },
-                        label = {
-                            Text("Search ${NatoSymbols.functions.size + NatoSymbols.extended.size} unit types")
-                        },
-                        placeholder = { Text("e.g. mortar, airborne, supply") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    val unitResults = remember(unitQuery) {
-                        NatoSymbols.search(unitQuery).take(12)
+                    // One affiliation choice up top drives the whole grid — no
+                    // repeated per-affiliation rows.
+                    val unitAffs = listOf("friendly", "hostile", "neutral", "unknown")
+                    val affChar = when (affiliation) {
+                        "hostile" -> "h"
+                        "neutral" -> "n"
+                        "unknown" -> "u"
+                        else -> "f"
                     }
-                    if (unitQuery.isBlank()) {
-                        NatoSymbols.affiliations.forEach { (aff, affLabel) ->
-                            Text(
-                                affLabel,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Text("Affiliation", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        unitAffs.forEach { key ->
+                            FilterChip(
+                                selected = (affiliation == key) || (affiliation !in unitAffs && key == "friendly"),
+                                onClick = {
+                                    affiliation = key
+                                    if (NatoSymbols.isNato(symbol)) {
+                                        val func = symbol.removePrefix("nato_").substringAfter("_")
+                                        val c = when (key) {
+                                            "hostile" -> "h"
+                                            "neutral" -> "n"
+                                            "unknown" -> "u"
+                                            else -> "f"
+                                        }
+                                        symbol = "nato_${c}_$func"
+                                    }
+                                },
+                                label = { Text(Affiliations.label(key)) },
                             )
-                            SymbolRow(
-                                keys = NatoSymbols.keysFor(aff),
-                                selected = symbol,
-                                affiliation = affiliation,
-                                labelFor = { NatoSymbols.functionLabel(it) },
-                                night = night,
-                            ) { symbol = it }
-                        }
-                    } else if (unitResults.isEmpty()) {
-                        Text(
-                            "No matching unit types.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        NatoSymbols.affiliations.forEach { (aff, affLabel) ->
-                            Text(
-                                affLabel,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            SymbolRow(
-                                keys = unitResults.map { "nato_${aff}_${it.first}" },
-                                selected = symbol,
-                                affiliation = affiliation,
-                                labelFor = { NatoSymbols.functionLabel(it) },
-                                night = night,
-                            ) { symbol = it }
                         }
                     }
 
@@ -363,6 +400,41 @@ fun WaypointDialog(
                                 onClick = { echelon = key },
                                 label = { Text(label) },
                             )
+                        }
+                    }
+
+                    Text("Unit symbol", style = MaterialTheme.typography.labelLarge)
+                    var unitQuery by remember { mutableStateOf("") }
+                    OutlinedTextField(
+                        value = unitQuery,
+                        onValueChange = { unitQuery = it.take(30) },
+                        label = {
+                            Text("Search ${NatoSymbols.functions.size + NatoSymbols.extended.size} unit types")
+                        },
+                        placeholder = { Text("e.g. mortar, airborne, supply") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    val unitResults = remember(unitQuery) {
+                        if (unitQuery.isBlank()) NatoSymbols.functions + NatoSymbols.extended
+                        else NatoSymbols.search(unitQuery)
+                    }
+                    if (unitResults.isEmpty()) {
+                        Text(
+                            "No matching unit types.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        SymbolGrid(
+                            keys = unitResults.map { "nato_${affChar}_${it.first}" },
+                            selected = symbol,
+                            affiliation = if (affiliation in unitAffs) affiliation else "friendly",
+                            labelFor = { NatoSymbols.functionLabel(it) },
+                            night = night,
+                        ) {
+                            symbol = it
+                            if (affiliation !in unitAffs) affiliation = "friendly"
                         }
                     }
                     OutlinedTextField(
