@@ -82,6 +82,44 @@ class TrackRepository(private val context: Context) {
         }
     }
 
+    /** Create a finished track from imported points (GPX trk import). */
+    suspend fun importTrack(name: String, points: List<TrackPoint>, nowMillis: Long): String {
+        val id = UUID.randomUUID().toString()
+        withContext(Dispatchers.IO) {
+            val f = pointsFile(context, id)
+            f.parentFile?.mkdirs()
+            f.bufferedWriter().use { out ->
+                for (p in points) {
+                    out.write(
+                        String.format(Locale.US, "%.7f %.7f %d %.1f\n", p.lat, p.lon, p.time, p.alt)
+                    )
+                }
+            }
+        }
+        var dist = 0.0
+        for (i in 1 until points.size) {
+            val out = FloatArray(1)
+            Location.distanceBetween(
+                points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon, out
+            )
+            dist += out[0]
+        }
+        val start = points.firstOrNull()?.time?.takeIf { it > 0 } ?: nowMillis
+        val end = points.lastOrNull()?.time?.takeIf { it > 0 } ?: nowMillis
+        val info = TrackInfo(
+            id = id,
+            name = name.trim().ifBlank { "Imported track" },
+            startedAt = start,
+            endedAt = end,
+            distanceM = dist,
+            pointCount = points.size,
+        )
+        context.trackStore.edit { p ->
+            p[listKey] = encode(decode(p[listKey] ?: "[]") + info)
+        }
+        return id
+    }
+
     suspend fun rename(id: String, name: String) {
         if (name.isBlank()) return
         context.trackStore.edit { p ->

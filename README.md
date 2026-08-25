@@ -3,9 +3,10 @@
 MGRS land-navigation app for Android. Inspired by the category MilGPS defined on iOS,
 built independently with its own design and code.
 
-**Status: Milestone 3, build 4 (navigation pack)** — route cards (per-leg azimuth/distance/
-paces, shareable), track recording with GPX export, go-to-grid, copy/share position, units
-as their own category with auto-naming, transparent unit symbols, night-mode symbology.
+**Status: Milestone 4a (interop)** — GPX + KML/KMZ import/export (waypoints, routes,
+areas, tracks), waypoint projection (azimuth + distance from any known point), smart MGRS
+entry (auto-advance, full-grid paste). Doctrinal ambush/SBF glyphs + direction-of-fire
+rotation landed in 0.5.2.
 
 ## Roadmap
 

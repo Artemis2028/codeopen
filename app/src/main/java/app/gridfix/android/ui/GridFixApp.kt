@@ -55,13 +55,18 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.core.content.FileProvider
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.GraphicsRepository
+import app.gridfix.android.data.InterchangeFiles
 import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.data.TrackRepository
 import app.gridfix.android.data.WaypointRepository
 import app.gridfix.android.location.TrackRecorderService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import app.gridfix.android.location.LocationTracker
 import app.gridfix.android.ui.screens.MapScreen
 import app.gridfix.android.ui.screens.NavigateScreen
@@ -346,6 +351,62 @@ fun GridFixApp() {
                             }
                         },
                         unitNameFor = unitNameFor,
+                        onImport = { data, onDone ->
+                            scope.launch {
+                                val now = System.currentTimeMillis()
+                                waypointRepo.addAll(data.waypoints, now)
+                                for (l in data.lines) {
+                                    waypointRepo.addFolder(l.folder)
+                                    graphicsRepo.add(l.name, "route", l.points, l.folder, "none", now)
+                                }
+                                for (a in data.areas) {
+                                    waypointRepo.addFolder(a.folder)
+                                    graphicsRepo.add(a.name, "aa", a.points, a.folder, "none", now)
+                                }
+                                for (t in data.tracks) {
+                                    trackRepo.importTrack(t.name, t.points, now)
+                                }
+                                onDone(data.summary())
+                            }
+                        },
+                        onExport = { format, onDone ->
+                            scope.launch {
+                                runCatching {
+                                    val trackData = tracks.map {
+                                        it to TrackRepository.readPoints(context, it.id)
+                                    }
+                                    val content = if (format == "gpx") {
+                                        InterchangeFiles.buildGpx(
+                                            waypoints,
+                                            graphics.filter { it.type == "route" },
+                                            trackData,
+                                        )
+                                    } else {
+                                        InterchangeFiles.buildKml(waypoints, graphics, trackData)
+                                    }
+                                    val fname = "gridfix-export.$format"
+                                    val file = withContext(Dispatchers.IO) {
+                                        val dir = File(context.cacheDir, "share").apply { mkdirs() }
+                                        File(dir, fname).apply { writeText(content) }
+                                    }
+                                    val uri = FileProvider.getUriForFile(
+                                        context, "app.gridfix.android.fileprovider", file
+                                    )
+                                    val send = android.content.Intent(
+                                        android.content.Intent.ACTION_SEND
+                                    ).apply {
+                                        type = if (format == "gpx") "application/gpx+xml"
+                                        else "application/vnd.google-earth.kml+xml"
+                                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(send, "Share export")
+                                    )
+                                    onDone(fname)
+                                }.getOrElse { onDone(null) }
+                            }
+                        },
                     )
                 }
                 composable("settings") { SettingsScreen(repo, settings) }

@@ -117,6 +117,34 @@ class WaypointRepository(private val context: Context) {
         }
     }
 
+    /** Bulk add (imports): one datastore write however many points arrive. */
+    suspend fun addAll(drafts: List<WaypointDraft>, nowMillis: Long) {
+        if (drafts.isEmpty()) return
+        context.wpStore.edit { p ->
+            val current = decode(p[listKey] ?: "[]")
+            var folders = decodeFolders(p[foldersKey] ?: "[]")
+            val added = drafts.map { draft ->
+                folders = upsertFolder(folders, draft.folder.ifBlank { DEFAULT_FOLDER }, null)
+                Waypoint(
+                    id = UUID.randomUUID().toString(),
+                    name = draft.name,
+                    lat = draft.lat,
+                    lon = draft.lon,
+                    createdAt = nowMillis,
+                    folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                    symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
+                    affiliation = draft.affiliation,
+                    echelon = draft.echelon,
+                    designation = draft.designation,
+                    kind = draft.kind,
+                    rotation = draft.rotation,
+                )
+            }
+            p[listKey] = encode(current + added)
+            p[foldersKey] = encodeFolders(folders)
+        }
+    }
+
     suspend fun update(id: String, draft: WaypointDraft) {
         context.wpStore.edit { p ->
             val current = decode(p[listKey] ?: "[]")

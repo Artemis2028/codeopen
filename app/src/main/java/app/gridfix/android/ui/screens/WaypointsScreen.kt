@@ -16,9 +16,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -60,6 +64,7 @@ import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
 import app.gridfix.android.data.GraphicTypes
+import app.gridfix.android.data.InterchangeFiles
 import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.TacGraphic
 import app.gridfix.android.data.TrackInfo
@@ -103,6 +108,8 @@ fun WaypointsScreen(
     onShowOnMap: (Waypoint) -> Unit,
     onShowGraphicOnMap: (TacGraphic) -> Unit,
     unitNameFor: (symbol: String, echelon: String) -> String,
+    onImport: (InterchangeFiles.ImportedData, onDone: (String) -> Unit) -> Unit,
+    onExport: (format: String, onDone: (String?) -> Unit) -> Unit,
 )
 {
     val context = LocalContext.current
@@ -114,6 +121,34 @@ fun WaypointsScreen(
     var deleteTrackCandidate by remember { mutableStateOf<TrackInfo?>(null) }
     var clearFolderCandidate by remember { mutableStateOf<String?>(null) }
     var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
+    var exportOpen by remember { mutableStateOf(false) }
+    var ioMessage by remember { mutableStateOf<String?>(null) }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                var display = "file"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx)?.let { display = it }
+                }
+                val data = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                            InterchangeFiles.parse(display, stream)
+                        }
+                    }.getOrNull()
+                }
+                when {
+                    data == null -> ioMessage = "Couldn't read $display — GPX, KML, or KMZ expected"
+                    data.isEmpty -> ioMessage = "Nothing importable in $display"
+                    else -> onImport(data) { summary -> ioMessage = summary }
+                }
+            }
+        }
+    }
     var newFolderOpen by remember { mutableStateOf(false) }
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     val loc = fix.location
@@ -163,6 +198,20 @@ fun WaypointsScreen(
                         letterSpacing = 2.sp,
                         modifier = Modifier.weight(1f),
                     )
+                    IconButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
+                        Icon(
+                            Icons.Outlined.FileUpload,
+                            contentDescription = "Import GPX/KML/KMZ",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { exportOpen = true }) {
+                        Icon(
+                            Icons.Outlined.FileDownload,
+                            contentDescription = "Export",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     TextButton(onClick = { newFolderOpen = true }) {
                         Icon(
                             Icons.Outlined.CreateNewFolder,
@@ -171,6 +220,26 @@ fun WaypointsScreen(
                         )
                         Spacer(Modifier.size(6.dp))
                         Text("New folder")
+                    }
+                }
+            }
+
+            ioMessage?.let { msg ->
+                item(key = "io-message") {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { ioMessage = null },
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                    ) {
+                        Text(
+                            msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(10.dp),
+                        )
                     }
                 }
             }
@@ -336,7 +405,8 @@ fun WaypointsScreen(
                 dialogOpen = false
             },
             onDismiss = { dialogOpen = false },
-            night = settings.nightMode,
+            settings = settings,
+            projectBases = waypoints,
             unitNameFor = unitNameFor,
         )
     }
@@ -371,6 +441,34 @@ fun WaypointsScreen(
             route = r,
             settings = settings,
             onDismiss = { routeCardFor = null },
+        )
+    }
+
+    if (exportOpen) {
+        AlertDialog(
+            onDismissRequest = { exportOpen = false },
+            title = { Text("Export") },
+            text = {
+                Text(
+                    "GPX carries waypoints, routes, and tracks (widest app support). " +
+                        "KML carries everything including drawn graphics (Google Earth, ATAK).",
+                )
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        exportOpen = false
+                        onExport("gpx") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
+                    }) { Text("GPX") }
+                    TextButton(onClick = {
+                        exportOpen = false
+                        onExport("kml") { r -> ioMessage = r?.let { "Sharing $it" } ?: "Export failed" }
+                    }) { Text("KML") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { exportOpen = false }) { Text("Cancel") }
+            },
         )
     }
 

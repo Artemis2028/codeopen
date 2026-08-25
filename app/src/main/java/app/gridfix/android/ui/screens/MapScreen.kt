@@ -1353,7 +1353,8 @@ fun MapScreen(
                 newWpAt = null
             },
             onDismiss = { newWpAt = null },
-            night = settings.nightMode,
+            settings = settings,
+            projectBases = waypoints,
             unitNameFor = unitNameFor,
         )
     }
@@ -1371,7 +1372,8 @@ fun MapScreen(
                 editingWp = null
             },
             onDismiss = { editingWp = null },
-            night = settings.nightMode,
+            settings = settings,
+            projectBases = waypoints,
             unitNameFor = unitNameFor,
         )
     }

@@ -13,8 +13,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import android.hardware.GeomagneticField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -30,17 +36,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.coords.Coordinates
+import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.DEFAULT_FOLDER
 import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.KIND_WP
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
+import org.osmdroid.util.GeoPoint
 import java.util.Locale
 
 @Composable
@@ -106,9 +116,11 @@ fun WaypointDialog(
     defaultName: String,
     onConfirm: (WaypointDraft) -> Unit,
     onDismiss: () -> Unit,
-    night: Boolean = false,
+    settings: AppSettings,
+    projectBases: List<Waypoint> = emptyList(),
     unitNameFor: (symbol: String, echelon: String) -> String = { _, _ -> defaultName },
 ) {
+    val night = settings.nightMode
     val baseParts = remember(initial) {
         when {
             initial != null -> Coordinates.mgrs(initial.lat, initial.lon, 10)
@@ -125,7 +137,13 @@ fun WaypointDialog(
     var designation by remember(initial) { mutableStateOf(initial?.designation ?: "") }
     var kind by remember(initial) { mutableStateOf(initial?.kind ?: KIND_WP) }
     var rotation by remember(initial) { mutableStateOf(initial?.rotation ?: 0f) }
-    var usePreset by remember(initial) { mutableStateOf(initial == null && presetLat != null) }
+    // 0 = preset position, 1 = MGRS entry, 2 = project from a known point
+    var posMode by remember(initial) { mutableStateOf(if (initial == null && presetLat != null) 0 else 1) }
+    var projBaseId by remember(initial) { mutableStateOf<String?>(null) }
+    var azText by remember(initial) { mutableStateOf("") }
+    var distText by remember(initial) { mutableStateOf("") }
+    var projMenuOpen by remember { mutableStateOf(false) }
+    val northingFocus = remember { FocusRequester() }
     var gzdSquare by remember(initial) {
         mutableStateOf(baseParts?.let { "${it.gzd} ${it.square}" } ?: "")
     }
@@ -138,6 +156,39 @@ fun WaypointDialog(
         fontSize = 22.sp,
         textAlign = TextAlign.Center,
     )
+
+    // Projection base + live result, shared by the fields and the confirm button
+    val projBase: Triple<String, Double, Double>? = when {
+        projBaseId != null -> projectBases.firstOrNull { it.id == projBaseId }
+            ?.let { Triple(it.name, it.lat, it.lon) }
+        presetLat != null && presetLon != null -> Triple(presetLabel, presetLat, presetLon)
+        else -> projectBases.firstOrNull()?.let { Triple(it.name, it.lat, it.lon) }
+    }
+    val refLetter = when (settings.northRef) {
+        1 -> "magnetic"
+        2 -> "grid"
+        else -> "true"
+    }
+    val angleLabel = if (settings.angleUnit == 1) "mils" else "degrees"
+    val projResult: Pair<Double, Double>? = run {
+        val base = projBase ?: return@run null
+        val az = azText.toFloatOrNull() ?: return@run null
+        val dist = distText.toFloatOrNull() ?: return@run null
+        if (dist <= 0f || dist > 200000f) return@run null
+        val deg = if (settings.angleUnit == 1) az * 360f / 6400f else az
+        val decl = GeomagneticField(
+            base.second.toFloat(), base.third.toFloat(), 0f, System.currentTimeMillis()
+        ).declination
+        val conv = Coordinates.gridConvergence(base.second, base.third).toFloat()
+        val trueDeg = when (settings.northRef) {
+            1 -> deg + decl
+            2 -> deg + conv
+            else -> deg
+        }
+        val dest = GeoPoint(base.second, base.third)
+            .destinationPoint(dist.toDouble(), (((trueDeg % 360f) + 360f) % 360f).toDouble())
+        dest.latitude to dest.longitude
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -303,29 +354,52 @@ fun WaypointDialog(
                 )
 
                 Text("Position", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     FilterChip(
-                        selected = usePreset,
-                        onClick = { usePreset = true },
+                        selected = posMode == 0,
+                        onClick = { posMode = 0 },
                         label = { Text(presetLabel) },
                         enabled = presetLat != null,
                     )
                     FilterChip(
-                        selected = !usePreset,
-                        onClick = { usePreset = false },
+                        selected = posMode == 1,
+                        onClick = { posMode = 1 },
                         label = { Text("MGRS grid") },
                     )
+                    FilterChip(
+                        selected = posMode == 2,
+                        onClick = { posMode = 2 },
+                        label = { Text("Project") },
+                        enabled = presetLat != null || projectBases.isNotEmpty(),
+                    )
                 }
-                if (!usePreset) {
+                if (posMode == 1) {
                     OutlinedTextField(
                         value = gzdSquare,
                         onValueChange = { v ->
-                            gzdSquare = v.uppercase(Locale.US)
+                            val cleaned = v.uppercase(Locale.US)
                                 .filter { it.isLetterOrDigit() || it == ' ' }
-                                .take(7)
+                            var handled = false
+                            if (cleaned.replace(" ", "").length > 7) {
+                                // A full grid was pasted — split it into the fields
+                                val parsed = Coordinates.parseMgrs(cleaned)
+                                if (parsed != null) {
+                                    val parts = Coordinates.mgrs(parsed.first, parsed.second, 10)
+                                    if (parts != null && parts.easting.isNotEmpty()) {
+                                        gzdSquare = "${parts.gzd} ${parts.square}"
+                                        easting = parts.easting
+                                        northing = parts.northing
+                                        handled = true
+                                    }
+                                }
+                            }
+                            if (!handled) gzdSquare = cleaned.take(7)
                             error = null
                         },
-                        label = { Text("Grid zone") },
+                        label = { Text("Grid zone (or paste a full grid)") },
                         placeholder = { Text("39R TM") },
                         singleLine = true,
                         textStyle = bigDigits,
@@ -338,6 +412,7 @@ fun WaypointDialog(
                             onValueChange = { v ->
                                 easting = v.filter { it.isDigit() }.take(5)
                                 error = null
+                                if (easting.length == 5) northingFocus.requestFocus()
                             },
                             label = { Text("Easting") },
                             placeholder = { Text("23559") },
@@ -357,9 +432,77 @@ fun WaypointDialog(
                             singleLine = true,
                             textStyle = bigDigits,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(northingFocus),
+                        )
+                    }
+                } else if (posMode == 2) {
+                    Row(
+                        modifier = Modifier.clickable { projMenuOpen = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "From: " + (projBase?.first ?: "no point available"),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Icon(
+                            Icons.Outlined.ArrowDropDown,
+                            contentDescription = "Choose base point",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        DropdownMenu(
+                            expanded = projMenuOpen,
+                            onDismissRequest = { projMenuOpen = false },
+                        ) {
+                            if (presetLat != null && presetLon != null) {
+                                DropdownMenuItem(
+                                    text = { Text(presetLabel) },
+                                    onClick = { projBaseId = null; projMenuOpen = false },
+                                )
+                            }
+                            projectBases.forEach { b ->
+                                DropdownMenuItem(
+                                    text = { Text(b.name) },
+                                    onClick = { projBaseId = b.id; projMenuOpen = false },
+                                )
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = azText,
+                            onValueChange = { v ->
+                                azText = v.filter { it.isDigit() || it == '.' }.take(6)
+                                error = null
+                            },
+                            label = { Text("Azimuth ($angleLabel $refLetter)") },
+                            singleLine = true,
+                            textStyle = bigDigits,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = distText,
+                            onValueChange = { v ->
+                                distText = v.filter { it.isDigit() }.take(6)
+                                error = null
+                            },
+                            label = { Text("Distance (m)") },
+                            singleLine = true,
+                            textStyle = bigDigits,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    Text(
+                        projResult?.let {
+                            "→ " + (Coordinates.mgrs(it.first, it.second, 10)?.full ?: "—")
+                        } ?: "Enter azimuth and distance from the base point.",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 } else if (presetLat != null && presetLon != null) {
                     Text(
                         "$presetLabel: " + (Coordinates.mgrs(presetLat, presetLon, 10)?.full ?: "—"),
@@ -396,26 +539,34 @@ fun WaypointDialog(
                     if (kind == KIND_WP && WaypointSymbols.isTask(symbol) &&
                         WaypointSymbols.taskLetter(symbol) == null
                     ) rotation else 0f
-                if (usePreset && presetLat != null && presetLon != null) {
+                fun confirmAt(lat: Double, lon: Double) {
                     onConfirm(
                         WaypointDraft(
-                            finalName, presetLat, presetLon, finalFolder, symbol, finalAffiliation,
+                            finalName, lat, lon, finalFolder, symbol, finalAffiliation,
                             finalEchelon, finalDesignation, kind, finalRotation,
                         )
                     )
-                } else if (easting.isEmpty() || easting.length != northing.length) {
-                    error = "Easting and northing need the same number of digits."
-                } else {
-                    val parsed = Coordinates.parseMgrs(gzdSquare + easting + northing)
-                    if (parsed == null) {
-                        error = "Couldn't read that grid — check the zone letters and digits."
-                    } else {
-                        onConfirm(
-                            WaypointDraft(
-                                finalName, parsed.first, parsed.second, finalFolder, symbol, finalAffiliation,
-                                finalEchelon, finalDesignation, kind, finalRotation,
-                            )
-                        )
+                }
+                when {
+                    posMode == 0 && presetLat != null && presetLon != null ->
+                        confirmAt(presetLat, presetLon)
+                    posMode == 2 -> {
+                        val r = projResult
+                        if (r == null) {
+                            error = "Projection needs a base point, azimuth, and distance (max 200 km)."
+                        } else {
+                            confirmAt(r.first, r.second)
+                        }
+                    }
+                    easting.isEmpty() || easting.length != northing.length ->
+                        error = "Easting and northing need the same number of digits."
+                    else -> {
+                        val parsed = Coordinates.parseMgrs(gzdSquare + easting + northing)
+                        if (parsed == null) {
+                            error = "Couldn't read that grid — check the zone letters and digits."
+                        } else {
+                            confirmAt(parsed.first, parsed.second)
+                        }
                     }
                 }
             }) { Text(if (initial == null) "Add" else "Save") }
