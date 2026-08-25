@@ -120,6 +120,26 @@ class TrackRepository(private val context: Context) {
         return id
     }
 
+    /** Restore one track from a backup, keeping its id; skipped when already present. */
+    suspend fun restore(info: TrackInfo, points: List<TrackPoint>): Boolean {
+        var added = false
+        context.trackStore.edit { p ->
+            val current = decode(p[listKey] ?: "[]")
+            if (current.none { it.id == info.id }) {
+                val f = pointsFile(context, info.id)
+                f.parentFile?.mkdirs()
+                f.writeText(
+                    points.joinToString("") {
+                        String.format(Locale.US, "%.7f %.7f %d %.1f\n", it.lat, it.lon, it.time, it.alt)
+                    }
+                )
+                p[listKey] = encode(current + info)
+                added = true
+            }
+        }
+        return added
+    }
+
     suspend fun rename(id: String, name: String) {
         if (name.isBlank()) return
         context.trackStore.edit { p ->

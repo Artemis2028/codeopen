@@ -105,6 +105,35 @@ class CourseRepository(private val context: Context) {
         context.courseStore.edit { it[Keys.ACTIVE] = "" }
     }
 
+    /** Merge backed-up results into the practice log (deduped by start time + name). */
+    suspend fun restoreHistory(results: List<CourseResult>): Int {
+        var added = 0
+        context.courseStore.edit { p ->
+            val hist = JSONArray(p[Keys.HISTORY] ?: "[]")
+            val existing = HashSet<String>()
+            for (i in 0 until hist.length()) {
+                val o = hist.getJSONObject(i)
+                existing.add(o.getLong("started").toString() + "|" + o.getString("name"))
+            }
+            for (r in results) {
+                val key = r.startedAt.toString() + "|" + r.name
+                if (key in existing) continue
+                hist.put(
+                    JSONObject()
+                        .put("name", r.name)
+                        .put("points", r.points)
+                        .put("started", r.startedAt)
+                        .put("total", r.totalMillis)
+                        .put("splits", JSONArray(r.splitsMillis))
+                )
+                added++
+            }
+            while (hist.length() > 30) hist.remove(0)
+            p[Keys.HISTORY] = hist.toString()
+        }
+        return added
+    }
+
     private fun decodeActive(json: String): CourseState? = runCatching {
         if (json.isBlank()) return null
         val o = JSONObject(json)

@@ -59,6 +59,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.core.content.FileProvider
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
+import app.gridfix.android.data.Backup
 import app.gridfix.android.data.CourseRepository
 import app.gridfix.android.data.CourseResult
 import app.gridfix.android.data.DataPackage
@@ -511,6 +512,36 @@ fun GridFixApp() {
                         settings,
                         onOpenReference = {
                             navController.navigate("reference") { launchSingleTop = true }
+                        },
+                        onBackup = { uri, onDone ->
+                            scope.launch {
+                                runCatching {
+                                    context.contentResolver.openOutputStream(uri)?.use { os ->
+                                        Backup.export(
+                                            context, os,
+                                            waypoints, folders, graphics, settings,
+                                            tracks, courseHistory,
+                                            System.currentTimeMillis(),
+                                        )
+                                    }
+                                    onDone(
+                                        "Backed up ${waypoints.size} waypoints, ${graphics.size} graphics, ${tracks.size} tracks"
+                                    )
+                                }.getOrElse { onDone("Backup failed — ${it.message ?: "couldn't write the file"}") }
+                            }
+                        },
+                        onRestore = { uri, onDone ->
+                            scope.launch {
+                                runCatching {
+                                    val result = context.contentResolver.openInputStream(uri)?.use { ins ->
+                                        Backup.restore(
+                                            ins,
+                                            waypointRepo, graphicsRepo, trackRepo, repo, courseRepo,
+                                        )
+                                    }
+                                    onDone(result?.summary() ?: "Couldn't open that file")
+                                }.getOrElse { onDone("Restore failed — is this a GridFix backup zip?") }
+                            }
                         },
                     )
                 }

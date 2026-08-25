@@ -1,5 +1,7 @@
 package app.gridfix.android.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -38,8 +40,17 @@ fun SettingsScreen(
     repo: SettingsRepository,
     settings: AppSettings,
     onOpenReference: () -> Unit = {},
+    onBackup: (android.net.Uri, (String) -> Unit) -> Unit = { _, _ -> },
+    onRestore: (android.net.Uri, (String) -> Unit) -> Unit = { _, _ -> },
 ) {
     val scope = rememberCoroutineScope()
+    var backupStatus by remember { mutableStateOf<String?>(null) }
+    val backupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> if (uri != null) onBackup(uri) { backupStatus = it } }
+    val restoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) onRestore(uri) { backupStatus = it } }
 
     Column(
         modifier = Modifier
@@ -120,6 +131,35 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+        Column {
+            Text("Backup & restore", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Everything — waypoints, units, graphics, tracks, settings, practice log — " +
+                    "in one file you keep. Restoring never duplicates what's already here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row {
+                TextButton(onClick = {
+                    val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+                        .format(java.util.Date())
+                    backupLauncher.launch("gridfix-backup-$stamp.zip")
+                }) { Text("Back up now") }
+                TextButton(onClick = {
+                    restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                }) { Text("Restore…") }
+            }
+            backupStatus?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)

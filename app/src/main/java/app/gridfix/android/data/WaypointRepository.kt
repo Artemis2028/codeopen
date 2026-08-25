@@ -147,6 +147,28 @@ class WaypointRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Merge a backup: waypoints keep their original ids and ids already on the
+     * device are skipped, so restoring twice never duplicates. Folder entries
+     * merge by name (existing visibility wins). Returns how many were added.
+     */
+    suspend fun restore(imported: List<Waypoint>, importedFolders: List<FolderInfo>): Int {
+        var added = 0
+        context.wpStore.edit { p ->
+            val current = decode(p[listKey] ?: "[]")
+            val ids = current.map { it.id }.toSet()
+            val fresh = imported.filter { it.id !in ids }
+            added = fresh.size
+            p[listKey] = encode(current + fresh)
+            var folders = decodeFolders(p[foldersKey] ?: "[]")
+            val names = folders.map { it.name }.toSet()
+            folders = folders + importedFolders.filter { it.name !in names }
+            for (w in fresh) folders = upsertFolder(folders, w.folder, null)
+            p[foldersKey] = encodeFolders(folders)
+        }
+        return added
+    }
+
     suspend fun update(id: String, draft: WaypointDraft) {
         context.wpStore.edit { p ->
             val current = decode(p[listKey] ?: "[]")

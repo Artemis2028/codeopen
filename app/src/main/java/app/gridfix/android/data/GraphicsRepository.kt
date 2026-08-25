@@ -158,6 +158,19 @@ class GraphicsRepository(private val context: Context) {
         }
     }
 
+    /** Merge a backup by id — already-present graphics are skipped. Returns added count. */
+    suspend fun restore(imported: List<TacGraphic>): Int {
+        var added = 0
+        context.graphicsStore.edit { p ->
+            val current = decode(p[listKey] ?: "[]")
+            val ids = current.map { it.id }.toSet()
+            val fresh = imported.filter { it.id !in ids }
+            added = fresh.size
+            p[listKey] = encode(current + fresh)
+        }
+        return added
+    }
+
     /** Replace a graphic's vertices — the map's edit-points mode saves through this. */
     suspend fun updatePoints(id: String, points: List<GeoVertex>) {
         context.graphicsStore.edit { p ->

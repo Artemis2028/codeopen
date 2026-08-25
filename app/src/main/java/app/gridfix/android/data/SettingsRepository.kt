@@ -47,6 +47,20 @@ class SettingsRepository(private val context: Context) {
         )
     }
 
+    /** Apply every setting at once (backup restore). */
+    suspend fun applyAll(s: AppSettings) {
+        context.dataStore.edit { p ->
+            p[Keys.NIGHT_MODE] = s.nightMode
+            p[Keys.KEEP_SCREEN_ON] = s.keepScreenOn
+            p[Keys.MGRS_DIGITS] = s.mgrsDigits
+            p[Keys.LATLON_FORMAT] = s.latLonFormat
+            p[Keys.UNITS] = s.units
+            p[Keys.ANGLE_UNIT] = s.angleUnit
+            p[Keys.NORTH_REF] = s.northRef
+            p[Keys.PACE_PER_100M] = s.pacePer100m
+        }
+    }
+
     suspend fun setNightMode(value: Boolean) {
         context.dataStore.edit { it[Keys.NIGHT_MODE] = value }
     }
