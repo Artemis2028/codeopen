@@ -28,6 +28,7 @@ data class TacGraphic(
     val folder: String = DEFAULT_FOLDER,
     val affiliation: String = "none",
     val createdAt: Long = 0L,
+    val echelon: String = "",   // boundary lines carry the echelon mark on the line
 )
 
 object GraphicTypes {
@@ -50,6 +51,13 @@ object GraphicTypes {
         Triple("screen_l", "Screen line", 2),
         Triple("guard_l", "Guard line", 2),
         Triple("cover_l", "Cover line", 2),
+        Triple("flot", "FLOT", 2),
+        Triple("obstacle_line", "Obstacle line", 2),
+        Triple("wire", "Wire obstacle", 2),
+        Triple("lane", "Lane", 2),
+        Triple("minefield", "Minefield", 3),
+        Triple("strongpoint", "Strongpoint", 3),
+        Triple("roadblock", "Roadblock", 1),
         Triple("ring", "Range ring", 2),
         Triple("sector", "Sector of fire", 3),
         Triple("trp", "Target ref point", 1),
@@ -64,6 +72,7 @@ object GraphicTypes {
 
     fun isArea(type: String): Boolean = type in setOf(
         "objective", "aa", "lz", "pz", "area", "bp", "ea", "nai", "tai",
+        "minefield", "strongpoint",
     )
 
     /** Security line graphics: letter box mid-line, arrows outward both ends. */
@@ -81,7 +90,7 @@ object GraphicTypes {
     fun fixedPoints(type: String): Int? = when (type) {
         "ring" -> 2
         "sector" -> 3
-        "trp", "checkpoint", "dp", "text" -> 1
+        "trp", "checkpoint", "dp", "text", "roadblock" -> 1
         else -> null
     }
 
@@ -89,9 +98,12 @@ object GraphicTypes {
     fun placeHint(type: String): String? = when (type) {
         "ring" -> "Tap the center, then the range edge"
         "sector" -> "Tap the apex, then left limit, then right limit"
-        "trp", "checkpoint", "dp" -> "Tap the map to place it"
+        "trp", "checkpoint", "dp", "roadblock" -> "Tap the map to place it"
         "text" -> "Tap the map where the text goes"
         "screen_l", "guard_l", "cover_l" -> "Tap along the security line, then Done"
+        "flot" -> "Trace your forward line — the scallops face left of your drawing direction (toward the enemy)"
+        "lane" -> "Trace the cleared lane's centerline"
+        "obstacle_line", "wire" -> "Trace along the obstacle"
         else -> null
     }
 
@@ -128,6 +140,7 @@ class GraphicsRepository(private val context: Context) {
         folder: String,
         affiliation: String,
         nowMillis: Long,
+        echelon: String = "",
     ): String {
         val g = TacGraphic(
             id = UUID.randomUUID().toString(),
@@ -137,6 +150,7 @@ class GraphicsRepository(private val context: Context) {
             folder = folder.ifBlank { DEFAULT_FOLDER },
             affiliation = affiliation,
             createdAt = nowMillis,
+            echelon = echelon,
         )
         context.graphicsStore.edit { p ->
             p[listKey] = encode(decode(p[listKey] ?: "[]") + g)
@@ -144,7 +158,13 @@ class GraphicsRepository(private val context: Context) {
         return g.id
     }
 
-    suspend fun rename(id: String, name: String, folder: String, affiliation: String) {
+    suspend fun rename(
+        id: String,
+        name: String,
+        folder: String,
+        affiliation: String,
+        echelon: String = "",
+    ) {
         context.graphicsStore.edit { p ->
             p[listKey] = encode(
                 decode(p[listKey] ?: "[]").map {
@@ -152,6 +172,7 @@ class GraphicsRepository(private val context: Context) {
                         name = name.trim(),
                         folder = folder.ifBlank { DEFAULT_FOLDER },
                         affiliation = affiliation,
+                        echelon = echelon,
                     ) else it
                 }
             )
@@ -216,6 +237,7 @@ class GraphicsRepository(private val context: Context) {
                         folder = o.optString("folder", DEFAULT_FOLDER),
                         affiliation = o.optString("affiliation", "none"),
                         createdAt = o.optLong("createdAt"),
+                        echelon = o.optString("echelon", ""),
                     )
                 )
             }
@@ -238,6 +260,7 @@ class GraphicsRepository(private val context: Context) {
                     .put("folder", g.folder)
                     .put("affiliation", g.affiliation)
                     .put("createdAt", g.createdAt)
+                    .put("echelon", g.echelon)
             )
         }
         return arr.toString()

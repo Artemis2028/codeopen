@@ -217,8 +217,8 @@ fun MapScreen(
     onUpdate: (id: String, draft: WaypointDraft) -> Unit,
     onNavigateTo: (String) -> Unit,
     graphics: List<TacGraphic>,
-    onAddGraphic: (name: String, type: String, points: List<GeoVertex>, folder: String, affiliation: String) -> Unit,
-    onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String) -> Unit,
+    onAddGraphic: (name: String, type: String, points: List<GeoVertex>, folder: String, affiliation: String, echelon: String) -> Unit,
+    onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String, echelon: String) -> Unit,
     onUpdateGraphicPoints: (id: String, points: List<GeoVertex>) -> Unit,
     onDeleteGraphic: (String) -> Unit,
     viewedTrackId: String?,
@@ -1445,6 +1445,7 @@ fun MapScreen(
             var gName by remember(dt) { mutableStateOf("") }
             var gFolder by remember(dt) { mutableStateOf("Graphics") }
             var gAff by remember(dt) { mutableStateOf(drawAffiliation) }
+            var gEch by remember(dt) { mutableStateOf("") }
             AlertDialog(
                 onDismissRequest = { drawNameOpen = false },
                 title = { Text("Save ${GraphicTypes.label(dt).lowercase()}") },
@@ -1484,6 +1485,21 @@ fun MapScreen(
                                 )
                             }
                         }
+                        if (dt == "boundary") {
+                            Text("Echelon (drawn on the line)", style = MaterialTheme.typography.labelLarge)
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                app.gridfix.android.ui.Echelons.all.forEach { (key, label) ->
+                                    FilterChip(
+                                        selected = key == gEch,
+                                        onClick = { gEch = key },
+                                        label = { Text(label) },
+                                    )
+                                }
+                            }
+                        }
                         Text("Folder", style = MaterialTheme.typography.labelLarge)
                         Row(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -1505,7 +1521,7 @@ fun MapScreen(
                 confirmButton = {
                     TextButton(onClick = {
                         val finalName = gName.trim().ifBlank { "${graphics.size + 1}" }
-                        onAddGraphic(finalName, dt, drawPoints, gFolder, gAff)
+                        onAddGraphic(finalName, dt, drawPoints, gFolder, gAff, gEch)
                         drawNameOpen = false
                         drawType = null
                         drawPoints = emptyList()
@@ -1568,6 +1584,7 @@ fun MapScreen(
         var gName by remember(g.id) { mutableStateOf(g.name) }
         var gFolder by remember(g.id) { mutableStateOf(g.folder) }
         var gAff by remember(g.id) { mutableStateOf(g.affiliation) }
+        var gEch by remember(g.id) { mutableStateOf(g.echelon) }
         AlertDialog(
             onDismissRequest = { editingGraphic = null },
             title = { Text(GraphicTypes.label(g.type)) },
@@ -1595,6 +1612,21 @@ fun MapScreen(
                             )
                         }
                     }
+                    if (g.type == "boundary") {
+                        Text("Echelon (drawn on the line)", style = MaterialTheme.typography.labelLarge)
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            app.gridfix.android.ui.Echelons.all.forEach { (key, label) ->
+                                FilterChip(
+                                    selected = key == gEch,
+                                    onClick = { gEch = key },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    }
                     Text("Folder", style = MaterialTheme.typography.labelLarge)
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -1620,7 +1652,7 @@ fun MapScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    onUpdateGraphic(g.id, gName.trim().ifBlank { g.name }, gFolder, gAff)
+                    onUpdateGraphic(g.id, gName.trim().ifBlank { g.name }, gFolder, gAff, gEch)
                     editingGraphic = null
                 }) { Text("Save") }
             },

@@ -311,16 +311,16 @@ fun GridFixApp() {
                             goTo("navigate")
                         },
                         graphics = graphics,
-                        onAddGraphic = { name, type, points, folder, affiliation ->
+                        onAddGraphic = { name, type, points, folder, affiliation, echelon ->
                             scope.launch {
                                 waypointRepo.addFolder(folder)   // so the overlay eye toggle exists
-                                graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis())
+                                graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis(), echelon)
                             }
                         },
-                        onUpdateGraphic = { id, name, folder, affiliation ->
+                        onUpdateGraphic = { id, name, folder, affiliation, echelon ->
                             scope.launch {
                                 waypointRepo.addFolder(folder)
-                                graphicsRepo.rename(id, name, folder, affiliation)
+                                graphicsRepo.rename(id, name, folder, affiliation, echelon)
                             }
                         },
                         onUpdateGraphicPoints = { id, points ->

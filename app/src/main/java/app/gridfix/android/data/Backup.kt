@@ -60,6 +60,7 @@ object Backup {
                         .put("id", g.id).put("name", g.name).put("type", g.type)
                         .put("points", pts).put("folder", g.folder)
                         .put("affiliation", g.affiliation).put("createdAt", g.createdAt)
+                        .put("echelon", g.echelon)
                 )
             }
         })
@@ -193,6 +194,7 @@ object Backup {
                         folder = o.optString("folder", DEFAULT_FOLDER),
                         affiliation = o.optString("affiliation", "none"),
                         createdAt = o.optLong("createdAt"),
+                        echelon = o.optString("echelon", ""),
                     )
                 )
             }

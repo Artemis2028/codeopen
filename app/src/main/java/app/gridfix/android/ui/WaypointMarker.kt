@@ -446,6 +446,16 @@ fun WaypointMarker(
                 fontSize = (size.value * 0.55f).sp,
             )
         }
+        if (symbol == "task_contain") {
+            // FM 1-02.2 contain carries "ENY" inside the arc; stays upright
+            Text(
+                "ENY",
+                color = color,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = (size.value * 0.20f).sp,
+            )
+        }
         if (!isTask) {
             EchelonMarks(echelon = echelon, color = color, halo = MaterialTheme.colorScheme.background)
         }
