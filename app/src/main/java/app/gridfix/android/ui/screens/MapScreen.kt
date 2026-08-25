@@ -126,6 +126,32 @@ import org.osmdroid.views.overlay.MapEventsOverlay
 import java.io.File
 import kotlin.math.hypot
 
+/**
+ * Geo → screen position for Compose overlays: projection pixels plus the map's
+ * COMMITTED rotation only. (Projection.rotateAndScalePoint also bakes in the
+ * transient pinch-zoom scale, which made markers swim during gestures.)
+ */
+private fun toScreenPoint(
+    map: MapView,
+    proj: org.osmdroid.views.Projection,
+    gp: GeoPoint,
+    out: android.graphics.Point,
+) {
+    proj.toPixels(gp, out)
+    val deg = map.mapOrientation
+    if (deg != 0f) {
+        val rad = Math.toRadians(deg.toDouble())
+        val cx = map.width / 2.0
+        val cy = map.height / 2.0
+        val dx = out.x - cx
+        val dy = out.y - cy
+        val c = Math.cos(rad)
+        val s = Math.sin(rad)
+        out.x = (cx + dx * c - dy * s).toInt()
+        out.y = (cy + dx * s + dy * c).toInt()
+    }
+}
+
 /** Mutable references shared between the AndroidView factory callbacks and Compose. */
 private class MapHolder {
     var map: MapView? = null
@@ -405,6 +431,10 @@ fun MapScreen(
                                 following = false
                                 v.performClick()
                             }
+                            android.view.MotionEvent.ACTION_MOVE -> {
+                                // track two-finger rotation live
+                                if (ev.pointerCount >= 2) cameraTick++
+                            }
                             android.view.MotionEvent.ACTION_UP,
                             android.view.MotionEvent.ACTION_POINTER_UP -> {
                                 // pick up rotation changes when the gesture ends
@@ -540,14 +570,12 @@ fun MapScreen(
                 // Own position + accuracy
                 fix.location?.let { loc ->
                     val own = GeoPoint(loc.latitude, loc.longitude)
-                    proj.toPixels(own, pxPoint)
-                    proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
+                    toScreenPoint(map, proj, own, pxPoint)
                     val ox = pxPoint.x
                     val oy = pxPoint.y
                     if (ox in -400..(map.width + 400) && oy in -400..(map.height + 400)) {
                         val east = own.destinationPoint(1000.0, 90.0)
-                        proj.toPixels(east, pxPoint)
-                        proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
+                        toScreenPoint(map, proj, east, pxPoint)
                         val pxPerMeter = hypot(
                             (pxPoint.x - ox).toDouble(), (pxPoint.y - oy).toDouble()
                         ).toFloat() / 1000f
@@ -568,8 +596,7 @@ fun MapScreen(
 
                 // Ruler line: anchor -> crosshair
                 rulerAnchor?.let { anchor ->
-                    proj.toPixels(anchor, pxPoint)
-                    proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
+                    toScreenPoint(map, proj, anchor, pxPoint)
                     val ax = pxPoint.x.toFloat()
                     val ay = pxPoint.y.toFloat()
                     val secondary = MaterialTheme.colorScheme.secondary
@@ -584,8 +611,7 @@ fun MapScreen(
 
                 // Waypoints
                 visibleWaypoints.forEach { w ->
-                    proj.toPixels(GeoPoint(w.lat, w.lon), pxPoint)
-                    proj.rotateAndScalePoint(pxPoint.x, pxPoint.y, pxPoint)
+                    toScreenPoint(map, proj, GeoPoint(w.lat, w.lon), pxPoint)
                     val wx = pxPoint.x
                     val wy = pxPoint.y
                     if (wx in -markerPx..(map.width + markerPx) && wy in -markerPx..(map.height + markerPx)) {
