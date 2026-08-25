@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +59,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.core.content.FileProvider
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
+import app.gridfix.android.data.CourseRepository
+import app.gridfix.android.data.CourseResult
 import app.gridfix.android.data.DEFAULT_FOLDER
 import app.gridfix.android.data.GeoVertex
 import app.gridfix.android.data.GraphicsRepository
@@ -70,6 +73,8 @@ import app.gridfix.android.data.WaypointRepository
 import app.gridfix.android.location.TrackRecorderService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.osmdroid.util.GeoPoint
+import kotlin.random.Random
 import java.io.File
 import app.gridfix.android.location.LocationTracker
 import app.gridfix.android.ui.screens.MapScreen
@@ -99,6 +104,12 @@ fun GridFixApp() {
     val tracks by trackRepo.tracks.collectAsStateWithLifecycle(initialValue = emptyList())
     var viewedTrackId by remember { mutableStateOf<String?>(null) }
     var mapFocus by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    val courseRepo = remember { CourseRepository(context.applicationContext) }
+    val activeCourse by courseRepo.active.collectAsStateWithLifecycle(initialValue = null)
+    val courseHistory by courseRepo.history.collectAsStateWithLifecycle(initialValue = emptyList())
+    var courseOpen by remember { mutableStateOf(false) }
+    var courseSummary by remember { mutableStateOf<CourseResult?>(null) }
+    var summaryPending by remember { mutableStateOf(false) }
 
     // Automatic names: "Armor Brigade 1" for units, "Support by fire 1" for task symbols
     val unitNameFor: (String, String) -> String = { symbol, echelon ->
@@ -338,6 +349,10 @@ fun GridFixApp() {
                         focusAt = mapFocus,
                         onFocusConsumed = { mapFocus = null },
                         unitNameFor = unitNameFor,
+                        courseStatus = activeCourse?.takeIf { !it.done }?.let { c ->
+                            "CP ${c.nextIndex + 1}/${c.waypointIds.size} — course running"
+                        },
+                        onOpenCourse = { courseOpen = true },
                     )
                 }
                 composable("waypoints") {
@@ -483,6 +498,131 @@ fun GridFixApp() {
                 composable("reference") { ReferenceScreen() }
             }
         }
+
+        if (courseOpen) {
+            CourseDialog(
+                active = activeCourse,
+                waypoints = waypoints,
+                folders = folders,
+                history = courseHistory,
+                hasFix = fix.location != null,
+                onStartFolder = { f ->
+                    scope.launch {
+                        val ids = waypoints.filter { it.folder == f }.map { it.id }
+                        if (ids.size >= 2) {
+                            courseRepo.start(f, ids, System.currentTimeMillis())
+                            ids.firstOrNull()?.let { waypointRepo.select(it) }
+                        }
+                    }
+                },
+                onStartRandom = { count, radiusM ->
+                    val loc = fix.location
+                    if (loc != null) {
+                        scope.launch {
+                            val folderName =
+                                "Course " + Coordinates.dtg(System.currentTimeMillis()).take(7)
+                            waypointRepo.addFolder(folderName)
+                            val pts = mutableListOf<Pair<Double, Double>>()
+                            var attempts = 0
+                            while (pts.size < count && attempts < 400) {
+                                attempts++
+                                val dist = 120.0 + Random.nextDouble() *
+                                    (radiusM - 120.0).coerceAtLeast(1.0)
+                                val brg = Random.nextDouble() * 360.0
+                                val p = GeoPoint(loc.latitude, loc.longitude)
+                                    .destinationPoint(dist, brg)
+                                val separated = pts.all { (la, lo) ->
+                                    Coordinates.navInfo(la, lo, p.latitude, p.longitude)
+                                        .distanceMeters > 120f
+                                }
+                                if (separated) pts.add(p.latitude to p.longitude)
+                            }
+                            val ids = mutableListOf<String>()
+                            pts.forEachIndexed { i, (la, lo) ->
+                                ids.add(
+                                    waypointRepo.add(
+                                        WaypointDraft(
+                                            name = "CP ${i + 1}",
+                                            lat = la,
+                                            lon = lo,
+                                            folder = folderName,
+                                            symbol = "target",
+                                            affiliation = "none",
+                                        ),
+                                        System.currentTimeMillis(),
+                                    )
+                                )
+                            }
+                            if (ids.size >= 2) {
+                                courseRepo.start(folderName, ids, System.currentTimeMillis())
+                                ids.firstOrNull()?.let { waypointRepo.select(it) }
+                            }
+                        }
+                    }
+                },
+                onAbandon = {
+                    scope.launch { courseRepo.abandon() }
+                    courseOpen = false
+                },
+                onDismiss = { courseOpen = false },
+            )
+        }
+        courseSummary?.let { r ->
+            CourseSummaryDialog(result = r) { courseSummary = null }
+        }
+
+        // Course engine: lock Navigate onto the current point; auto-advance and
+        // buzz when the fix closes inside 25 m (accuracy permitting).
+        LaunchedEffect(activeCourse?.nextIndex, activeCourse?.name) {
+            val c = activeCourse ?: return@LaunchedEffect
+            if (!c.done) {
+                c.waypointIds.getOrNull(c.nextIndex)?.let { waypointRepo.select(it) }
+            }
+        }
+        LaunchedEffect(
+            fix.location?.latitude,
+            fix.location?.longitude,
+            activeCourse?.nextIndex,
+            activeCourse?.name,
+        ) {
+            val c = activeCourse ?: return@LaunchedEffect
+            val loc = fix.location ?: return@LaunchedEffect
+            if (c.done) return@LaunchedEffect
+            val target = waypoints.firstOrNull { it.id == c.waypointIds[c.nextIndex] }
+                ?: return@LaunchedEffect
+            val nav = Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
+            val accuracyOk = !loc.hasAccuracy() || loc.accuracy < 40f
+            if (nav.distanceMeters < 25f && accuracyOk) {
+                courseRepo.markFound(System.currentTimeMillis())
+                buzz(context)
+                if (c.foundAt.size + 1 >= c.waypointIds.size) {
+                    courseRepo.finish()
+                    summaryPending = true
+                }
+            }
+        }
+        LaunchedEffect(courseHistory, summaryPending) {
+            if (summaryPending && courseHistory.isNotEmpty()) {
+                courseSummary = courseHistory.first()
+                summaryPending = false
+            }
+        }
+    }
+}
+
+private fun buzz(context: android.content.Context) {
+    runCatching {
+        val vib = if (android.os.Build.VERSION.SDK_INT >= 31) {
+            (context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE)
+                as android.os.VibratorManager).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(android.content.Context.VIBRATOR_SERVICE)
+                as android.os.Vibrator
+        }
+        vib.vibrate(
+            android.os.VibrationEffect.createWaveform(longArrayOf(0, 200, 120, 200), -1)
+        )
     }
 }
 

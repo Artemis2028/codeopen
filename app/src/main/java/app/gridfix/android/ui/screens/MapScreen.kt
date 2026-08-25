@@ -227,6 +227,8 @@ fun MapScreen(
     focusAt: Pair<Double, Double>?,
     onFocusConsumed: () -> Unit,
     unitNameFor: (symbol: String, echelon: String) -> String,
+    courseStatus: String? = null,
+    onOpenCourse: () -> Unit = {},
 ) {
     val context = LocalContext.current
     remember { MapSetup.init(context.applicationContext); true }
@@ -904,6 +906,9 @@ fun MapScreen(
             }
             notice?.let { msg ->
                 StatusChip(msg) { notice = null }
+            }
+            courseStatus?.let { cs ->
+                StatusChip(cs) { onOpenCourse() }
             }
             activeTrack?.let { at ->
                 val km = at.distanceM / 1000.0
@@ -1653,7 +1658,7 @@ fun MapScreen(
     if (fieldToolsOpen) {
         FieldToolsChooser(
             onPick = {
-                fieldTool = it
+                if (it == "course") onOpenCourse() else fieldTool = it
                 fieldToolsOpen = false
             },
             onDismiss = { fieldToolsOpen = false },

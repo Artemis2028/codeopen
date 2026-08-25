@@ -64,6 +64,7 @@ fun FieldToolsChooser(onPick: (String) -> Unit, onDismiss: () -> Unit) {
                     "intersection" to "Intersection — plot a target from two observers",
                     "sunmoon" to "Sun & moon — BMNT, EENT, rise/set, illumination",
                     "declination" to "Declination diagram — true / grid / magnetic",
+                    "course" to "Practice course — timed land-nav points, scored",
                 ).forEach { (key, label) ->
                     Text(
                         label,

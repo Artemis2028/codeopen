@@ -193,7 +193,28 @@ fun RouteCardDialog(
             }) { Text("Share") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            Row {
+                TextButton(onClick = {
+                    // Printable strip map: overview sketch + full leg table
+                    val pdf = StripMapPdf.build(context, route, settings)
+                    if (pdf != null) {
+                        runCatching {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context,
+                                "app.gridfix.android.fileprovider",
+                                pdf,
+                            )
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/pdf"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share strip map PDF"))
+                        }
+                    }
+                }) { Text("PDF") }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
         },
     )
 }
