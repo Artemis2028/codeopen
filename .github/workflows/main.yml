@@ -15,7 +15,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Write source files (v0.7.3 (marker position hotfix) delta, plain text, auditable below)
+      - name: Write source files (v0.7.4 (marker anchor fix) delta, plain text, auditable below)
         run: |
           mkdir -p 'app'
           cat > 'app/build.gradle.kts' <<'EOF_GRIDFIX'
@@ -33,8 +33,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 14
-                  versionName = "0.7.3"
+                  versionCode = 15
+                  versionName = "0.7.4"
               }
 
               buildTypes {
@@ -102,7 +102,7 @@ jobs:
           import androidx.compose.foundation.layout.padding
           import androidx.compose.foundation.layout.size
           import androidx.compose.foundation.layout.width
-          import androidx.compose.foundation.layout.wrapContentSize
+          import androidx.compose.foundation.layout.wrapContentWidth
           import androidx.compose.foundation.rememberScrollState
           import androidx.compose.foundation.shape.CircleShape
           import androidx.compose.foundation.verticalScroll
@@ -695,15 +695,18 @@ jobs:
                               val wx = pxPoint.x
                               val wy = pxPoint.y
                               if (wx in -markerPx..(map.width + markerPx) && wy in -markerPx..(map.height + markerPx)) {
-                                  Column(
+                                  // The outer Box is EXACTLY marker-sized and anchored so its
+                                  // center sits on the waypoint's screen position. The name label
+                                  // hangs below as an overflow child, so its width can never
+                                  // shift the symbol off its grid.
+                                  Box(
                                       modifier = Modifier
                                           .offset { IntOffset(wx - markerPx / 2, wy - markerPx / 2) }
-                                          .wrapContentSize(unbounded = true),
-                                      horizontalAlignment = Alignment.CenterHorizontally,
+                                          .size(markerDp),
                                   ) {
                                       Box(
                                           Modifier
-                                              .size(markerDp)
+                                              .matchParentSize()
                                               .clickable(
                                                   interactionSource = remember { MutableInteractionSource() },
                                                   indication = null,
@@ -732,11 +735,16 @@ jobs:
                                           Surface(
                                               color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
                                               shape = MaterialTheme.shapes.extraSmall,
+                                              modifier = Modifier
+                                                  .align(Alignment.TopCenter)
+                                                  .offset(y = markerDp + 2.dp)
+                                                  .wrapContentWidth(unbounded = true),
                                           ) {
                                               Text(
                                                   if (w.designation.isEmpty()) w.name else "${w.name} · ${w.designation}",
                                                   style = MaterialTheme.typography.labelSmall,
                                                   fontFamily = FontFamily.Monospace,
+                                                  maxLines = 1,
                                                   modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
                                               )
                                           }
@@ -1811,7 +1819,7 @@ jobs:
           EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.7.3 (marker position hotfix) source from bootstrap workflow'
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.7.4 (marker anchor fix) source from bootstrap workflow'
             git push origin HEAD:main
           fi
 
