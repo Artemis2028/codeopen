@@ -1,8 +1,12 @@
 package app.gridfix.android.map
 
 import android.content.Context
+import android.graphics.Bitmap
 import app.gridfix.android.data.GeoVertex
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
@@ -143,6 +147,106 @@ object Terrain {
         /** Terrain in the same curvature-corrected frame, for drawing. */
         val effectiveTerrain: FloatArray,
     )
+
+    /**
+     * A computed viewshed raster: what the observer can see out to [radiusM].
+     * Pixel classes: VISIBLE (even a low target is seen), MARGINAL (only a
+     * standing man / vehicle-height target is seen — partial defilade),
+     * MASKED (full defilade for a 3 m target). Cells without elevation data
+     * stay transparent.
+     */
+    data class Viewshed(
+        val bitmap: Bitmap,
+        val latN: Double,
+        val latS: Double,
+        val lonW: Double,
+        val lonE: Double,
+        val obsLat: Double,
+        val obsLon: Double,
+        val radiusM: Float,
+        val missing: Int,
+    )
+
+    private const val COLOR_VISIBLE = 0x4600C853   // translucent green
+    private const val COLOR_MARGINAL = 0x55FFD600  // translucent amber
+    private const val COLOR_MASKED = 0x50FF1744    // translucent red
+
+    /**
+     * Radial-sweep viewshed from one observer. Same curvature/refraction model
+     * as [lineOfSight] (observer-centric drop d²/2Re). Low-target threshold
+     * 0.5 m AGL, standing/vehicle threshold 3 m AGL.
+     */
+    suspend fun viewshed(
+        context: Context,
+        obsLat: Double,
+        obsLon: Double,
+        observerHeight: Float,
+        radiusM: Double,
+        gridN: Int = 192,
+        rays: Int = 768,
+    ): Viewshed? = withContext(Dispatchers.Default) {
+        val obsGround = Elevation.elevationAt(context, obsLat, obsLon)
+            ?: return@withContext null
+        val eye = obsGround + observerHeight
+        val kx = cos(Math.toRadians(obsLat))
+        val dLat = radiusM / 111319.49
+        val dLon = radiusM / (111319.49 * kx)
+        val latN = obsLat + dLat
+        val latS = obsLat - dLat
+        val lonW = obsLon - dLon
+        val lonE = obsLon + dLon
+
+        val pixels = IntArray(gridN * gridN)
+        val cell = 2.0 * radiusM / gridN
+        val step = cell * 0.7
+        val samples = ceil(radiusM / step).toInt()
+        var missing = 0
+
+        for (r in 0 until rays) {
+            val az = 2.0 * Math.PI * r / rays
+            val sinA = sin(az)
+            val cosA = cos(az)
+            var maxSlope = -1e9
+            var d = step
+            for (s in 0 until samples) {
+                if (d > radiusM) break
+                val plat = obsLat + (d * cosA) / 111319.49
+                val plon = obsLon + (d * sinA) / (111319.49 * kx)
+                val px = (((plon - lonW) / (lonE - lonW)) * gridN).toInt()
+                val py = (((latN - plat) / (latN - latS)) * gridN).toInt()
+                val e = Elevation.elevationAt(context, plat, plon)
+                if (e == null) {
+                    missing++
+                } else {
+                    val te = e - d * d / (2.0 * EFFECTIVE_R)
+                    val slopeLow = (te + 0.5 - eye) / d
+                    val slopeStanding = (te + 3.0 - eye) / d
+                    val cls = when {
+                        slopeLow >= maxSlope -> COLOR_VISIBLE
+                        slopeStanding >= maxSlope -> COLOR_MARGINAL
+                        else -> COLOR_MASKED
+                    }
+                    if (px in 0 until gridN && py in 0 until gridN) {
+                        pixels[py * gridN + px] = cls
+                    }
+                    val slopeGround = (te - eye) / d
+                    if (slopeGround > maxSlope) maxSlope = slopeGround
+                }
+                d += step
+            }
+        }
+        // observer's own cell reads visible
+        pixels[(gridN / 2) * gridN + gridN / 2] = COLOR_VISIBLE
+
+        val bmp = Bitmap.createBitmap(pixels, gridN, gridN, Bitmap.Config.ARGB_8888)
+        Viewshed(
+            bitmap = bmp,
+            latN = latN, latS = latS, lonW = lonW, lonE = lonE,
+            obsLat = obsLat, obsLon = obsLon,
+            radiusM = radiusM.toFloat(),
+            missing = missing,
+        )
+    }
 
     /**
      * Line of sight observer -> target. Heights are metres above ground.

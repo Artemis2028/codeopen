@@ -198,6 +198,7 @@ private class MapHolder {
     var tracks: TracksOverlay? = null
     var hillshade: org.osmdroid.views.overlay.TilesOverlay? = null
     var contours: ContourOverlay? = null
+    var viewshed: app.gridfix.android.map.ViewshedOverlay? = null
     var visibleWps: List<Waypoint> = emptyList()
     var appliedLayer = ""
     var appliedNight: Boolean? = null
@@ -272,6 +273,7 @@ fun MapScreen(
     var stopTrackOpen by remember { mutableStateOf(false) }
     var fieldToolsOpen by remember { mutableStateOf(false) }
     var fieldTool by remember { mutableStateOf<String?>(null) }
+    var viewshedOn by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     var viewedPoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
     val activeTrack by TrackRecorderService.active.collectAsStateWithLifecycle()
@@ -474,6 +476,9 @@ fun MapScreen(
                     ) { map.postInvalidate() }
                     holder.contours = cont
                     map.overlays.add(2, cont)
+                    val vs = app.gridfix.android.map.ViewshedOverlay()
+                    holder.viewshed = vs
+                    map.overlays.add(3, vs)
                     // Two-finger map rotation; north-reset button appears when turned
                     val rot = org.osmdroid.views.overlay.gestures.RotationGestureOverlay(map)
                     rot.isEnabled = true
@@ -597,6 +602,7 @@ fun MapScreen(
                     holder.tracks = null
                     holder.hillshade = null
                     holder.contours = null
+                    holder.viewshed = null
                     holder.appliedLayer = ""
                     holder.appliedNight = null
                     holder.appliedGrid = null
@@ -909,6 +915,13 @@ fun MapScreen(
             }
             courseStatus?.let { cs ->
                 StatusChip(cs) { onOpenCourse() }
+            }
+            if (viewshedOn) {
+                StatusChip("Viewshed: green seen · amber standing · red masked — tap to clear") {
+                    holder.viewshed?.data = null
+                    viewshedOn = false
+                    holder.map?.invalidate()
+                }
             }
             activeTrack?.let { at ->
                 val km = at.distanceM / 1000.0
@@ -1722,6 +1735,14 @@ fun MapScreen(
                 waypoints = visibleWaypoints,
                 myPosition = fix.location?.let { it.latitude to it.longitude },
                 crosshair = crossLat to crossLon,
+                onViewshed = { vs ->
+                    holder.viewshed?.data = vs
+                    viewshedOn = true
+                    if (vs.missing > 500) {
+                        notice = "Viewshed has data gaps — download elevation for this area"
+                    }
+                    holder.map?.invalidate()
+                },
                 onDismiss = { fieldTool = null },
             )
         }

@@ -150,6 +150,7 @@ fun LosDialog(
     waypoints: List<Waypoint>,
     myPosition: Pair<Double, Double>?,
     crosshair: Pair<Double, Double>,
+    onViewshed: (Terrain.Viewshed) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -164,6 +165,7 @@ fun LosDialog(
     var obsH by remember { mutableStateOf("2") }
     var tgtH by remember { mutableStateOf("2") }
     var computing by remember { mutableStateOf(false) }
+    var radiusM by remember { mutableIntStateOf(2000) }
     var error by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf<Terrain.LosResult?>(null) }
 
@@ -260,6 +262,22 @@ fun LosDialog(
                         modifier = Modifier.weight(1f),
                     )
                 }
+
+                Text("Shade radius (for the map overlay)", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1000 to "1 km", 2000 to "2 km", 4000 to "4 km").forEach { (r, label) ->
+                        FilterChip(
+                            selected = radiusM == r,
+                            onClick = { radiusM = r },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                Text(
+                    "Check = point-to-point answer here. Shade map = paint everything the observer can see: green seen, amber only a standing target, red masked.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -366,7 +384,32 @@ fun LosDialog(
             ) { Text("Check") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            Row {
+                TextButton(
+                    enabled = !computing && observerPoint() != null,
+                    onClick = {
+                        val o = observerPoint() ?: return@TextButton
+                        computing = true
+                        error = null
+                        scope.launch {
+                            val vs = Terrain.viewshed(
+                                context,
+                                o.first, o.second,
+                                (obsH.toFloatOrNull() ?: 2f),
+                                radiusM.toDouble(),
+                            )
+                            computing = false
+                            if (vs == null) {
+                                error = "No elevation data at the observer yet — view or download that terrain first."
+                            } else {
+                                onViewshed(vs)
+                                onDismiss()
+                            }
+                        }
+                    },
+                ) { Text("Shade map") }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
         },
     )
 }
