@@ -8,7 +8,11 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +44,7 @@ import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Straighten
+import androidx.compose.material.icons.outlined.Terrain
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
@@ -67,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -93,6 +99,7 @@ import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.location.FixData
 import app.gridfix.android.location.TrackRecorderService
+import app.gridfix.android.map.ContourOverlay
 import app.gridfix.android.map.ControlMeasuresOverlay
 import app.gridfix.android.map.Elevation
 import app.gridfix.android.map.MapSetup
@@ -152,6 +159,32 @@ private fun toScreenPoint(
     }
 }
 
+/** Perimeter (m) and enclosed area (m²) of a polygon, computed on the UTM plane. */
+private fun polygonStats(points: List<GeoVertex>): Pair<Double, Double> {
+    if (points.size < 2) return 0.0 to 0.0
+    val zone = (((points[0].lon + 180.0) / 6.0).toInt() + 1).coerceIn(1, 60)
+    val north = points[0].lat >= 0.0
+    val en = points.map { Coordinates.utmForZone(it.lat, it.lon, zone, north) }
+    var perim = 0.0
+    var area2 = 0.0
+    for (i in en.indices) {
+        val j = (i + 1) % en.size
+        perim += hypot(en[j][0] - en[i][0], en[j][1] - en[i][1])
+        area2 += en[i][0] * en[j][1] - en[j][0] * en[i][1]
+    }
+    return perim to kotlin.math.abs(area2) / 2.0
+}
+
+private fun formatArea(m2: Double): String = when {
+    m2 < 10_000.0 -> String.format(java.util.Locale.US, "%.0f m²", m2)
+    m2 < 1_000_000.0 -> String.format(java.util.Locale.US, "%.1f ha", m2 / 10_000.0)
+    else -> String.format(java.util.Locale.US, "%.2f km²", m2 / 1_000_000.0)
+}
+
+private fun formatDist(m: Double): String =
+    if (m < 1000.0) String.format(java.util.Locale.US, "%.0f m", m)
+    else String.format(java.util.Locale.US, "%.2f km", m / 1000.0)
+
 /** Mutable references shared between the AndroidView factory callbacks and Compose. */
 private class MapHolder {
     var map: MapView? = null
@@ -159,6 +192,7 @@ private class MapHolder {
     var cm: ControlMeasuresOverlay? = null
     var tracks: TracksOverlay? = null
     var hillshade: org.osmdroid.views.overlay.TilesOverlay? = null
+    var contours: ContourOverlay? = null
     var visibleWps: List<Waypoint> = emptyList()
     var appliedLayer = ""
     var appliedNight: Boolean? = null
@@ -180,6 +214,7 @@ fun MapScreen(
     graphics: List<TacGraphic>,
     onAddGraphic: (name: String, type: String, points: List<GeoVertex>, folder: String, affiliation: String) -> Unit,
     onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String) -> Unit,
+    onUpdateGraphicPoints: (id: String, points: List<GeoVertex>) -> Unit,
     onDeleteGraphic: (String) -> Unit,
     viewedTrackId: String?,
     onRecordStart: () -> Unit,
@@ -221,7 +256,10 @@ fun MapScreen(
     var drawPoints by remember { mutableStateOf<List<GeoVertex>>(emptyList()) }
     var drawPickerOpen by remember { mutableStateOf(false) }
     var drawNameOpen by remember { mutableStateOf(false) }
+    var measureOpen by remember { mutableStateOf(false) }
     var editingGraphic by remember { mutableStateOf<TacGraphic?>(null) }
+    var editPointsFor by remember { mutableStateOf<TacGraphic?>(null) }
+    var editPts by remember { mutableStateOf<List<GeoVertex>>(emptyList()) }
     var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
     var gotoOpen by remember { mutableStateOf(false) }
     var stopTrackOpen by remember { mutableStateOf(false) }
@@ -340,11 +378,20 @@ fun MapScreen(
                                 return GeoVertex(hit.lat, hit.lon)
                             }
 
+                            /** Fixed-tap types (ring, sector, points, text) finish themselves. */
+                            fun autoFinish() {
+                                val dt = drawType ?: return
+                                val fp = GraphicTypes.fixedPoints(dt) ?: return
+                                if (drawPoints.size >= fp) drawNameOpen = true
+                            }
+
                             override fun singleTapConfirmedHelper(gp: GeoPoint?): Boolean {
                                 if (gp == null) return false
+                                if (editPointsFor != null) return false
                                 if (drawType != null) {
                                     drawPoints = drawPoints + snappedVertex(gp)
                                     holder.map?.invalidate()
+                                    autoFinish()
                                     return true
                                 }
                                 if (rulerAnchor != null) {
@@ -382,6 +429,7 @@ fun MapScreen(
                                     if (drawType != null) {
                                         drawPoints = drawPoints + snappedVertex(gp)
                                         holder.map?.invalidate()
+                                        autoFinish()
                                     } else {
                                         newWpAt = gp.latitude to gp.longitude
                                     }
@@ -410,6 +458,14 @@ fun MapScreen(
                     }
                     holder.hillshade = hs
                     map.overlays.add(1, hs)   // under the grid; events overlay stays first
+                    // Contours from cached elevation, drawn above shading but under the grid
+                    val cont = ContourOverlay(
+                        ctx.applicationContext,
+                        ctx.resources.displayMetrics.density,
+                        scope,
+                    ) { map.postInvalidate() }
+                    holder.contours = cont
+                    map.overlays.add(2, cont)
                     // Two-finger map rotation; north-reset button appears when turned
                     val rot = org.osmdroid.views.overlay.gestures.RotationGestureOverlay(map)
                     rot.isEnabled = true
@@ -475,13 +531,22 @@ fun MapScreen(
                         }
                     }
                     holder.hillshade?.isEnabled = p.hillshadeOverlay && offlineFile == null
+                    holder.contours?.let { co ->
+                        co.isEnabled = p.contourOverlay
+                        co.nightMode = settings.nightMode
+                        co.mapOrientation = map.mapOrientation
+                        co.bottomInsetPx = readoutHeightPx.toFloat()
+                    }
                     holder.cm?.let { c ->
-                        c.graphics = visibleGraphics
-                        c.selectedId = editingGraphic?.id
+                        val editing = editPointsFor
+                        c.graphics = if (editing == null) visibleGraphics else visibleGraphics.map {
+                            if (it.id == editing.id) it.copy(points = editPts) else it
+                        }
+                        c.selectedId = editingGraphic?.id ?: editing?.id
                         c.nightMode = settings.nightMode
                         c.lightLines = !settings.nightMode && p.baseLayer == "sat" && offlineFile == null
                         c.draftActive = drawType != null
-                        c.draftType = drawType ?: "phase_line"
+                        c.draftType = if (drawType == "measure") "area" else drawType ?: "phase_line"
                         c.draftAffiliation = drawAffiliation
                         c.draftPoints = drawPoints
                     }
@@ -523,6 +588,7 @@ fun MapScreen(
                     holder.cm = null
                     holder.tracks = null
                     holder.hillshade = null
+                    holder.contours = null
                     holder.appliedLayer = ""
                     holder.appliedNight = null
                     holder.appliedGrid = null
@@ -672,6 +738,65 @@ fun MapScreen(
                         }
                     }
                 }
+
+                // Vertex handles while editing a graphic's points
+                editPointsFor?.let { eg ->
+                    val handleDp = 24.dp
+                    val handlePx = with(density) { handleDp.roundToPx() }
+                    editPts.forEachIndexed { idx, v ->
+                        toScreenPoint(map, proj, GeoPoint(v.lat, v.lon), pxPoint)
+                        val hx = pxPoint.x
+                        val hy = pxPoint.y
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset(hx - handlePx / 2, hy - handlePx / 2) }
+                                .size(handleDp)
+                                .pointerInput(eg.id, idx) {
+                                    detectDragGestures { change, dragAmount ->
+                                        change.consume()
+                                        val m = holder.map ?: return@detectDragGestures
+                                        val cur = editPts.getOrNull(idx) ?: return@detectDragGestures
+                                        val sp = android.graphics.Point()
+                                        toScreenPoint(m, m.projection, GeoPoint(cur.lat, cur.lon), sp)
+                                        val ng = m.projection.fromPixels(
+                                            (sp.x + dragAmount.x).toInt(),
+                                            (sp.y + dragAmount.y).toInt(),
+                                        )
+                                        editPts = editPts.toMutableList().also {
+                                            it[idx] = GeoVertex(ng.latitude, ng.longitude)
+                                        }
+                                        m.invalidate()
+                                    }
+                                }
+                                .pointerInput(eg.id, idx) {
+                                    detectTapGestures(onLongPress = {
+                                        if (editPts.size > GraphicTypes.minPoints(eg.type)) {
+                                            editPts = editPts.toMutableList().also { it.removeAt(idx) }
+                                            holder.map?.invalidate()
+                                        } else {
+                                            notice = "Point kept — at the minimum for this graphic"
+                                        }
+                                    })
+                                },
+                        ) {
+                            Box(
+                                Modifier
+                                    .matchParentSize()
+                                    .padding(5.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                        CircleShape,
+                                    )
+                                    .border(
+                                        1.5.dp,
+                                        if (settings.nightMode) androidx.compose.ui.graphics.Color.Black
+                                        else androidx.compose.ui.graphics.Color.White,
+                                        CircleShape,
+                                    ),
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -813,7 +938,7 @@ fun MapScreen(
                 .fillMaxWidth()
                 .onSizeChanged { readoutHeightPx = it.height },
         ) {
-        drawType?.let { dt ->
+        editPointsFor?.let { eg ->
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
@@ -823,7 +948,52 @@ fun MapScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "${GraphicTypes.label(dt)} · ${drawPoints.size} pts",
+                        "Edit ${eg.name} · drag points · hold to delete",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    if (GraphicTypes.fixedPoints(eg.type) == null) {
+                        TextButton(onClick = {
+                            holder.map?.mapCenter?.let { c ->
+                                editPts = editPts + GeoVertex(c.latitude, c.longitude)
+                                holder.map?.invalidate()
+                            }
+                        }) { Text("+Point") }
+                    }
+                    TextButton(onClick = {
+                        onUpdateGraphicPoints(eg.id, editPts)
+                        editPointsFor = null
+                        holder.map?.invalidate()
+                    }) { Text("Save") }
+                    TextButton(onClick = {
+                        editPointsFor = null
+                        holder.map?.invalidate()
+                    }) { Text("✕") }
+                }
+            }
+        }
+        drawType?.let { dt ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val chip = if (dt == "measure") {
+                        if (drawPoints.size < 3) "Measure · tap ≥3 corners" else {
+                            val (perim, area) = polygonStats(drawPoints)
+                            "${formatArea(area)} · ${formatDist(perim)} perim"
+                        }
+                    } else {
+                        "${GraphicTypes.label(dt)} · ${drawPoints.size} pts"
+                    }
+                    Text(
+                        chip,
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -834,6 +1004,8 @@ fun MapScreen(
                         holder.map?.mapCenter?.let { c ->
                             drawPoints = drawPoints + GeoVertex(c.latitude, c.longitude)
                             holder.map?.invalidate()
+                            val fp = GraphicTypes.fixedPoints(dt)
+                            if (fp != null && drawPoints.size >= fp) drawNameOpen = true
                         }
                     }) { Text("+Point") }
                     TextButton(
@@ -844,8 +1016,8 @@ fun MapScreen(
                         },
                     ) { Text("Undo") }
                     TextButton(
-                        enabled = drawPoints.size >= GraphicTypes.minPoints(dt),
-                        onClick = { drawNameOpen = true },
+                        enabled = drawPoints.size >= if (dt == "measure") 3 else GraphicTypes.minPoints(dt),
+                        onClick = { if (dt == "measure") measureOpen = true else drawNameOpen = true },
                     ) { Text("Done") }
                     TextButton(onClick = {
                         drawType = null
@@ -1046,6 +1218,30 @@ fun MapScreen(
                             onCheckedChange = { v -> scope.launch { mapPrefs.setHillshadeOverlay(v) } },
                         )
                     }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Terrain,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Contour lines")
+                            Text(
+                                "Elevation contours from terrain data, any base layer",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = p.contourOverlay,
+                            onCheckedChange = { v -> scope.launch { mapPrefs.setContourOverlay(v) } },
+                        )
+                    }
                     Spacer(Modifier.height(4.dp))
                     TextButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
                         Text("Import MBTiles file…")
@@ -1184,10 +1380,24 @@ fun MapScreen(
                                     drawType = key
                                     drawPoints = emptyList()
                                     drawPickerOpen = false
+                                    GraphicTypes.placeHint(key)?.let { notice = it }
                                 }
                                 .padding(vertical = 8.dp),
                         )
                     }
+                    Text(
+                        "Measure area",
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                drawType = "measure"
+                                drawPoints = emptyList()
+                                drawPickerOpen = false
+                                notice = "Tap the corners of the area to measure"
+                            }
+                            .padding(vertical = 8.dp),
+                    )
                     Spacer(Modifier.height(6.dp))
                     Text("Color", style = MaterialTheme.typography.labelLarge)
                     Row(
@@ -1234,9 +1444,20 @@ fun MapScreen(
                     ) {
                         OutlinedTextField(
                             value = gName,
-                            onValueChange = { gName = it.take(20) },
-                            label = { Text("Name / designation") },
-                            placeholder = { Text(if (dt == "phase_line") "e.g. BLUE" else "e.g. BRAVO") },
+                            onValueChange = { gName = it.take(if (dt == "text") 40 else 20) },
+                            label = { Text(if (dt == "text") "Text" else "Name / designation") },
+                            placeholder = {
+                                Text(
+                                    when (dt) {
+                                        "phase_line" -> "e.g. BLUE"
+                                        "trp", "checkpoint" -> "e.g. 1"
+                                        "lz", "pz" -> "e.g. ROBIN"
+                                        "ring" -> "e.g. MG SECTOR"
+                                        "text" -> "e.g. OP HERE"
+                                        else -> "e.g. BRAVO"
+                                    }
+                                )
+                            },
                             singleLine = true,
                         )
                         Text("Color", style = MaterialTheme.typography.labelLarge)
@@ -1285,6 +1506,51 @@ fun MapScreen(
                 },
             )
         }
+    }
+
+    if (measureOpen && drawPoints.size >= 3) {
+        val (perim, area) = polygonStats(drawPoints)
+        AlertDialog(
+            onDismissRequest = { measureOpen = false },
+            title = { Text("Area measurement") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        formatArea(area),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Text(
+                        "Perimeter ${formatDist(perim)} · ${drawPoints.size} corners",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Text(
+                        "Computed on the UTM plane for this zone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    measureOpen = false
+                    drawType = "area"
+                    drawNameOpen = true
+                }) { Text("Save as area") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { measureOpen = false }) { Text("Keep measuring") }
+                    TextButton(onClick = {
+                        measureOpen = false
+                        drawType = null
+                        drawPoints = emptyList()
+                        holder.map?.invalidate()
+                    }) { Text("Done") }
+                }
+            },
+        )
     }
 
     editingGraphic?.let { g ->
@@ -1348,13 +1614,18 @@ fun MapScreen(
                 }) { Text("Save") }
             },
             dismissButton = {
-                Row {
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
                     if (g.type == "route") {
                         TextButton(onClick = {
                             routeCardFor = g
                             editingGraphic = null
                         }) { Text("Route card") }
                     }
+                    TextButton(onClick = {
+                        editPointsFor = g
+                        editPts = g.points
+                        editingGraphic = null
+                    }) { Text("Points") }
                     TextButton(onClick = {
                         onDeleteGraphic(g.id)
                         editingGraphic = null

@@ -309,6 +309,9 @@ fun GridFixApp() {
                                 graphicsRepo.rename(id, name, folder, affiliation)
                             }
                         },
+                        onUpdateGraphicPoints = { id, points ->
+                            scope.launch { graphicsRepo.updatePoints(id, points) }
+                        },
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                         viewedTrackId = viewedTrackId,
                         onRecordStart = {

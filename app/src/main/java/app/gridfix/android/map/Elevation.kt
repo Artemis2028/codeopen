@@ -21,7 +21,7 @@ import kotlin.math.tan
  */
 object Elevation {
 
-    private const val ZOOM = 13   // ~19 m sample grid; source data ~10-30 m (DTED2-class)
+    const val ZOOM = 13   // ~19 m sample grid; source data ~10-30 m (DTED2-class)
     private val memory = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
             size > 12
@@ -55,6 +55,10 @@ object Elevation {
             val elev = (r * 256 + g + b / 256.0) - 32768.0
             if (elev < -11000 || elev > 9000) null else elev
         }
+
+    /** A whole Terrarium tile bitmap (from cache or network) — the contour overlay samples these. */
+    suspend fun tile(context: Context, z: Int, x: Int, y: Int): Bitmap? =
+        withContext(Dispatchers.IO) { tileBitmap(context, z, x, y) }
 
     /** Fetch every elevation tile covering the box; returns tiles now cached. */
     suspend fun prefetchArea(

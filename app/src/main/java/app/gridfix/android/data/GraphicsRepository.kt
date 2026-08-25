@@ -40,19 +40,52 @@ object GraphicTypes {
         Triple("objective", "Objective", 3),
         Triple("aa", "Assembly area", 3),
         Triple("route", "Route", 2),
+        Triple("lz", "Landing zone", 3),
+        Triple("pz", "Pickup zone", 3),
+        Triple("area", "Area (sketch)", 3),
+        Triple("ring", "Range ring", 2),
+        Triple("sector", "Sector of fire", 3),
+        Triple("trp", "Target ref point", 1),
+        Triple("checkpoint", "Checkpoint", 1),
+        Triple("text", "Text label", 1),
     )
 
     fun label(type: String): String = all.firstOrNull { it.first == type }?.second ?: type
 
     fun minPoints(type: String): Int = all.firstOrNull { it.first == type }?.third ?: 2
 
-    fun isArea(type: String): Boolean = type == "objective" || type == "aa"
+    fun isArea(type: String): Boolean =
+        type == "objective" || type == "aa" || type == "lz" || type == "pz" || type == "area"
+
+    /**
+     * Types placed with a fixed number of taps finish themselves — no Done press.
+     * Ring: center then range edge. Sector: apex, left limit, right limit.
+     */
+    fun fixedPoints(type: String): Int? = when (type) {
+        "ring" -> 2
+        "sector" -> 3
+        "trp", "checkpoint", "text" -> 1
+        else -> null
+    }
+
+    /** Placement hint shown when the type is picked. */
+    fun placeHint(type: String): String? = when (type) {
+        "ring" -> "Tap the center, then the range edge"
+        "sector" -> "Tap the apex, then left limit, then right limit"
+        "trp", "checkpoint" -> "Tap the map to place it"
+        "text" -> "Tap the map where the text goes"
+        else -> null
+    }
 
     /** Display prefix used in the on-map label, per doctrine shorthand. */
     fun labelPrefix(type: String): String = when (type) {
         "phase_line" -> "PL "
         "objective" -> "OBJ "
         "aa" -> "AA "
+        "lz" -> "LZ "
+        "pz" -> "PZ "
+        "trp" -> "TRP "
+        "checkpoint" -> "CP "
         else -> ""
     }
 }
@@ -97,6 +130,17 @@ class GraphicsRepository(private val context: Context) {
                         folder = folder.ifBlank { DEFAULT_FOLDER },
                         affiliation = affiliation,
                     ) else it
+                }
+            )
+        }
+    }
+
+    /** Replace a graphic's vertices — the map's edit-points mode saves through this. */
+    suspend fun updatePoints(id: String, points: List<GeoVertex>) {
+        context.graphicsStore.edit { p ->
+            p[listKey] = encode(
+                decode(p[listKey] ?: "[]").map {
+                    if (it.id == id) it.copy(points = points) else it
                 }
             )
         }

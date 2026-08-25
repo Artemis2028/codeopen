@@ -378,7 +378,15 @@ object InterchangeFiles {
                         String.format(Locale.US, "%.7f,%.7f,0", g.points[0].lon, g.points[0].lat)
                     )
                 }
-                if (closed) {
+                if (g.points.size == 1) {
+                    // Point graphics (TRP, checkpoint, text) export as placemarks
+                    sb.append(
+                        String.format(
+                            Locale.US, "<Point><coordinates>%.7f,%.7f,0</coordinates></Point>",
+                            g.points[0].lon, g.points[0].lat,
+                        )
+                    )
+                } else if (closed) {
                     sb.append("<Polygon><outerBoundaryIs><LinearRing><coordinates>")
                         .append(coords.toString().trim())
                         .append("</coordinates></LinearRing></outerBoundaryIs></Polygon>")

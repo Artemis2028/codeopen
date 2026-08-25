@@ -6,6 +6,7 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Point
+import android.graphics.RectF
 import android.graphics.Typeface
 import app.gridfix.android.data.GeoVertex
 import app.gridfix.android.data.GraphicTypes
@@ -14,12 +15,14 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.Projection
 import org.osmdroid.views.overlay.Overlay
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Draws tactical control-measure graphics: phase lines, boundaries, axes of advance,
@@ -86,11 +89,16 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
             drawGraphic(
                 canvas, g.type, colorFor(g.affiliation), haloColor, n,
                 nightName(g.name, g.affiliation), g.id == selectedId, dashed = false,
+                radiusM = ringRadiusM(g.type, g.points),
             )
         }
         if (draftActive && draftPoints.isNotEmpty()) {
             val n = project(projection, draftPoints)
-            drawGraphic(canvas, draftType, colorFor(draftAffiliation), haloColor, n, "", selected = false, dashed = true)
+            drawGraphic(
+                canvas, draftType, colorFor(draftAffiliation), haloColor, n, "",
+                selected = false, dashed = true,
+                radiusM = ringRadiusM(draftType, draftPoints),
+            )
             // vertex handles so each placed point is visible while drawing
             handlePaint.color = haloColor
             for (i in 0 until n) {
@@ -108,6 +116,17 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
         val n = project(projection, g.points)
         if (n == 0) return Float.MAX_VALUE
         if (n == 1) return hypot(x - xs[0], y - ys[0])
+        if (g.type == "ring" && n >= 2) {
+            val r = hypot(xs[1] - xs[0], ys[1] - ys[0])
+            val d = hypot(x - xs[0], y - ys[0])
+            return min(abs(d - r), d)
+        }
+        if (g.type == "sector" && n >= 3) {
+            return min(
+                segmentDistance(x, y, xs[0], ys[0], xs[1], ys[1]),
+                segmentDistance(x, y, xs[0], ys[0], xs[2], ys[2]),
+            )
+        }
         var best = Float.MAX_VALUE
         val closed = GraphicTypes.isArea(g.type) && n >= 3
         val last = if (closed) n else n - 1
@@ -116,6 +135,22 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
             best = min(best, segmentDistance(x, y, xs[i], ys[i], xs[j], ys[j]))
         }
         return best
+    }
+
+    /** Geodesic radius in metres for a range ring (center + edge point), else -1. */
+    private fun ringRadiusM(type: String, points: List<GeoVertex>): Double {
+        if (type != "ring" || points.size < 2) return -1.0
+        return haversineM(points[0], points[1])
+    }
+
+    private fun haversineM(a: GeoVertex, b: GeoVertex): Double {
+        val r = 6371008.8
+        val dLat = Math.toRadians(b.lat - a.lat)
+        val dLon = Math.toRadians(b.lon - a.lon)
+        val h = sin(dLat / 2) * sin(dLat / 2) +
+            cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) *
+            sin(dLon / 2) * sin(dLon / 2)
+        return 2 * r * atan2(sqrt(h), sqrt(1 - h))
     }
 
     /**
@@ -159,6 +194,7 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
         name: String,
         selected: Boolean,
         dashed: Boolean,
+        radiusM: Double = -1.0,
     ) {
         linePaint.color = color
         linePaint.alpha = 235
@@ -180,7 +216,90 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
                 drawSolidArrowHead(canvas, n, color)
                 label(canvas, name, xs[0], ys[0], color, haloColor, above = true)
             }
-            "objective", "aa" -> if (n >= 2) {
+            "ring" -> if (n >= 2) {
+                val r = hypot(xs[1] - xs[0], ys[1] - ys[0])
+                if (selected) canvas.drawCircle(xs[0], ys[0], r, glowPaint)
+                canvas.drawCircle(xs[0], ys[0], r, linePaint)
+                // small center cross so the ring stays readable when zoomed out
+                val c = 5f * density
+                canvas.drawLine(xs[0] - c, ys[0], xs[0] + c, ys[0], linePaint)
+                canvas.drawLine(xs[0], ys[0] - c, xs[0], ys[0] + c, linePaint)
+                val rangeText = if (radiusM < 0) "" else formatRange(radiusM)
+                val text = listOf(name, rangeText).filter { it.isNotBlank() }.joinToString(" · ")
+                label(canvas, text, xs[0], ys[0] - r - 3f * density, color, haloColor, above = true, centered = true)
+            }
+            "sector" -> if (n >= 3) {
+                val r = max(
+                    hypot(xs[1] - xs[0], ys[1] - ys[0]),
+                    hypot(xs[2] - xs[0], ys[2] - ys[0]),
+                )
+                val aL = Math.toDegrees(atan2((ys[1] - ys[0]).toDouble(), (xs[1] - xs[0]).toDouble())).toFloat()
+                val aR = Math.toDegrees(atan2((ys[2] - ys[0]).toDouble(), (xs[2] - xs[0]).toDouble())).toFloat()
+                var sweep = aR - aL
+                while (sweep <= 0f) sweep += 360f
+                while (sweep > 360f) sweep -= 360f
+                val oval = RectF(xs[0] - r, ys[0] - r, xs[0] + r, ys[0] + r)
+                path.reset()
+                path.moveTo(xs[0], ys[0])
+                path.arcTo(oval, aL, sweep)
+                path.close()
+                fillPaint.color = color
+                fillPaint.alpha = 22
+                canvas.drawPath(path, fillPaint)
+                if (selected) canvas.drawPath(path, glowPaint)
+                canvas.drawPath(path, linePaint)
+                // label along the sector bisector, half way out
+                val mid = Math.toRadians((aL + sweep / 2f).toDouble())
+                label(
+                    canvas, name,
+                    xs[0] + (r * 0.55f) * cos(mid).toFloat(),
+                    ys[0] + (r * 0.55f) * sin(mid).toFloat(),
+                    color, haloColor, above = false, centered = true,
+                )
+            }
+            "trp" -> {
+                // Target reference point: doctrinal cross with the TRP number
+                val arm = 9f * density
+                if (selected) {
+                    canvas.drawLine(xs[0] - arm, ys[0], xs[0] + arm, ys[0], glowPaint)
+                    canvas.drawLine(xs[0], ys[0] - arm, xs[0], ys[0] + arm, glowPaint)
+                }
+                canvas.drawLine(xs[0] - arm, ys[0], xs[0] + arm, ys[0], linePaint)
+                canvas.drawLine(xs[0], ys[0] - arm, xs[0], ys[0] + arm, linePaint)
+                handlePaint.color = color
+                canvas.drawCircle(xs[0], ys[0], 2.2f * density, handlePaint)
+                label(canvas, GraphicTypes.labelPrefix(type) + name.uppercase(Locale.US), xs[0] + arm, ys[0] - 4f * density, color, haloColor, above = true)
+            }
+            "checkpoint" -> {
+                val r = 8f * density
+                if (selected) canvas.drawCircle(xs[0], ys[0], r, glowPaint)
+                canvas.drawCircle(xs[0], ys[0], r, linePaint)
+                handlePaint.color = color
+                canvas.drawCircle(xs[0], ys[0], 2.2f * density, handlePaint)
+                label(canvas, GraphicTypes.labelPrefix(type) + name.uppercase(Locale.US), xs[0] + r, ys[0] - r, color, haloColor, above = true)
+            }
+            "text" -> {
+                val size = 13.5f * density
+                textFill.textSize = size
+                textHalo.textSize = size
+                textFill.color = color
+                textFill.alpha = 245
+                textHalo.color = haloColor
+                textHalo.alpha = 200
+                val tw = textFill.measureText(name)
+                if (selected) {
+                    fillPaint.color = haloColor
+                    fillPaint.alpha = 90
+                    canvas.drawRect(
+                        xs[0] - tw / 2f - 3f * density, ys[0] - size,
+                        xs[0] + tw / 2f + 3f * density, ys[0] + size * 0.45f,
+                        fillPaint,
+                    )
+                }
+                canvas.drawText(name, xs[0] - tw / 2f, ys[0] + size / 3f, textHalo)
+                canvas.drawText(name, xs[0] - tw / 2f, ys[0] + size / 3f, textFill)
+            }
+            "objective", "aa", "lz", "pz", "area" -> if (n >= 2) {
                 buildPolyline(n, closed = n >= 3)
                 fillPaint.color = color
                 fillPaint.alpha = 26
@@ -369,6 +488,10 @@ class ControlMeasuresOverlay(private val density: Float) : Overlay() {
         canvas.drawText(text, tx, ty, textHalo)
         canvas.drawText(text, tx, ty, textFill)
     }
+
+    private fun formatRange(m: Double): String =
+        if (m < 995) String.format(Locale.US, "%.0f m", m)
+        else String.format(Locale.US, "%.2f km", m / 1000.0)
 
     private fun segmentDistance(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
         val dx = bx - ax
