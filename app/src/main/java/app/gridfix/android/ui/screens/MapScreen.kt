@@ -22,7 +22,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -615,15 +615,18 @@ fun MapScreen(
                     val wx = pxPoint.x
                     val wy = pxPoint.y
                     if (wx in -markerPx..(map.width + markerPx) && wy in -markerPx..(map.height + markerPx)) {
-                        Column(
+                        // The outer Box is EXACTLY marker-sized and anchored so its
+                        // center sits on the waypoint's screen position. The name label
+                        // hangs below as an overflow child, so its width can never
+                        // shift the symbol off its grid.
+                        Box(
                             modifier = Modifier
                                 .offset { IntOffset(wx - markerPx / 2, wy - markerPx / 2) }
-                                .wrapContentSize(unbounded = true),
-                            horizontalAlignment = Alignment.CenterHorizontally,
+                                .size(markerDp),
                         ) {
                             Box(
                                 Modifier
-                                    .size(markerDp)
+                                    .matchParentSize()
                                     .clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
@@ -652,11 +655,16 @@ fun MapScreen(
                                 Surface(
                                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
                                     shape = MaterialTheme.shapes.extraSmall,
+                                    modifier = Modifier
+                                        .align(Alignment.TopCenter)
+                                        .offset(y = markerDp + 2.dp)
+                                        .wrapContentWidth(unbounded = true),
                                 ) {
                                     Text(
                                         if (w.designation.isEmpty()) w.name else "${w.name} · ${w.designation}",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
                                         modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
                                     )
                                 }
