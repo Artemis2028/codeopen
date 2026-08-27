@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.data.AppSettings
@@ -40,10 +41,13 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     repo: SettingsRepository,
     settings: AppSettings,
+    entitled: Boolean = false,
+    onPreviewPaywall: () -> Unit = {},
     onOpenReference: () -> Unit = {},
     onBackup: (android.net.Uri, (String) -> Unit) -> Unit = { _, _ -> },
     onRestore: (android.net.Uri, (String) -> Unit) -> Unit = { _, _ -> },
 ) {
+    val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
     var backupStatus by remember { mutableStateOf<String?>(null) }
     val backupLauncher = rememberLauncherForActivityResult(
@@ -165,9 +169,32 @@ fun SettingsScreen(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
+        Column {
+            Text("GridFix Pro", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                when {
+                    entitled -> "Subscription active."
+                    app.gridfix.android.BuildConfig.DEBUG ->
+                        "No subscription on this device — debug builds run unlocked."
+                    else -> "No active subscription on this device."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row {
+                TextButton(onClick = {
+                    uriHandler.openUri(app.gridfix.android.billing.BillingManager.MANAGE_URL)
+                }) { Text("Manage subscription") }
+                if (app.gridfix.android.BuildConfig.DEBUG) {
+                    TextButton(onClick = onPreviewPaywall) { Text("Preview paywall") }
+                }
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
         Text(
             "GridFix " + app.gridfix.android.BuildConfig.VERSION_NAME + "\n" +
-                "Working title — the public name is decided before launch.\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
                 "GridFix is a training and recreation aid, not a primary means of navigation.",
             style = MaterialTheme.typography.bodySmall,

@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +60,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.core.content.FileProvider
 import app.gridfix.android.coords.Coordinates
+import app.gridfix.android.BuildConfig
+import app.gridfix.android.billing.BillingManager
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.Backup
 import app.gridfix.android.data.CourseRepository
@@ -96,6 +100,13 @@ fun GridFixApp() {
     val context = LocalContext.current
     val repo = remember { SettingsRepository(context.applicationContext) }
     val settings by repo.settings.collectAsStateWithLifecycle(initialValue = AppSettings())
+    val billing = remember { BillingManager(context.applicationContext) }
+    val entitlement by billing.state.collectAsStateWithLifecycle()
+    var paywallPreview by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        billing.start()
+        onDispose { billing.close() }
+    }
     val waypointRepo = remember { WaypointRepository(context.applicationContext) }
     val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
     val selectedId by waypointRepo.selectedId.collectAsStateWithLifecycle(initialValue = null)
@@ -189,6 +200,27 @@ fun GridFixApp() {
     }
 
     GridFixTheme(nightMode = settings.nightMode) {
+        // Subscription gate. Debug builds (sideloaded field-test APKs) always
+        // run unlocked; the Play release build requires GridFix Pro.
+        if (paywallPreview) {
+            PaywallScreen(billing, onClose = { paywallPreview = false })
+            return@GridFixTheme
+        }
+        if (!BuildConfig.DEBUG) {
+            when (entitlement) {
+                BillingManager.State.CHECKING -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                    return@GridFixTheme
+                }
+                BillingManager.State.LOCKED -> {
+                    PaywallScreen(billing)
+                    return@GridFixTheme
+                }
+                BillingManager.State.ENTITLED -> Unit
+            }
+        }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
@@ -510,6 +542,8 @@ fun GridFixApp() {
                     SettingsScreen(
                         repo,
                         settings,
+                        entitled = entitlement == BillingManager.State.ENTITLED,
+                        onPreviewPaywall = { paywallPreview = true },
                         onOpenReference = {
                             navController.navigate("reference") { launchSingleTop = true }
                         },

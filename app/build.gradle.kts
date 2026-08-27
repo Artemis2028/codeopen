@@ -12,8 +12,8 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 28
-        versionName = "0.9.0"
+        versionCode = 29
+        versionName = "0.9.1"
     }
 
     // Play upload key: CI decodes the keystore secret to a file and exports
@@ -74,4 +74,7 @@ dependencies {
 
     // QR generation for position hand-off (Apache 2.0)
     implementation("com.google.zxing:core:3.5.3")
+
+    // Google Play Billing for the GridFix Pro subscription
+    implementation("com.android.billingclient:billing-ktx:9.1.0")
 }
