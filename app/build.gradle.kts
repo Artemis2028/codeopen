@@ -6,19 +6,36 @@ plugins {
 
 android {
     namespace = "app.gridfix.android"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "app.gridfix.android"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 27
-        versionName = "0.8.6"
+        targetSdk = 36
+        versionCode = 28
+        versionName = "0.9.0"
+    }
+
+    // Play upload key: CI decodes the keystore secret to a file and exports
+    // GRIDFIX_KS + GRIDFIX_KS_PASS. Without them, release stays unsigned and
+    // only the debug APK is built.
+    val ksPath = System.getenv("GRIDFIX_KS")
+    val ksPass = System.getenv("GRIDFIX_KS_PASS")
+    signingConfigs {
+        if (ksPath != null && ksPass != null) {
+            create("release") {
+                storeFile = file(ksPath)
+                storePassword = ksPass
+                keyAlias = "gridfix"
+                keyPassword = ksPass
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
