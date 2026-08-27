@@ -222,6 +222,7 @@ fun MapScreen(
     onUpdateGraphic: (id: String, name: String, folder: String, affiliation: String, echelon: String) -> Unit,
     onUpdateGraphicPoints: (id: String, points: List<GeoVertex>) -> Unit,
     onDeleteGraphic: (String) -> Unit,
+    onSaveRouteWps: (base: String, points: List<GeoVertex>, folder: String) -> Unit = { _, _, _ -> },
     viewedTrackId: String?,
     onRecordStart: () -> Unit,
     onRecordStop: (name: String?, discard: Boolean) -> Unit,
@@ -269,6 +270,7 @@ fun MapScreen(
     var editPointsFor by remember { mutableStateOf<TacGraphic?>(null) }
     var editPts by remember { mutableStateOf<List<GeoVertex>>(emptyList()) }
     var routeCardFor by remember { mutableStateOf<TacGraphic?>(null) }
+    var routeWpOffer by remember { mutableStateOf<Triple<String, List<GeoVertex>, String>?>(null) }
     var gotoOpen by remember { mutableStateOf(false) }
     var stopTrackOpen by remember { mutableStateOf(false) }
     var fieldToolsOpen by remember { mutableStateOf(false) }
@@ -1539,6 +1541,10 @@ fun MapScreen(
                     TextButton(onClick = {
                         val finalName = gName.trim().ifBlank { "${graphics.size + 1}" }
                         onAddGraphic(finalName, dt, drawPoints, gFolder, gAff, gEch)
+                        if (dt == "route" && drawPoints.size >= 2) {
+                            val base = if (finalName.all { it.isDigit() }) "Route $finalName" else finalName
+                            routeWpOffer = Triple(base, drawPoints, gFolder)
+                        }
                         drawNameOpen = false
                         drawType = null
                         drawPoints = emptyList()
@@ -1680,6 +1686,11 @@ fun MapScreen(
                             routeCardFor = g
                             editingGraphic = null
                         }) { Text("Route card") }
+                        TextButton(onClick = {
+                            val base = if (g.name.all { it.isDigit() }) "Route ${g.name}" else g.name
+                            routeWpOffer = Triple(base, g.points, g.folder)
+                            editingGraphic = null
+                        }) { Text("Waypoints") }
                     }
                     TextButton(onClick = {
                         editPointsFor = g
@@ -1692,6 +1703,34 @@ fun MapScreen(
                     }) { Text("Delete") }
                     TextButton(onClick = { editingGraphic = null }) { Text("Close") }
                 }
+            },
+        )
+    }
+
+    routeWpOffer?.let { (base, pts, folder) ->
+        val prefix = "$base WP "
+        val existing = waypoints.count { it.name.startsWith(prefix) }
+        AlertDialog(
+            onDismissRequest = { routeWpOffer = null },
+            title = { Text("Navigate this route") },
+            text = {
+                Text(
+                    "Save ${pts.size} waypoints ($prefix" + "1 to $prefix" + "${pts.size}) " +
+                        "so each point can be a Navigate target?" +
+                        if (existing > 0) {
+                            "\n\nThis replaces the $existing existing \"$base WP\" waypoints."
+                        } else ""
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSaveRouteWps(base, pts, folder)
+                    routeWpOffer = null
+                    notice = "$prefix" + "1 to $prefix" + "${pts.size} saved - pick them in Navigate"
+                }) { Text("Save waypoints") }
+            },
+            dismissButton = {
+                TextButton(onClick = { routeWpOffer = null }) { Text("Not now") }
             },
         )
     }

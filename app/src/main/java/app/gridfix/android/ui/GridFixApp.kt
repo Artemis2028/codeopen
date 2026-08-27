@@ -359,6 +359,27 @@ fun GridFixApp() {
                             scope.launch { graphicsRepo.updatePoints(id, points) }
                         },
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
+                        onSaveRouteWps = { base, pts, folder ->
+                            scope.launch {
+                                val prefix = "$base WP "
+                                waypoints.filter { it.name.startsWith(prefix) }.forEach {
+                                    waypointRepo.delete(it.id)
+                                }
+                                waypointRepo.addAll(
+                                    pts.mapIndexed { i, v ->
+                                        WaypointDraft(
+                                            name = prefix + (i + 1),
+                                            lat = v.lat,
+                                            lon = v.lon,
+                                            folder = folder,
+                                            symbol = "",
+                                            affiliation = "none",
+                                        )
+                                    },
+                                    System.currentTimeMillis(),
+                                )
+                            }
+                        },
                         viewedTrackId = viewedTrackId,
                         onRecordStart = {
                             scope.launch {
