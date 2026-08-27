@@ -1637,6 +1637,14 @@ jobs:
               }
           }
           EOF_GRIDFIX
+          mkdir -p '.'
+          cat > 'build.gradle.kts' <<'EOF_GRIDFIX'
+          plugins {
+              id("com.android.application") version "8.10.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.2.10" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.2.10" apply false
+          }
+          EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
             git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.9.1 (GridFix Pro billing) source from bootstrap workflow'
