@@ -192,7 +192,7 @@ object DataPackage {
             append("<MissionPackageManifest version=\"2\">\n")
             append("  <Configuration>\n")
             append("    <Parameter name=\"uid\" value=\"").append(esc(pkgUid)).append("\"/>\n")
-            append("    <Parameter name=\"name\" value=\"GridFix export\"/>\n")
+            append("    <Parameter name=\"name\" value=\"MGRS GPS export\"/>\n")
             append("  </Configuration>\n")
             append("  <Contents>\n")
             for (e in entries) {

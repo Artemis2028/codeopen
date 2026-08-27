@@ -72,7 +72,7 @@ fun PaywallScreen(
         ) {
             Spacer(Modifier.height(24.dp))
             Text(
-                "GridFix Pro",
+                "MGRS GPS Pro",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,

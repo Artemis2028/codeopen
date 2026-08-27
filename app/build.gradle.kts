@@ -12,8 +12,8 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "0.9.1"
+        versionCode = 30
+        versionName = "0.9.2"
     }
 
     // Play upload key: CI decodes the keystore secret to a file and exports

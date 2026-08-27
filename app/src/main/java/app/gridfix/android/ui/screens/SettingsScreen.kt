@@ -79,7 +79,7 @@ fun SettingsScreen(
 
         SettingSwitch(
             title = "Keep screen on",
-            subtitle = "Prevent the display from sleeping while GridFix is open",
+            subtitle = "Prevent the display from sleeping while MGRS GPS is open",
             checked = settings.keepScreenOn,
         ) { scope.launch { repo.setKeepScreenOn(it) } }
 
@@ -170,7 +170,7 @@ fun SettingsScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Column {
-            Text("GridFix Pro", style = MaterialTheme.typography.bodyLarge)
+            Text("MGRS GPS Pro", style = MaterialTheme.typography.bodyLarge)
             Text(
                 when {
                     entitled -> "Subscription active."
@@ -194,9 +194,9 @@ fun SettingsScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Text(
-            "GridFix " + app.gridfix.android.BuildConfig.VERSION_NAME + "\n" +
+            "MGRS GPS " + app.gridfix.android.BuildConfig.VERSION_NAME + "\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
-                "GridFix is a training and recreation aid, not a primary means of navigation.",
+                "MGRS GPS is a training and recreation aid, not a primary means of navigation.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

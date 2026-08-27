@@ -157,9 +157,9 @@ fun RayFixDialog(
             ) {
                 Text(
                     if (resection) {
-                        "Shoot an azimuth to each of two known points; GridFix runs the back-azimuths and plots your position."
+                        "Shoot an azimuth to each of two known points; MGRS GPS runs the back-azimuths and plots your position."
                     } else {
-                        "From two observation points, enter the azimuth to the target; GridFix plots where they cross."
+                        "From two observation points, enter the azimuth to the target; MGRS GPS plots where they cross."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

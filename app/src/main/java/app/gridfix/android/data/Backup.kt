@@ -145,7 +145,7 @@ object Backup {
             e = zin.nextEntry
         }
         val rootBytes = entries["gridfix-backup.json"]
-            ?: throw IllegalArgumentException("not a GridFix backup")
+            ?: throw IllegalArgumentException("not an MGRS GPS backup")
         val root = JSONObject(String(rootBytes))
 
         val wps = ArrayList<Waypoint>()

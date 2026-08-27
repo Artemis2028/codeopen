@@ -121,7 +121,7 @@ object StripMapPdf {
         canvas.drawText("ROUTE CARD — ${route.name.uppercase(Locale.US)}", MARGIN, y, title)
         y += 16f
         canvas.drawText(
-            "${coords.dtg(System.currentTimeMillis())} · north $refLetter · pace ${settings.pacePer100m}/100 m · GridFix",
+            "${coords.dtg(System.currentTimeMillis())} · north $refLetter · pace ${settings.pacePer100m}/100 m · MGRS GPS",
             MARGIN, y, small,
         )
         y += 14f

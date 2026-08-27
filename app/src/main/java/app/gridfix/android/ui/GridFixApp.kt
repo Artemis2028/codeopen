@@ -574,7 +574,7 @@ fun GridFixApp() {
                                         )
                                     }
                                     onDone(result?.summary() ?: "Couldn't open that file")
-                                }.getOrElse { onDone("Restore failed — is this a GridFix backup zip?") }
+                                }.getOrElse { onDone("Restore failed — is this an MGRS GPS backup zip?") }
                             }
                         },
                     )
@@ -729,7 +729,7 @@ private fun PermissionGate(onRequest: () -> Unit) {
         Text("Location access needed", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
         Text(
-            "GridFix reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
+            "MGRS GPS reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,

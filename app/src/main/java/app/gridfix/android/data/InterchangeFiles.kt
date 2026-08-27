@@ -181,7 +181,7 @@ object InterchangeFiles {
     ): String {
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-        sb.append("<gpx version=\"1.1\" creator=\"GridFix\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+        sb.append("<gpx version=\"1.1\" creator=\"MGRS GPS\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
         for (w in waypoints) {
             sb.append(
                 String.format(
@@ -347,7 +347,7 @@ object InterchangeFiles {
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>\n")
-        sb.append("<name>GridFix export</name>\n")
+        sb.append("<name>MGRS GPS export</name>\n")
 
         for ((folder, list) in waypoints.groupBy { it.folder }) {
             sb.append("<Folder><name>").append(escapeXml(folder)).append("</name>\n")

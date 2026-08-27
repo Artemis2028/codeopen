@@ -1081,7 +1081,7 @@ fun MapScreen(
                                 type = "text/plain"
                                 putExtra(
                                     android.content.Intent.EXTRA_TEXT,
-                                    "MGRS $full · " + Coordinates.dtg(System.currentTimeMillis()) + " · sent from GridFix",
+                                    "MGRS $full · " + Coordinates.dtg(System.currentTimeMillis()) + " · sent from MGRS GPS",
                                 )
                             }
                             runCatching {

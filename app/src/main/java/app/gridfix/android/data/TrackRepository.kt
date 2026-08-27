@@ -235,7 +235,7 @@ class TrackRepository(private val context: Context) {
             sdf.timeZone = TimeZone.getTimeZone("UTC")
             val sb = StringBuilder()
             sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-            sb.append("<gpx version=\"1.1\" creator=\"GridFix\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+            sb.append("<gpx version=\"1.1\" creator=\"MGRS GPS\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
             sb.append("  <trk>\n    <name>").append(escapeXml(name)).append("</name>\n    <trkseg>\n")
             for (p in points) {
                 sb.append(

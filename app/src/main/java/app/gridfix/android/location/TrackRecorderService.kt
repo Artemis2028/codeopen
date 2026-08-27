@@ -152,7 +152,7 @@ class TrackRecorderService : Service() {
             manager.createNotificationChannel(
                 NotificationChannel(
                     CHANNEL_ID, "Track recording", NotificationManager.IMPORTANCE_LOW
-                ).apply { description = "Shown while GridFix records your track" }
+                ).apply { description = "Shown while MGRS GPS records your track" }
             )
         }
     }
@@ -165,7 +165,7 @@ class TrackRecorderService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("GridFix — recording track")
+            .setContentTitle("MGRS GPS — recording track")
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)

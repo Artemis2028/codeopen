@@ -150,7 +150,7 @@ fun ReferenceScreen() {
             MonoRow("True → Grid", "subtract grid convergence")
             Spacer(Modifier.height(6.dp))
             Body(
-                "GridFix computes both from the World Magnetic Model for wherever you " +
+                "MGRS GPS computes both from the World Magnetic Model for wherever you " +
                     "stand — the Declination card in Field tools draws the diagram. Pick " +
                     "your working reference (True/Magnetic/Grid) in Settings and every " +
                     "azimuth in the app follows it."
