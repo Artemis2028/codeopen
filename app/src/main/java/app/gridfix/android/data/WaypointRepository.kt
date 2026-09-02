@@ -175,9 +175,13 @@ class WaypointRepository(private val context: Context) {
             val fresh = imported.filter { it.id !in ids }
             added = fresh.size
             p[listKey] = encode(current + fresh)
-            var folders = decodeFolders(p[foldersKey] ?: "[]")
-            val names = folders.map { it.name }.toSet()
-            folders = folders + importedFolders.filter { it.name !in names }
+            val merged = decodeFolders(p[foldersKey] ?: "[]").toMutableList()
+            val known = merged.map { it.name }.toSet()
+            // folders new to this device come in with their backed-up visibility; existing ones keep theirs
+            for (f in importedFolders.map { it.copy(name = canonicalFolder(it.name)) }) {
+                if (f.name !in known) mergeFolder(merged, f)
+            }
+            var folders: List<FolderInfo> = merged
             for (w in fresh) folders = upsertFolder(folders, w.folder, null)
             p[foldersKey] = encodeFolders(folders)
         }
@@ -269,15 +273,24 @@ class WaypointRepository(private val context: Context) {
 
     private fun decodeFolders(json: String): List<FolderInfo> = runCatching {
         val arr = JSONArray(json)
-        buildList<FolderInfo> {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val name = canonicalFolder(o.getString("name"))
-                // legacy "Waypoints" + "Graphics" both map to the base folder: keep one entry
-                if (none { it.name == name }) add(FolderInfo(name, o.optBoolean("visible", true)))
-            }
+        val out = ArrayList<FolderInfo>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            mergeFolder(out, FolderInfo(canonicalFolder(o.getString("name")), o.optBoolean("visible", true)))
         }
+        out
     }.getOrDefault(emptyList())
+
+    /**
+     * Add a folder entry, merging by canonical name. Legacy "Waypoints" and "Graphics"
+     * both map to Base: if either was visible, Base is visible - nothing a user could
+     * see before an upgrade disappears from the map because of the merge.
+     */
+    private fun mergeFolder(list: MutableList<FolderInfo>, f: FolderInfo) {
+        val idx = list.indexOfFirst { it.name == f.name }
+        if (idx < 0) list.add(f)
+        else if (f.visible && !list[idx].visible) list[idx] = list[idx].copy(visible = true)
+    }
 
     private fun encodeFolders(list: List<FolderInfo>): String {
         val arr = JSONArray()

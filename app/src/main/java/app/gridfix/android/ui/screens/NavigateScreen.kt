@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,7 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,20 +47,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.Waypoint
+import app.gridfix.android.location.CompassData
 import app.gridfix.android.location.CompassTracker
 import app.gridfix.android.location.FixData
 import app.gridfix.android.ui.WaypointMarker
 import app.gridfix.android.ui.faces.DialNavigateFace
+import app.gridfix.android.ui.faces.DialNavigateInstrument
+import app.gridfix.android.ui.faces.DistanceHero
 import app.gridfix.android.ui.faces.Face
+import app.gridfix.android.ui.faces.FaceCells
+import app.gridfix.android.ui.faces.GlanceArrow
 import app.gridfix.android.ui.faces.GlanceNavigateFace
+import app.gridfix.android.ui.faces.dialNavigateHint
 import app.gridfix.android.ui.faces.facePalette
+import app.gridfix.android.ui.faces.northRefLetter
 import app.gridfix.android.ui.faces.steerText
+import app.gridfix.android.ui.faces.toNorthRef
+import app.gridfix.android.ui.isLandscape
+import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
 import kotlin.math.abs
 
@@ -72,11 +89,12 @@ fun NavigateScreen(
 ) {
     val context = LocalContext.current
     val compass = remember { CompassTracker(context.applicationContext) }
-    DisposableEffect(Unit) {
+    LifecycleStartEffect(Unit) {
         compass.start()
-        onDispose { compass.stop() }
+        onStopOrDispose { compass.stop() }
     }
     val compassData by compass.data.collectAsStateWithLifecycle()
+    val landscape = isLandscape()
 
     val loc = fix.location
     val target = waypoints.firstOrNull { it.id == selectedId } ?: waypoints.firstOrNull()
@@ -106,16 +124,8 @@ fun NavigateScreen(
         else -> null
     }
 
-    fun toRef(angleTrue: Float): Float = when (settings.northRef) {
-        1 -> (angleTrue - declination + 360f) % 360f
-        2 -> (angleTrue - convergence + 360f) % 360f
-        else -> angleTrue
-    }
-    val refLetter = when (settings.northRef) {
-        1 -> "M"
-        2 -> "G"
-        else -> "T"
-    }
+    fun toRef(angleTrue: Float): Float = toNorthRef(angleTrue, settings.northRef, declination, convergence)
+    val refLetter = northRefLetter(settings.northRef)
 
     val nav = if (loc != null && target != null) {
         Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
@@ -210,7 +220,8 @@ fun NavigateScreen(
     val subtle = MaterialTheme.colorScheme.onSurfaceVariant
     val palette = facePalette(settings.nightMode)
 
-    // Everything the faces show, in the user's north reference and units
+    // Everything the faces show, in the user's north reference and units. The
+    // reference letter rides in the cell labels so a mils value stays one number.
     val headingRef = headingTrue?.let { toRef(it) }
     val targetRef = nav?.let { toRef(it.bearingTrue) }
     val headingText = headingRef?.let { Coordinates.formatAngle(it, settings.angleUnit) + " " + refLetter } ?: "—"
@@ -229,13 +240,22 @@ fun NavigateScreen(
         else -> "—"
     }
     val cells = listOf(
-        "Azimuth" to (targetRef?.let { Coordinates.formatAngle(it, settings.angleUnit) + " " + refLetter } ?: "—"),
-        "Back az" to (targetRef?.let { Coordinates.formatAngle((it + 180f) % 360f, settings.angleUnit) + " " + refLetter } ?: "—"),
+        "Azimuth · $refLetter" to (targetRef?.let { Coordinates.formatAngle(it, settings.angleUnit) } ?: "—"),
+        "Back az · $refLetter" to (targetRef?.let { Coordinates.formatAngle((it + 180f) % 360f, settings.angleUnit) } ?: "—"),
         "Time to go" to etaText,
     )
+    val relBearing = if (nav != null && headingTrue != null) (nav.bearingTrue - headingTrue + 360f) % 360f else null
+    val steerLine = "HDG $headingText · ${steerText(deviation, settings.angleUnit)}"
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val dialSize = (maxWidth - 30.dp).coerceAtMost(if (settings.face == Face.LENSATIC) 360.dp else 330.dp)
+        // 16 dp of padding each side; the dial must fit inside it
+        val dialSize = if (landscape) {
+            (maxHeight - 40.dp).coerceIn(160.dp, 300.dp)
+        } else {
+            (maxWidth - 62.dp).coerceAtMost(if (settings.face == Face.LENSATIC) 360.dp else 330.dp)
+        }
+        val density = LocalDensity.current
+        val faceDensity = Density(density.density, density.fontScale.coerceAtMost(1.15f))
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -243,122 +263,212 @@ fun NavigateScreen(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Target selector
-            var menuOpen by remember { mutableStateOf(false) }
-            Box {
+            if (landscape) {
+                // Instrument on the left, target / distance / cells on the right
                 Row(
-                    modifier = Modifier.clickable { menuOpen = true },
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = maxHeight - 32.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    WaypointMarker(
-                        symbol = target?.symbol ?: "flag",
-                        affiliation = target?.affiliation ?: "none",
-                        size = 32.dp,
-                        echelon = target?.echelon ?: "",
-                        night = settings.nightMode,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge)
-                    Icon(Icons.Outlined.ArrowDropDown, contentDescription = "Change target", tint = subtle)
+                    CompositionLocalProvider(LocalDensity provides faceDensity) {
+                        Box(Modifier.size(dialSize), contentAlignment = Alignment.Center) {
+                            when (settings.face) {
+                                Face.GLANCE -> GlanceArrow(relBearing, palette, dialSize)
+                                else -> DialNavigateInstrument(
+                                    p = palette,
+                                    style = settings.face,
+                                    dialSize = dialSize,
+                                    headingRef = headingRef,
+                                    targetRef = targetRef,
+                                    headingText = headingText,
+                                    deviation = deviation,
+                                    angleUnit = settings.angleUnit,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        TargetSelector(target, waypoints, settings, subtle, onSelect)
+                        Spacer(Modifier.height(6.dp))
+                        CompositionLocalProvider(LocalDensity provides faceDensity) {
+                            DistanceHero(distanceText, palette, numeralSize = 56.sp, numeralLine = 60.sp, unitSize = 16.sp, display = settings.face == Face.GLANCE)
+                            Spacer(Modifier.height(8.dp))
+                            FaceCells(cells, palette)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (settings.face == Face.LENSATIC) dialNavigateHint(settings.face) else steerLine,
+                            fontFamily = if (settings.face == Face.LENSATIC) LabelFamily else MonoFamily,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 1.sp,
+                            color = if (settings.face != Face.LENSATIC && deviation != null && abs(deviation) <= 3f) palette.lume else palette.muted,
+                            maxLines = 2,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            FilterChip(
+                                selected = hapticGuide,
+                                onClick = { hapticGuide = !hapticGuide },
+                                label = { Text(if (hapticGuide) "HAPTIC GUIDE ON" else "HAPTIC GUIDE") },
+                            )
+                        }
+                    }
                 }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    waypoints.forEach { w ->
-                        DropdownMenuItem(
-                            text = { Text(w.name) },
-                            leadingIcon = {
-                                WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon, night = settings.nightMode)
-                            },
-                            onClick = {
-                                onSelect(w.id)
-                                menuOpen = false
-                            },
+                NavigateHints(loc, compassData, hapticGuide, subtle)
+            } else {
+                TargetSelector(target, waypoints, settings, subtle, onSelect, centered = true)
+
+                Spacer(Modifier.height(12.dp))
+
+                // ---- The face: arrow, lensatic dial, or clean card ----
+                CompositionLocalProvider(LocalDensity provides faceDensity) {
+                    when (settings.face) {
+                        Face.GLANCE -> GlanceNavigateFace(
+                            p = palette,
+                            relBearing = relBearing,
+                            distance = distanceText,
+                            cells = cells,
+                            headingLine = steerLine,
+                        )
+                        else -> DialNavigateFace(
+                            p = palette,
+                            style = settings.face,
+                            dialSize = dialSize,
+                            headingRef = headingRef,
+                            targetRef = targetRef,
+                            headingText = headingText,
+                            deviation = deviation,
+                            angleUnit = settings.angleUnit,
+                            distance = distanceText,
+                            cells = cells,
                         )
                     }
                 }
-            }
-            target?.let { t ->
-                val parts = Coordinates.mgrs(t.lat, t.lon, 8)
-                Text(
-                    parts?.full ?: "",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = MonoFamily,
-                    color = subtle,
-                )
-            }
 
-            Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(14.dp))
 
-            // ---- The face: arrow, lensatic dial, or clean card ----
-            when (settings.face) {
-                Face.GLANCE -> GlanceNavigateFace(
-                    p = palette,
-                    relBearing = if (nav != null && headingTrue != null) (nav.bearingTrue - headingTrue + 360f) % 360f else null,
-                    distance = distanceText,
-                    cells = cells,
-                    headingLine = "HDG $headingText · ${steerText(deviation, settings.angleUnit)}",
+                // Eyes-free aid: haptic azimuth guide
+                FilterChip(
+                    selected = hapticGuide,
+                    onClick = { hapticGuide = !hapticGuide },
+                    label = { Text(if (hapticGuide) "HAPTIC GUIDE ON" else "HAPTIC GUIDE") },
                 )
-                else -> DialNavigateFace(
-                    p = palette,
-                    style = settings.face,
-                    dialSize = dialSize,
-                    headingRef = headingRef,
-                    targetRef = targetRef,
-                    headingText = headingText,
-                    deviation = deviation,
-                    angleUnit = settings.angleUnit,
-                    distance = distanceText,
-                    cells = cells,
-                )
+                NavigateHints(loc, compassData, hapticGuide, subtle)
             }
+        }
+    }
+}
 
-            Spacer(Modifier.height(14.dp))
-
-            // Eyes-free aid: haptic azimuth guide
-            FilterChip(
-                selected = hapticGuide,
-                onClick = { hapticGuide = !hapticGuide },
-                label = { Text(if (hapticGuide) "HAPTIC GUIDE ON" else "HAPTIC GUIDE") },
-            )
-            if (hapticGuide) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Pocket the phone: silence = on azimuth · two taps = turn RIGHT · long buzz = turn LEFT",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = subtle,
-                    textAlign = TextAlign.Center,
+/** The target picker: marker, name, drop-down of every navigable waypoint, and its grid underneath. */
+@Composable
+private fun TargetSelector(
+    target: Waypoint?,
+    waypoints: List<Waypoint>,
+    settings: AppSettings,
+    subtle: androidx.compose.ui.graphics.Color,
+    onSelect: (String) -> Unit,
+    centered: Boolean = false,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Column(horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start) {
+        Box {
+            Row(
+                modifier = Modifier.clickable { menuOpen = true },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                WaypointMarker(
+                    symbol = target?.symbol ?: "flag",
+                    affiliation = target?.affiliation ?: "none",
+                    size = 32.dp,
+                    echelon = target?.echelon ?: "",
+                    night = settings.nightMode,
                 )
+                Spacer(Modifier.width(8.dp))
+                Text(target?.name ?: "Select target", style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                Icon(Icons.Outlined.ArrowDropDown, contentDescription = "Change target", tint = subtle)
             }
-
-            // Status hints
-            if (loc == null) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "Acquiring GPS signal…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = subtle,
-                )
-            }
-            if (!compassData.hasSensor) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "No compass sensor on this device — heading uses your direction of travel while moving.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = subtle,
-                    textAlign = TextAlign.Center,
-                )
-            } else if (compassData.accuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW) {
-                Spacer(Modifier.height(12.dp))
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                    Text(
-                        "Compass needs calibration — move your phone in a figure-8 a few times.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(12.dp),
-                        textAlign = TextAlign.Center,
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                waypoints.forEach { w ->
+                    DropdownMenuItem(
+                        text = { Text(w.name) },
+                        leadingIcon = {
+                            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 26.dp, echelon = w.echelon, night = settings.nightMode)
+                        },
+                        onClick = {
+                            onSelect(w.id)
+                            menuOpen = false
+                        },
                     )
                 }
             }
         }
+        target?.let { t ->
+            val parts = Coordinates.mgrs(t.lat, t.lon, 8)
+            Text(
+                parts?.full ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = MonoFamily,
+                color = subtle,
+            )
+        }
+    }
+}
+
+/** Below the face: what the haptic guide means, and why a heading or fix may be missing. */
+@Composable
+private fun NavigateHints(
+    loc: android.location.Location?,
+    compassData: CompassData,
+    hapticGuide: Boolean,
+    subtle: androidx.compose.ui.graphics.Color,
+) {
+    if (hapticGuide) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Pocket the phone: silence = on azimuth · two taps = turn RIGHT · long buzz = turn LEFT",
+            style = MaterialTheme.typography.bodySmall,
+            color = subtle,
+            textAlign = TextAlign.Center,
+        )
+    }
+    if (loc == null) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Acquiring GPS signal…",
+            style = MaterialTheme.typography.bodyMedium,
+            color = subtle,
+        )
+    }
+    if (!compassData.hasSensor) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "No compass sensor on this device — heading uses your direction of travel while moving.",
+            style = MaterialTheme.typography.bodySmall,
+            color = subtle,
+            textAlign = TextAlign.Center,
+        )
+    } else if (compassData.accuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW) {
+        Spacer(Modifier.height(12.dp))
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Text(
+                "Compass needs calibration — move your phone in a figure-8 a few times.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(12.dp),
+                textAlign = TextAlign.Center,
+            )
+        }
+    } else if (!compassData.hasReading) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Waiting for the compass — the instrument is dimmed until it has a heading.",
+            style = MaterialTheme.typography.bodySmall,
+            color = subtle,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 

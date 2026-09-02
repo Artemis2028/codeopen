@@ -31,8 +31,11 @@ class CompassTracker(context: Context) : SensorEventListener {
 
     private val sensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    // Gyro-less phones have no TYPE_ROTATION_VECTOR but usually offer the
+    // magnetometer + accelerometer fusion; it is noisier but far better than nothing.
     private val rotationSensor: Sensor? =
         sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR)
 
     private val _data = MutableStateFlow(CompassData(hasSensor = rotationSensor != null))
     val data: StateFlow<CompassData> = _data.asStateFlow()
@@ -57,7 +60,9 @@ class CompassTracker(context: Context) : SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR &&
+            event.sensor.type != Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR
+        ) return
         SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
         // The raw azimuth is the device's natural "up" edge. Remap to the current
         // display rotation so a landscape phone (or landscape-natural tablet)
@@ -94,7 +99,7 @@ class CompassTracker(context: Context) : SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        if (sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
+        if (sensor?.type == Sensor.TYPE_ROTATION_VECTOR || sensor?.type == Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR) {
             _data.update { it.copy(accuracy = accuracy) }
         }
     }

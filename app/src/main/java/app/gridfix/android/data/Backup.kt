@@ -74,6 +74,7 @@ object Backup {
             .put("northRef", settings.northRef)
             .put("pacePer100m", settings.pacePer100m)
             .put("face", settings.face)
+            .put("orientation", settings.orientation)
         )
         root.put("tracks", JSONArray().also { a ->
             for (t in tracks) a.put(
@@ -188,7 +189,7 @@ object Backup {
         root.optJSONArray("folders")?.let { a ->
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                folderInfos.add(FolderInfo(o.getString("name"), o.optBoolean("visible", true)))
+                folderInfos.add(FolderInfo(canonicalFolder(o.getString("name")), o.optBoolean("visible", true)))
             }
         }
         val addedWp = waypointRepo.restore(wps, folderInfos)
@@ -257,6 +258,7 @@ object Backup {
                     northRef = s.optInt("northRef", 0),
                     pacePer100m = s.optInt("pacePer100m", 65),
                     face = s.optInt("face", 1),
+                    orientation = s.optInt("orientation", 0),
                 )
             )
             settingsApplied = true

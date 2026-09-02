@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -40,12 +42,14 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
+import app.gridfix.android.ui.ScreenOrientation
 import app.gridfix.android.ui.faces.Face
 import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
@@ -92,6 +96,24 @@ fun SettingsScreen(
                     Face.GLANCE -> "Glance: the grid as two big numbers, one row of data, an arrow to the target."
                     Face.LENSATIC -> "Lensatic: the issued compass dial with your grid on the glass. Navigate sets the bezel to the azimuth — turn until the north arrow sits under the line."
                     else -> "Dial: a clean compass card that turns with you, with a needle to the target."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Setting("Orientation") {
+            Segmented(
+                options = ScreenOrientation.names,
+                selected = settings.orientation,
+            ) { index -> scope.launch { repo.setOrientation(index) } }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                when (settings.orientation) {
+                    ScreenOrientation.PORTRAIT -> "Pinned upright, whatever the phone's auto-rotate says."
+                    ScreenOrientation.LANDSCAPE -> "Pinned sideways for a phone worn on armour. Flipped turns it the other way up."
+                    ScreenOrientation.LANDSCAPE_FLIPPED -> "Pinned sideways, the other way up. Landscape turns it back."
+                    else -> "Follows the phone. The rotate icon in the top bar pins it from any screen."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -272,7 +294,10 @@ private fun Setting(label: String, content: @Composable () -> Unit) {
     }
 }
 
-/** Joined segmented control: the active segment fills amber, the rest are outlined. */
+/**
+ * Joined segmented control: the active segment fills amber, the rest are outlined.
+ * Announced as a radio group (TalkBack reads the selected state), 48 dp touch targets.
+ */
 @Composable
 private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     val line = MaterialTheme.colorScheme.outline
@@ -282,8 +307,9 @@ private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> U
     Row(
         Modifier
             .fillMaxWidth()
-            .height(40.dp)
-            .border(1.dp, line),
+            .height(48.dp)
+            .border(1.dp, line)
+            .selectableGroup(),
     ) {
         options.forEachIndexed { index, label ->
             val sel = index == selected
@@ -295,7 +321,7 @@ private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> U
                     .drawBehind {
                         if (index > 0) drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
                     }
-                    .clickable { onSelect(index) },
+                    .selectable(selected = sel, role = Role.RadioButton) { onSelect(index) },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -306,6 +332,7 @@ private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> U
                     letterSpacing = 1.2.sp,
                     color = if (sel) onText else offText,
                     maxLines = 1,
+                    softWrap = false,
                 )
             }
         }

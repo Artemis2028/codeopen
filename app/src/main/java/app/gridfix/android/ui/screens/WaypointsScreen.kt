@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +54,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -190,11 +192,11 @@ fun WaypointsScreen(
     }
 
     // ---- Cards view: ALL or one folder; each shows its WAYPOINTS / GRAPHICS / TRACKS ----
-    var filter by remember { mutableStateOf(FILTER_ALL) }
+    // The chosen tab survives a trip to the map ("Show on map") and a rotation
+    var filter by rememberSaveable { mutableStateOf(FILTER_ALL) }
     var moveTrackCandidate by remember { mutableStateOf<TrackInfo?>(null) }
     val folderNames = folders.map { it.name }
     val activeFilter = if (filter == FILTER_ALL || filter in folderNames) filter else FILTER_ALL
-    val visibleFolders = folders.filter { it.visible }.map { it.name }.toSet()
     val declination = remember(
         loc?.latitude?.let { (it * 10).toInt() },
         loc?.longitude?.let { (it * 10).toInt() },
@@ -211,10 +213,14 @@ fun WaypointsScreen(
     fun distanceTo(w: Waypoint): Float =
         if (loc == null) Float.MAX_VALUE else Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon).distanceMeters
     val currentFolder = folders.firstOrNull { it.name == activeFilter }
+    // ALL lists everything: the eye is a map switch, and every card carries its folder.
+    // Distance is bucketed to 25 m so cards do not reshuffle under the finger on GPS noise.
     val listed: List<Waypoint> = (
-        if (currentFolder == null) waypoints.filter { it.folder in visibleFolders || it.folder !in folderNames }
+        if (currentFolder == null) waypoints
         else byFolder[currentFolder.name].orEmpty()
-        ).let { list -> if (loc != null) list.sortedBy { distanceTo(it) } else list }
+        ).let { list ->
+            if (loc != null) list.sortedWith(compareBy({ (distanceTo(it) / 25f).toInt() }, { it.name })) else list
+        }
     val listedGraphics: List<TacGraphic> =
         if (currentFolder == null) graphics else graphicsByFolder[currentFolder.name].orEmpty()
     val listedTracks: List<TrackInfo> =
@@ -387,8 +393,11 @@ fun WaypointsScreen(
                 if (listed.isEmpty() && listedGraphics.isEmpty() && listedTracks.isEmpty()) {
                     item(key = "empty-hint") {
                         Text(
-                            if (waypoints.isEmpty()) "No waypoints yet — tap + to mark your current position or enter an MGRS grid."
-                            else "Nothing in this folder yet — tap + to add a waypoint, or draw on the map and pick this folder.",
+                            if (currentFolder == null) {
+                                "Nothing saved yet — tap + to mark your position or enter a grid; drawings and recorded tracks land here too."
+                            } else {
+                                "Nothing in ${currentFolder.name} yet — tap + to add a waypoint, or draw on the map and pick this folder."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -419,7 +428,10 @@ fun WaypointsScreen(
             onDismissRequest = { moveTrackCandidate = null },
             title = { Text("Move ${t.name} to…") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     folders.forEach { f ->
                         TextButton(
                             onClick = {
@@ -795,7 +807,7 @@ private fun FilterTab(
     val fill = MaterialTheme.colorScheme.primary
     Row(
         Modifier
-            .height(36.dp)
+            .height(44.dp)
             .border(1.dp, if (selected) fill else line)
             .background(if (selected) fill else Color.Transparent)
             .clickable(onClick = onClick)

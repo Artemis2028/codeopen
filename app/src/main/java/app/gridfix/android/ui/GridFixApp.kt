@@ -7,24 +7,39 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MyLocation
+import androidx.compose.material.icons.outlined.ScreenLockRotation
+import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,7 +47,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -210,6 +229,21 @@ fun GridFixApp() {
         onDispose { view.keepScreenOn = false }
     }
 
+    // Orientation lock: a phone worn sideways on armour stays sideways whatever
+    // the phone's own auto-rotate says. The activity handles the config change
+    // itself (manifest configChanges), so nothing is recreated.
+    LaunchedEffect(settings.orientation) {
+        context.findActivity()?.requestedOrientation = ScreenOrientation.toActivityInfo(settings.orientation)
+    }
+    val landscape = isLandscape()
+
+    // A viewed track in a hidden folder would draw nothing: gate the id once, for
+    // the map and the list alike, and un-hide the folder when a track is viewed.
+    val shownTrackId = viewedTrackId?.takeIf { id ->
+        val f = tracks.firstOrNull { it.id == id }?.folder
+        f == null || folders.firstOrNull { it.name == f }?.visible != false
+    }
+
     val items = listOf(
         NavItem("position", "Position", Icons.Outlined.MyLocation),
         NavItem("navigate", "Navigate", Icons.Outlined.Explore),
@@ -258,61 +292,116 @@ fun GridFixApp() {
                 BillingManager.State.ENTITLED -> Unit
             }
         }
+        val onSubScreen = currentRoute == "settings" || currentRoute == "reference"
+        val barActions: @Composable () -> Unit = {
+            OrientationLockButton(settings.orientation) { value -> scope.launch { repo.setOrientation(value) } }
+            IconButton(onClick = { scope.launch { repo.setNightMode(!settings.nightMode) } }) {
+                Icon(
+                    if (settings.nightMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+                    contentDescription = "Toggle night mode",
+                )
+            }
+            if (!onSubScreen) {
+                IconButton(onClick = {
+                    navController.navigate("settings") { launchSingleTop = true }
+                }) {
+                    Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                }
+            }
+        }
+        val barTitle: @Composable () -> Unit = {
+            Text(
+                "MGRS GPS",
+                fontFamily = LabelFamily,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                letterSpacing = 4.sp,
+                maxLines = 1,
+            )
+        }
+        val backButton: @Composable () -> Unit = {
+            if (onSubScreen) {
+                IconButton(onClick = { navController.popBackStack() }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+            }
+        }
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
+            // Sideways, a camera cutout sits on a long edge: keep the rail and the deck clear of it
+            contentWindowInsets = ScaffoldDefaults.contentWindowInsets.union(WindowInsets.displayCutout),
             topBar = {
-                CenterAlignedTopAppBar(
-                    title = {
-                        Text(
-                            "MGRS GPS",
-                            fontFamily = LabelFamily,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 16.sp,
-                            letterSpacing = 4.sp,
-                        )
-                    },
-                    navigationIcon = {
-                        if (currentRoute == "settings" || currentRoute == "reference") {
-                            IconButton(onClick = { navController.popBackStack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { scope.launch { repo.setNightMode(!settings.nightMode) } }) {
-                            Icon(
-                                if (settings.nightMode) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
-                                contentDescription = "Toggle night mode",
-                            )
-                        }
-                        if (currentRoute != "settings" && currentRoute != "reference") {
-                            IconButton(onClick = {
-                                navController.navigate("settings") { launchSingleTop = true }
-                            }) {
-                                Icon(Icons.Outlined.Settings, contentDescription = "Settings")
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                        titleContentColor = MaterialTheme.colorScheme.onBackground,
-                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                )
+                if (landscape) {
+                    // Sideways there is no vertical room to spare: a 48 dp bar
+                    CompactTopBar(title = barTitle, navigationIcon = backButton, actions = barActions)
+                } else {
+                    CenterAlignedTopAppBar(
+                        title = barTitle,
+                        navigationIcon = backButton,
+                        actions = { barActions() },
+                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                            titleContentColor = MaterialTheme.colorScheme.onBackground,
+                            actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    )
+                }
             },
             bottomBar = {
                 // Blackout bar: black, a hairline on top, amber for the active tab,
-                // condensed capitals - no indicator pill.
+                // condensed capitals - no indicator pill. Sideways it becomes a rail.
+                if (!landscape) {
+                    val rule = MaterialTheme.colorScheme.outline
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        modifier = Modifier.drawBehind {
+                            drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
+                        },
+                    ) {
+                        items.forEach { item ->
+                            NavigationBarItem(
+                                selected = currentRoute == item.route,
+                                onClick = { goTo(item.route) },
+                                icon = { Icon(item.icon, contentDescription = item.label) },
+                                label = {
+                                    Text(
+                                        item.label.uppercase(),
+                                        fontFamily = LabelFamily,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        letterSpacing = 1.6.sp,
+                                        maxLines = 1,
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    indicatorColor = Color.Transparent,
+                                ),
+                            )
+                        }
+                    }
+                }
+            },
+        ) { innerPadding ->
+            Row(Modifier.fillMaxSize().padding(innerPadding)) {
+            if (landscape) {
                 val rule = MaterialTheme.colorScheme.outline
-                NavigationBar(
+                NavigationRail(
                     containerColor = MaterialTheme.colorScheme.background,
-                    modifier = Modifier.drawBehind {
-                        drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
-                    },
+                    windowInsets = WindowInsets(0, 0, 0, 0),
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .drawBehind {
+                            drawLine(rule, Offset(size.width, 0f), Offset(size.width, size.height), 1.dp.toPx())
+                        },
                 ) {
+                    Spacer(Modifier.weight(1f))
                     items.forEach { item ->
-                        NavigationBarItem(
+                        NavigationRailItem(
                             selected = currentRoute == item.route,
                             onClick = { goTo(item.route) },
                             icon = { Icon(item.icon, contentDescription = item.label) },
@@ -320,13 +409,14 @@ fun GridFixApp() {
                                 Text(
                                     item.label.uppercase(),
                                     fontFamily = LabelFamily,
-                                    fontSize = 11.sp,
+                                    fontSize = 9.sp,
                                     fontWeight = FontWeight.Medium,
-                                    letterSpacing = 1.6.sp,
+                                    letterSpacing = 1.sp,
                                     maxLines = 1,
+                                    softWrap = false,
                                 )
                             },
-                            colors = NavigationBarItemDefaults.colors(
+                            colors = NavigationRailItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
                                 unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -335,13 +425,13 @@ fun GridFixApp() {
                             ),
                         )
                     }
+                    Spacer(Modifier.weight(1f))
                 }
-            },
-        ) { innerPadding ->
+            }
             NavHost(
                 navController = navController,
                 startDestination = "position",
-                modifier = Modifier.padding(innerPadding),
+                modifier = Modifier.weight(1f).fillMaxHeight(),
             ) {
                 composable("position") {
                     if (!hasPermission) PermissionGate(requestPermission, approximateOnly)
@@ -435,10 +525,7 @@ fun GridFixApp() {
                                 )
                             }
                         },
-                        viewedTrackId = viewedTrackId?.takeIf { id ->
-                            val f = tracks.firstOrNull { it.id == id }?.folder
-                            f == null || folders.firstOrNull { it.name == f }?.visible != false
-                        },
+                        viewedTrackId = shownTrackId,
                         onRecordStart = {
                             if (recordGate.compareAndSet(false, true)) {
                                 scope.launch {
@@ -499,10 +586,17 @@ fun GridFixApp() {
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                         onClearGraphics = { folder -> scope.launch { graphicsRepo.deleteFolder(folder) } },
                         tracks = tracks,
-                        viewedTrackId = viewedTrackId,
+                        viewedTrackId = shownTrackId,
                         onViewTrack = { id ->
                             viewedTrackId = id
-                            if (id != null) goTo("map")
+                            if (id != null) {
+                                // Viewing a track in a hidden folder shows the folder again
+                                val f = tracks.firstOrNull { it.id == id }?.folder
+                                if (f != null && folders.firstOrNull { it.name == f }?.visible == false) {
+                                    scope.launch { waypointRepo.setFolderVisible(f, true) }
+                                }
+                                goTo("map")
+                            }
                         },
                         onDeleteTrack = { id ->
                             if (viewedTrackId == id) viewedTrackId = null
@@ -676,6 +770,7 @@ fun GridFixApp() {
                 }
                 composable("reference") { ReferenceScreen() }
             }
+            }
         }
 
         if (courseOpen) {
@@ -786,6 +881,91 @@ fun GridFixApp() {
             if (summaryPending && courseHistory.isNotEmpty()) {
                 courseSummary = courseHistory.first()
                 summaryPending = false
+            }
+        }
+    }
+}
+
+/** A 48 dp app bar for landscape: title centred, back on the left, actions on the right. */
+@Composable
+private fun CompactTopBar(
+    title: @Composable () -> Unit,
+    navigationIcon: @Composable () -> Unit,
+    actions: @Composable () -> Unit,
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top))
+            .height(48.dp),
+    ) {
+        Row(
+            Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
+            ) { navigationIcon() }
+        }
+        Box(Modifier.align(Alignment.Center)) {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onBackground,
+            ) { title() }
+        }
+        Row(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
+            ) { actions() }
+        }
+    }
+}
+
+/**
+ * The rotate-lock action: amber when the orientation is pinned. Tap for the menu:
+ * AUTO follows the phone; PORTRAIT / LANDSCAPE / LANDSCAPE FLIPPED pin it, for
+ * a phone mounted sideways on armour either way up.
+ */
+@Composable
+private fun OrientationLockButton(current: Int, onSelect: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val locked = current != ScreenOrientation.AUTO
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(
+                if (locked) Icons.Outlined.ScreenLockRotation else Icons.Outlined.ScreenRotation,
+                contentDescription = if (locked) "Orientation locked: ${ScreenOrientation.names[current]}" else "Orientation follows the phone",
+                tint = if (locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            ScreenOrientation.menuNames.forEachIndexed { index, label ->
+                val sel = index == current
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            label,
+                            fontFamily = LabelFamily,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 1.4.sp,
+                            color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        )
+                    },
+                    trailingIcon = if (sel) {
+                        { Icon(Icons.Outlined.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                    } else null,
+                    onClick = {
+                        onSelect(index)
+                        open = false
+                    },
+                )
             }
         }
     }
