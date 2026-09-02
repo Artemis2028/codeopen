@@ -23,7 +23,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -31,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
+import app.gridfix.android.ui.theme.MonoFamily
 
 /** MIL-STD-2525-style affiliation colors. */
 object Affiliations {
@@ -441,7 +441,7 @@ fun WaypointMarker(
             Text(
                 taskLetter,
                 color = color,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = MonoFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = (size.value * 0.55f).sp,
             )
@@ -451,7 +451,7 @@ fun WaypointMarker(
             Text(
                 "ENY",
                 color = color,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = MonoFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = (size.value * 0.20f).sp,
             )

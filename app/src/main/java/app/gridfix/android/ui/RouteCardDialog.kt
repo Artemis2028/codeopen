@@ -22,9 +22,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.TacGraphic
@@ -136,7 +136,7 @@ fun RouteCardDialog(
             ) {
                 Text(
                     "START  $startGrid",
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -164,7 +164,7 @@ fun RouteCardDialog(
                                 "CLIMB ↑%.0f m  ↓%.0f m   ·   %.0f–%.0f m MSL",
                                 gain, loss, lo, hi,
                             ),
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             style = MaterialTheme.typography.bodySmall,
                         )
                         ProfileChart(
@@ -190,7 +190,7 @@ fun RouteCardDialog(
                         Row(Modifier.fillMaxWidth()) {
                             Text(
                                 "${l.index}",
-                                fontFamily = FontFamily.Monospace,
+                                fontFamily = MonoFamily,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
                             )
@@ -198,12 +198,12 @@ fun RouteCardDialog(
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     "${l.azimuth} $refLetter   back ${l.backAzimuth}",
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = MonoFamily,
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                                 Text(
                                     "${l.distance}   ${l.paces} paces   → ${l.toGrid}",
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = MonoFamily,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -216,7 +216,7 @@ fun RouteCardDialog(
                 Text(
                     "TOTAL  " + Coordinates.formatDistance(totalMeters, settings.units) +
                         "   $totalPaces paces",
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium,
                 )

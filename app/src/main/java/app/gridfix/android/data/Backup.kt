@@ -73,6 +73,7 @@ object Backup {
             .put("angleUnit", settings.angleUnit)
             .put("northRef", settings.northRef)
             .put("pacePer100m", settings.pacePer100m)
+            .put("face", settings.face)
         )
         root.put("tracks", JSONArray().also { a ->
             for (t in tracks) a.put(
@@ -253,6 +254,7 @@ object Backup {
                     angleUnit = s.optInt("angleUnit", 0),
                     northRef = s.optInt("northRef", 0),
                     pacePer100m = s.optInt("pacePer100m", 65),
+                    face = s.optInt("face", 1),
                 )
             )
             settingsApplied = true

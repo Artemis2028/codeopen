@@ -46,11 +46,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -95,6 +97,7 @@ import app.gridfix.android.ui.screens.ReferenceScreen
 import app.gridfix.android.ui.screens.SettingsScreen
 import app.gridfix.android.ui.screens.WaypointsScreen
 import app.gridfix.android.ui.theme.GridFixTheme
+import app.gridfix.android.ui.theme.LabelFamily
 import kotlinx.coroutines.launch
 
 private data class NavItem(val route: String, val label: String, val icon: ImageVector)
@@ -261,9 +264,10 @@ fun GridFixApp() {
                 CenterAlignedTopAppBar(
                     title = {
                         Text(
-                            "GRIDFIX",
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
+                            "MGRS GPS",
+                            fontFamily = LabelFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp,
                             letterSpacing = 4.sp,
                         )
                     },
@@ -291,26 +295,43 @@ fun GridFixApp() {
                     },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background,
-                        titleContentColor = MaterialTheme.colorScheme.primary,
+                        titleContentColor = MaterialTheme.colorScheme.onBackground,
                         actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ),
                 )
             },
             bottomBar = {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                // Blackout bar: black, a hairline on top, amber for the active tab,
+                // condensed capitals - no indicator pill.
+                val rule = MaterialTheme.colorScheme.outline
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    modifier = Modifier.drawBehind {
+                        drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
+                    },
+                ) {
                     items.forEach { item ->
                         NavigationBarItem(
                             selected = currentRoute == item.route,
                             onClick = { goTo(item.route) },
                             icon = { Icon(item.icon, contentDescription = item.label) },
-                            label = { Text(item.label) },
+                            label = {
+                                Text(
+                                    item.label.uppercase(),
+                                    fontFamily = LabelFamily,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    letterSpacing = 1.6.sp,
+                                    maxLines = 1,
+                                )
+                            },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
                                 unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                indicatorColor = MaterialTheme.colorScheme.surfaceVariant,
+                                indicatorColor = Color.Transparent,
                             ),
                         )
                     }

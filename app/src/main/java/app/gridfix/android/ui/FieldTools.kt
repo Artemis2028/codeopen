@@ -34,10 +34,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.coords.SunMoon
 import app.gridfix.android.data.AppSettings
@@ -200,7 +200,7 @@ fun RayFixDialog(
                     // 8-digit: a compass fix is a 10 m answer at best, never a 1 m one
                     Text(
                         (Coordinates.mgrs(fix.lat, fix.lon, 8)?.full ?: "—"),
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
@@ -220,7 +220,7 @@ fun RayFixDialog(
                         "Ranges: " + Coordinates.formatDistance(fix.dist1.toFloat(), settings.units) +
                             " / " + Coordinates.formatDistance(fix.dist2.toFloat(), settings.units),
                         style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
@@ -347,7 +347,7 @@ fun SunMoonDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
                 }
                 Text(
                     "            LOCAL   ZULU",
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -361,7 +361,7 @@ fun SunMoonDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
                 ).forEach { (name, t) ->
                     Text(
                         "$name  ${SunMoon.formatLocal(t, y, m, d)}   ${SunMoon.formatZulu(t)}",
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -375,14 +375,14 @@ fun SunMoonDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
                     "Moonrise  " + (moon.rises.firstOrNull()?.let {
                         "${SunMoon.formatLocal(it, y, m, d)}   ${SunMoon.formatZulu(it)}"
                     } ?: "----"),
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
                     "Moonset   " + (moon.sets.firstOrNull()?.let {
                         "${SunMoon.formatLocal(it, y, m, d)}   ${SunMoon.formatZulu(it)}"
                     } ?: "----"),
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
@@ -487,7 +487,7 @@ fun DeclinationDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
                     "Magnetic declination  ${ew(decl)}\n" +
                         "Grid convergence      ${ew(conv)}\n" +
                         "G-M angle             " + String.format(Locale.US, "%.1f°", abs(gm)),
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(

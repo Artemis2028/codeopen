@@ -27,9 +27,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Phonetic
 
 /**
@@ -233,7 +233,7 @@ private fun Mono(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.bodySmall,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = MonoFamily,
         color = MaterialTheme.colorScheme.primary,
     )
 }
@@ -244,14 +244,14 @@ private fun MonoRow(left: String, right: String) {
         Text(
             left,
             style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = MonoFamily,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.weight(0.42f),
         )
         Text(
             right,
             style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = MonoFamily,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(0.58f),
         )

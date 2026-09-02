@@ -24,6 +24,7 @@ data class AppSettings(
     val angleUnit: Int = 0,       // 0 = degrees, 1 = NATO mils (6400)
     val northRef: Int = 0,        // 0 = true, 1 = magnetic, 2 = grid
     val pacePer100m: Int = 65,    // user's pace count per 100 m, for route cards
+    val face: Int = 1,            // Position/Navigate face: 0 = Glance, 1 = Lensatic, 2 = Dial
 )
 
 class SettingsRepository(private val context: Context) {
@@ -37,6 +38,7 @@ class SettingsRepository(private val context: Context) {
         val ANGLE_UNIT = intPreferencesKey("angle_unit")
         val NORTH_REF = intPreferencesKey("north_ref")
         val PACE_PER_100M = intPreferencesKey("pace_per_100m")
+        val FACE = intPreferencesKey("face")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -49,6 +51,7 @@ class SettingsRepository(private val context: Context) {
             angleUnit = p[Keys.ANGLE_UNIT] ?: 0,
             northRef = p[Keys.NORTH_REF] ?: 0,
             pacePer100m = p[Keys.PACE_PER_100M] ?: 65,
+            face = (p[Keys.FACE] ?: 1).coerceIn(0, 2),
         )
     }
 
@@ -63,6 +66,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.ANGLE_UNIT] = s.angleUnit
             p[Keys.NORTH_REF] = s.northRef
             p[Keys.PACE_PER_100M] = s.pacePer100m
+            p[Keys.FACE] = s.face
         }
     }
 
@@ -96,5 +100,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setPacePer100m(value: Int) {
         context.dataStore.edit { it[Keys.PACE_PER_100M] = value.coerceIn(30, 200) }
+    }
+
+    suspend fun setFace(value: Int) {
+        context.dataStore.edit { it[Keys.FACE] = value.coerceIn(0, 2) }
     }
 }

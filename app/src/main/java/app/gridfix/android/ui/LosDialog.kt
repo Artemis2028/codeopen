@@ -33,10 +33,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.Waypoint
@@ -292,7 +292,7 @@ fun LosDialog(
                         Text(
                             (if (marginal) "MARGINAL — " else "VISIBLE — ") + dist,
                             style = MaterialTheme.typography.titleMedium,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             fontWeight = FontWeight.Bold,
                             color = if (marginal) MaterialTheme.colorScheme.tertiary
                             else MaterialTheme.colorScheme.primary,
@@ -307,14 +307,14 @@ fun LosDialog(
                                     if (marginal) " — verify on the ground" else "",
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
+                                fontFamily = MonoFamily,
                             )
                         }
                     } else {
                         Text(
                             "MASKED — $dist",
                             style = MaterialTheme.typography.titleMedium,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -327,7 +327,7 @@ fun LosDialog(
                                 Coordinates.mgrs(r.blockLat, r.blockLon, 8)?.full ?: "",
                             ),
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                         )
                         if (r.clearObserverHeight in 0.5f..80f) {
                             Text(

@@ -23,9 +23,9 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.CourseResult
 import app.gridfix.android.data.CourseState
@@ -143,7 +143,7 @@ fun CourseDialog(
                     history.take(8).forEach { r ->
                         Text(
                             "${courseTime(r.totalMillis)}  ·  ${r.points} pts  ·  ${r.name}",
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -186,20 +186,20 @@ private fun CourseProgress(
                 Text(
                     "CP ${active.nextIndex + 1} of ${active.waypointIds.size}",
                     style = MaterialTheme.typography.headlineSmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 target?.let { t ->
                     Text(
                         "${t.name}\n${Coordinates.mgrs(t.lat, t.lon, 8)?.full ?: ""}",
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
                 Text(
                     "Elapsed ${courseTime(now - active.startedAt)}",
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 if (active.foundAt.isNotEmpty()) {
@@ -209,7 +209,7 @@ private fun CourseProgress(
                     active.foundAt.forEachIndexed { i, t ->
                         Text(
                             "CP ${i + 1}  ${courseTime(t - prev)}",
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -243,7 +243,7 @@ fun CourseSummaryDialog(result: CourseResult, onDismiss: () -> Unit) {
                 Text(
                     courseTime(result.totalMillis),
                     style = MaterialTheme.typography.headlineMedium,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -255,7 +255,7 @@ fun CourseSummaryDialog(result: CourseResult, onDismiss: () -> Unit) {
                 result.splitsMillis.forEachIndexed { i, s ->
                     Text(
                         "CP ${i + 1}  ${courseTime(s)}",
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

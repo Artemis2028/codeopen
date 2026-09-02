@@ -19,11 +19,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import app.gridfix.android.ui.theme.MonoFamily
 
 /** A `geo:` URI any phone's camera app can scan straight into its map app. */
 fun geoUri(lat: Double, lon: Double, label: String): String {
@@ -90,7 +90,7 @@ fun QrDialog(
                 Text(
                     caption,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     modifier = Modifier.padding(top = 10.dp),
                 )
                 Text(

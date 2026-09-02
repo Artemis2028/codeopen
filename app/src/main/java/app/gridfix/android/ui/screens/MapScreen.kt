@@ -80,7 +80,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -90,6 +89,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
@@ -755,7 +755,7 @@ fun MapScreen(
                                     Text(
                                         if (w.designation.isEmpty()) w.name else "${w.name} · ${w.designation}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace,
+                                        fontFamily = MonoFamily,
                                         maxLines = 1,
                                         modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
                                     )
@@ -1001,7 +1001,7 @@ fun MapScreen(
                     Text(
                         "Edit ${eg.name} · drag points · hold to delete",
                         style = MaterialTheme.typography.labelMedium,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
@@ -1046,7 +1046,7 @@ fun MapScreen(
                     Text(
                         chip,
                         style = MaterialTheme.typography.labelMedium,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
@@ -1123,7 +1123,7 @@ fun MapScreen(
                         if (parts == null) "—"
                         else if (parts.easting.isEmpty()) parts.full
                         else "${parts.gzd} ${parts.square} ${parts.easting} ${parts.northing}",
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         fontWeight = FontWeight.Bold,
                         fontSize = 20.sp,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -1134,7 +1134,7 @@ fun MapScreen(
                         Text(
                             gridInterval,
                             style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -1143,7 +1143,7 @@ fun MapScreen(
                         Text(
                             "▲" + Coordinates.formatAltitude(elev, settings.units),
                             style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -1188,7 +1188,7 @@ fun MapScreen(
                 Text(
                     line2,
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     color = if (anchor != null) MaterialTheme.colorScheme.secondary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1600,12 +1600,12 @@ fun MapScreen(
                     Text(
                         formatArea(area),
                         style = MaterialTheme.typography.headlineSmall,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                     )
                     Text(
                         "Perimeter ${formatDist(perim)} · ${drawPoints.size} corners",
                         style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                     )
                     Text(
                         "Computed on the UTM plane for this zone.",
@@ -1844,7 +1844,7 @@ fun MapScreen(
         var gotoError by remember { mutableStateOf<String?>(null) }
         val gotoNorthingFocus = remember { FocusRequester() }
         val bigDigits = androidx.compose.ui.text.TextStyle(
-            fontFamily = FontFamily.Monospace,
+            fontFamily = MonoFamily,
             fontSize = 18.sp,
         )
         AlertDialog(
@@ -2009,14 +2009,14 @@ fun MapScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         Coordinates.mgrs(w.lat, w.lon, 10)?.full ?: "",
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     if (w.designation.isNotEmpty()) {
                         Text(
                             w.designation,
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -2031,7 +2031,7 @@ fun MapScreen(
                             Coordinates.formatDistance(nav.distanceMeters, settings.units) +
                                 "  " + Coordinates.formatAngle(nav.bearingTrue, settings.angleUnit) + " T from you",
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             color = MaterialTheme.colorScheme.primary,
                         )
                     }
@@ -2154,7 +2154,7 @@ private fun StatusChip(text: String, onClick: () -> Unit) {
         Text(
             text,
             style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = MonoFamily,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
         )

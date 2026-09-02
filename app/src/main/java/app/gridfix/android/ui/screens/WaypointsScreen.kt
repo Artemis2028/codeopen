@@ -55,13 +55,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
+import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
@@ -240,7 +240,7 @@ fun WaypointsScreen(
                         Text(
                             msg,
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = MonoFamily,
                             modifier = Modifier.padding(10.dp),
                         )
                     }
@@ -591,7 +591,7 @@ private fun TrackRow(
                         "  ·  ${durMin} min  ·  " + sdf.format(Date(t.startedAt)) +
                         if (viewed) "  ·  ON MAP" else "",
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     color = if (viewed) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -717,7 +717,7 @@ private fun WaypointRow(
                     Coordinates.mgrs(w.lat, w.lon, 8)?.full
                         ?: String.format(Locale.US, "%.5f, %.5f", w.lat, w.lon),
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = MonoFamily,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (w.kind == KIND_UNIT) {
@@ -739,13 +739,13 @@ private fun WaypointRow(
                     Text(
                         Coordinates.formatDistance(nav.distanceMeters, settings.units),
                         style = MaterialTheme.typography.titleMedium,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Text(
                         Coordinates.formatAngle(nav.bearingTrue, settings.angleUnit) + " T",
                         style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = MonoFamily,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

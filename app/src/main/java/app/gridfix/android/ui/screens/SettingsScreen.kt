@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
+import app.gridfix.android.ui.faces.Face
 import kotlinx.coroutines.launch
 
 @Composable
@@ -82,6 +83,24 @@ fun SettingsScreen(
             subtitle = "Prevent the display from sleeping while MGRS GPS is open",
             checked = settings.keepScreenOn,
         ) { scope.launch { repo.setKeepScreenOn(it) } }
+
+        Column {
+            ChipGroup(
+                title = "Position & Navigate face",
+                options = Face.names,
+                selected = settings.face,
+            ) { index -> scope.launch { repo.setFace(index) } }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                when (settings.face) {
+                    Face.GLANCE -> "Glance: the grid as two big numbers, one row of data, an arrow to the target."
+                    Face.LENSATIC -> "Lensatic: the issued compass dial with your grid on the glass. Navigate sets the bezel to the azimuth — turn until the north arrow sits under the line."
+                    else -> "Dial: a clean compass card that turns with you, with a needle to the target."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         ChipGroup(
             title = "MGRS precision",
