@@ -12,8 +12,10 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 32
-        versionName = "0.9.4"
+        versionCode = 33
+        versionName = "0.9.5"
+        // MapTiler API key from the CI secret; empty in builds without it (community-tile fallback)
+        buildConfigField("String", "MAPTILER_KEY", "\"" + (System.getenv("MAPTILER_KEY") ?: "") + "\"")
     }
 
     // Play upload key: CI decodes the keystore secret to a file and exports

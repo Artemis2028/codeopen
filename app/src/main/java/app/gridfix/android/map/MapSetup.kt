@@ -97,7 +97,92 @@ object MapSetup {
                 MapTileIndex.getX(pMapTileIndex)
     }
 
-    val baseLayers: List<BaseLayer> = listOf(
+    // ---- MapTiler (keyed provider; the key is injected at build time from a CI secret) ----
+
+    private const val MT_ATTR = "© MapTiler © OpenStreetMap contributors"
+
+    /** True on builds made with the MAPTILER_KEY secret present. */
+    val hasMapTiler: Boolean get() = BuildConfig.MAPTILER_KEY.isNotBlank()
+
+    private fun mapTilerStyle(name: String, styleId: String, maxZoom: Int) = object : OnlineTileSourceBase(
+        name,
+        0,
+        maxZoom,
+        256,
+        ".png",
+        arrayOf("https://api.maptiler.com/maps/" + styleId + "/256/"),
+        MT_ATTR,
+    ) {
+        override fun getTileURLString(pMapTileIndex: Long): String =
+            baseUrl +
+                MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                MapTileIndex.getX(pMapTileIndex) + "/" +
+                MapTileIndex.getY(pMapTileIndex) + ".png?key=" + BuildConfig.MAPTILER_KEY
+    }
+
+    private val mapTilerStreets by lazy { mapTilerStyle("MapTilerStreets", "streets-v2", 20) }
+    private val mapTilerTopo by lazy { mapTilerStyle("MapTilerTopo", "topo-v2", 20) }
+
+    private val mapTilerSatellite = object : OnlineTileSourceBase(
+        "MapTilerSatellite",
+        0,
+        20,
+        256,
+        ".jpg",
+        arrayOf("https://api.maptiler.com/tiles/satellite-v2/"),
+        "© MapTiler",
+    ) {
+        override fun getTileURLString(pMapTileIndex: Long): String =
+            baseUrl +
+                MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                MapTileIndex.getX(pMapTileIndex) + "/" +
+                MapTileIndex.getY(pMapTileIndex) + ".jpg?key=" + BuildConfig.MAPTILER_KEY
+    }
+
+    /**
+     * Base layers. With a MapTiler key (every store build) the Streets, Topo and
+     * Satellite layers come from MapTiler under its commercial terms; without one
+     * (a developer build missing the secret) the app falls back to the public
+     * community servers so the map still works.
+     */
+    val baseLayers: List<BaseLayer> = if (hasMapTiler) listOf(
+        BaseLayer(
+            key = "streets",
+            label = "Streets",
+            source = mapTilerStreets,
+            attribution = MT_ATTR,
+            maxDownloadZoom = 16,
+        ),
+        BaseLayer(
+            key = "topo",
+            label = "Topographic",
+            source = mapTilerTopo,
+            attribution = MT_ATTR,
+            maxDownloadZoom = 15,
+        ),
+        BaseLayer(
+            key = "sat",
+            label = "Satellite",
+            source = mapTilerSatellite,
+            attribution = "© MapTiler",
+            maxDownloadZoom = 17,
+        ),
+        BaseLayer(
+            key = "usgs",
+            label = "USGS Topo (US only)",
+            source = usgsTopo,
+            attribution = "USGS The National Map",
+            maxDownloadZoom = 15,
+            bulkDownload = true,
+        ),
+        BaseLayer(
+            key = "hillshade",
+            label = "Hillshade",
+            source = esriHillshade,
+            attribution = "Esri, USGS, NASA",
+            maxDownloadZoom = 14,
+        ),
+    ) else listOf(
         BaseLayer(
             key = "streets",
             label = "Streets",
