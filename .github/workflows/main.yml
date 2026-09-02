@@ -15,7 +15,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Write source files (v0.9.10 (deck polish) delta, plain text, auditable below)
+      - name: Write source files (v0.9.11 (fix quality) delta, plain text, auditable below)
         run: |
           mkdir -p 'app'
           cat > 'app/build.gradle.kts' <<'EOF_GRIDFIX'
@@ -33,8 +33,8 @@ jobs:
                   applicationId = "app.gridfix.android"
                   minSdk = 26
                   targetSdk = 36
-                  versionCode = 38
-                  versionName = "0.9.10"
+                  versionCode = 39
+                  versionName = "0.9.11"
                   // MapTiler API key from the CI secret; empty in builds without it (community-tile fallback)
                   buildConfigField("String", "MAPTILER_KEY", "\"" + (System.getenv("MAPTILER_KEY") ?: "") + "\"")
               }
@@ -103,6 +103,812 @@ jobs:
 
               // Transitive androidx.fragment 1.1.0 is flagged outdated by Play; pin a current one
               implementation("androidx.fragment:fragment:1.8.5")
+          }
+          EOF_GRIDFIX
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/faces'
+          cat > 'app/src/main/java/app/gridfix/android/ui/faces/Faces.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.faces
+
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.interaction.MutableInteractionSource
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.BoxScope
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.heightIn
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.remember
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.draw.drawBehind
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.StrokeCap
+          import androidx.compose.ui.graphics.drawscope.DrawScope
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
+          import androidx.compose.ui.platform.LocalDensity
+          import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.TextLayoutResult
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.drawText
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.rememberTextMeasurer
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.Dp
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.ui.theme.LabelFamily
+          import app.gridfix.android.ui.theme.MonoFamily
+          import app.gridfix.android.ui.theme.NumeralFamily
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.roundToInt
+          import kotlin.math.sin
+
+          /**
+           * The Position and Navigate screens come in three user-selectable faces.
+           * Every face renders the same fix, heading and target; only the instrument
+           * changes. Colors come from the theme, so night mode is automatic.
+           */
+          object Face {
+              const val GLANCE = 0     // two big numbers, one row of data
+              const val LENSATIC = 1   // the issued M-1950 / Cammenga dial, grid on the glass
+              const val DIAL = 2       // a clean compass card
+              val names = listOf("Glance", "Lensatic", "Dial")
+          }
+
+          class FacePalette(
+              val ink: Color,
+              val muted: Color,
+              val line: Color,
+              val accent: Color,
+              val lume: Color,
+              val night: Boolean,
+          )
+
+          @Composable
+          fun facePalette(night: Boolean): FacePalette {
+              val cs = MaterialTheme.colorScheme
+              return FacePalette(
+                  ink = cs.onBackground,
+                  muted = cs.onSurfaceVariant,
+                  line = cs.outline,
+                  accent = cs.primary,
+                  lume = cs.tertiary,
+                  night = night,
+              )
+          }
+
+          /** Heading/azimuth expressed in the user's north reference: 0 true, 1 magnetic, 2 grid. */
+          fun toNorthRef(angleTrue: Float, northRef: Int, declination: Float, convergence: Float): Float = when (northRef) {
+              1 -> (angleTrue - declination + 360f) % 360f
+              2 -> (angleTrue - convergence + 360f) % 360f
+              else -> angleTrue
+          }
+
+          fun northRefLetter(northRef: Int): String = when (northRef) {
+              1 -> "M"
+              2 -> "G"
+              else -> "T"
+          }
+
+          /** "TURN RIGHT 12°" style steer for a signed deviation (target minus heading, -180..180). */
+          fun steerText(deviation: Float?, angleUnit: Int): String {
+              if (deviation == null) return "NO HEADING"
+              val mag = abs(deviation)
+              if (mag <= 3f) return "ON COURSE"
+              val amount = if (angleUnit == 1) "${(mag * 6400f / 360f).roundToInt()} mils" else "${mag.roundToInt()}°"
+              return if (deviation > 0f) "TURN RIGHT $amount" else "TURN LEFT $amount"
+          }
+
+          // ---------------------------------------------------------------------------
+          // Fix quality: one word and five bars an operator can act on, instead of a
+          // satellite ratio. Horizontal accuracy is what matters; the satellite count
+          // only caps it. "Trust N-digit" = the MGRS precision whose cell is at least
+          // as big as the error circle.
+          // ---------------------------------------------------------------------------
+          class FixQuality(val bars: Int, val word: String, val trustDigits: Int, val accuracyM: Float?)
+
+          fun fixQuality(loc: android.location.Location?, satsUsed: Int): FixQuality {
+              if (loc == null) return FixQuality(0, "NO FIX", 0, null)
+              val acc = if (loc.hasAccuracy()) loc.accuracy else 100f
+              var bars = when {
+                  acc <= 5f -> 5
+                  acc <= 10f -> 4
+                  acc <= 20f -> 3
+                  acc <= 50f -> 2
+                  else -> 1
+              }
+              if (satsUsed in 1..3) bars = minOf(bars, 1)
+              else if (satsUsed in 4..5) bars = minOf(bars, 3)
+              val word = when (bars) {
+                  5 -> "EXCELLENT"
+                  4 -> "GOOD"
+                  3 -> "FAIR"
+                  2 -> "POOR"
+                  else -> "DEGRADED"
+              }
+              val trust = when {
+                  acc <= 2f -> 10
+                  acc <= 15f -> 8
+                  acc <= 150f -> 6
+                  else -> 4
+              }
+              return FixQuality(bars, word, trust, if (loc.hasAccuracy()) loc.accuracy else null)
+          }
+
+          @Composable
+          fun fixColor(q: FixQuality, p: FacePalette): Color = when {
+              q.bars >= 4 -> p.lume
+              q.bars >= 2 -> p.accent
+              q.bars == 1 -> MaterialTheme.colorScheme.error
+              else -> p.muted
+          }
+
+          /** Five rising bars, filled to the quality level. */
+          @Composable
+          fun FixBars(q: FixQuality, p: FacePalette, modifier: Modifier = Modifier, barWidth: Dp = 4.dp, height: Dp = 14.dp) {
+              val on = fixColor(q, p)
+              val off = p.line
+              Canvas(modifier.size(width = barWidth * 5 + 8.dp, height = height)) {
+                  val w = barWidth.toPx()
+                  val gap = 2.dp.toPx()
+                  for (i in 0 until 5) {
+                      val h = size.height * (0.4f + 0.15f * i)
+                      drawRect(
+                          color = if (i < q.bars) on else off,
+                          topLeft = Offset(i * (w + gap), size.height - h),
+                          size = Size(w, h),
+                      )
+                  }
+              }
+          }
+
+          /** "GOOD ±4 m · 9 sats · trust 8-digit" */
+          fun fixSummary(q: FixQuality, satsUsed: Int, accuracyText: String?): String = when {
+              q.bars == 0 -> "acquiring · $satsUsed sats"
+              else -> listOfNotNull(
+                  q.word.lowercase().replaceFirstChar { it.uppercase() },
+                  accuracyText,
+                  "$satsUsed sats",
+                  "trust ${q.trustDigits}-digit",
+              ).joinToString(" · ")
+          }
+
+          // ---------------------------------------------------------------------------
+          // Shared furniture: three-up cells and hairline rows (rules instead of boxes)
+          // ---------------------------------------------------------------------------
+
+          @Composable
+          fun FaceCells(cells: List<Pair<String, String>>, p: FacePalette, modifier: Modifier = Modifier) {
+              val line = p.line
+              Row(
+                  modifier
+                      .fillMaxWidth()
+                      .drawBehind {
+                          val w = 1.dp.toPx()
+                          drawLine(line, Offset(0f, 0f), Offset(size.width, 0f), w)
+                          drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), w)
+                      },
+              ) {
+                  cells.forEachIndexed { i, (lab, value) ->
+                      val last = i == cells.lastIndex
+                      Column(
+                          Modifier
+                              .weight(1f)
+                              .drawBehind {
+                                  if (!last) drawLine(line, Offset(size.width, 0f), Offset(size.width, size.height), 1.dp.toPx())
+                              }
+                              .padding(vertical = 12.dp, horizontal = 4.dp),
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                          verticalArrangement = Arrangement.spacedBy(5.dp),
+                      ) {
+                          Text(
+                              lab.uppercase(),
+                              fontFamily = LabelFamily,
+                              fontSize = 11.sp,
+                              fontWeight = FontWeight.Medium,
+                              letterSpacing = 1.3.sp,
+                              color = p.muted,
+                              maxLines = 1,
+                          )
+                          Text(
+                              value,
+                              fontFamily = MonoFamily,
+                              fontSize = 18.sp,
+                              color = p.ink,
+                              maxLines = 1,
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun FaceRow(
+              left: String,
+              right: String,
+              p: FacePalette,
+              rightInk: Boolean = false,
+              labelFont: Boolean = false,
+              rule: Boolean = true,
+              modifier: Modifier = Modifier,
+          ) {
+              val line = p.line
+              Row(
+                  modifier
+                      .fillMaxWidth()
+                      .heightIn(min = 38.dp)
+                      .drawBehind {
+                          if (rule) drawLine(line, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
+                      },
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+              ) {
+                  val family = if (labelFont) LabelFamily else MonoFamily
+                  val fs = if (labelFont) 12.sp else 13.sp
+                  val track = if (labelFont) 1.2.sp else 0.sp
+                  Text(left, fontFamily = family, fontSize = fs, letterSpacing = track, color = p.muted, maxLines = 1)
+                  Text(right, fontFamily = family, fontSize = fs, letterSpacing = track, color = if (rightInk) p.ink else p.muted, maxLines = 1)
+              }
+          }
+
+          // ---------------------------------------------------------------------------
+          // Glance: the two numbers and one row of data. Position fills the first
+          // screen; everything else scrolls up from below.
+          // ---------------------------------------------------------------------------
+
+          @Composable
+          fun GlancePositionFace(
+              p: FacePalette,
+              parts: Coordinates.MgrsParts?,
+              acquiring: Boolean,
+              quality: FixQuality,
+              statusLine: String,
+              precisionLabel: String,
+              onCyclePrecision: () -> Unit,
+              cells: List<Pair<String, String>>,
+              utm: String,
+              dtg: String,
+              minHeight: Dp,
+          ) {
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .heightIn(min = minHeight)
+                      .padding(horizontal = 20.dp, vertical = 10.dp),
+              ) {
+                  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                      FixBars(quality, p)
+                      Spacer(Modifier.size(10.dp))
+                      Text(
+                          statusLine,
+                          fontFamily = MonoFamily,
+                          fontSize = 13.sp,
+                          letterSpacing = 0.5.sp,
+                          color = if (acquiring) p.muted else fixColor(quality, p),
+                          maxLines = 1,
+                          modifier = Modifier.weight(1f),
+                      )
+                      PrecisionTag(precisionLabel, p, onCyclePrecision)
+                  }
+                  Spacer(Modifier.weight(1f))
+                  if (parts != null && parts.square.isEmpty()) {
+                      Text(parts.full, fontFamily = MonoFamily, fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold, color = p.ink)
+                  } else {
+                      Text(
+                          if (parts != null) "${parts.gzd} ${parts.square}" else "—",
+                          fontFamily = MonoFamily,
+                          fontSize = 24.sp,
+                          letterSpacing = 4.sp,
+                          color = p.muted,
+                      )
+                      Spacer(Modifier.height(6.dp))
+                      val e = parts?.easting?.ifEmpty { "—" } ?: "-----"
+                      val n = parts?.northing?.ifEmpty { "—" } ?: "-----"
+                      BigNumeral(e, if (parts == null) p.muted else p.ink)
+                      BigNumeral(n, if (parts == null) p.muted else p.ink)
+                  }
+                  Spacer(Modifier.height(26.dp))
+                  FaceCells(cells, p)
+                  Row(
+                      Modifier
+                          .fillMaxWidth()
+                          .padding(top = 14.dp),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                  ) {
+                      Text(utm, fontFamily = MonoFamily, fontSize = 13.sp, color = p.muted, maxLines = 1)
+                      Text(dtg, fontFamily = MonoFamily, fontSize = 13.sp, color = p.muted, maxLines = 1)
+                  }
+                  Spacer(Modifier.height(18.dp))
+                  Text(
+                      "SWIPE UP FOR LAT/LON · PHONETIC · MARK",
+                      fontFamily = MonoFamily,
+                      fontSize = 12.sp,
+                      letterSpacing = 0.8.sp,
+                      color = p.muted,
+                  )
+                  Spacer(Modifier.weight(1f))
+              }
+          }
+
+          @Composable
+          private fun BigNumeral(text: String, color: Color) {
+              Text(
+                  text,
+                  fontFamily = NumeralFamily,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 96.sp,
+                  lineHeight = 92.sp,
+                  letterSpacing = 1.sp,
+                  color = color,
+                  maxLines = 1,
+                  softWrap = false,
+              )
+          }
+
+          @Composable
+          private fun PrecisionTag(label: String, p: FacePalette, onClick: () -> Unit) {
+              val line = p.line
+              Box(
+                  Modifier
+                      .heightIn(min = 32.dp)
+                      .drawBehind {
+                          drawRect(line, style = Stroke(1.dp.toPx()))
+                      }
+                      .clickable(onClick = onClick)
+                      .padding(horizontal = 10.dp, vertical = 6.dp),
+                  contentAlignment = Alignment.Center,
+              ) {
+                  Text(label, fontFamily = LabelFamily, fontSize = 12.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.2.sp, color = p.muted)
+              }
+          }
+
+          @Composable
+          fun GlanceNavigateFace(
+              p: FacePalette,
+              relBearing: Float?,
+              distance: String,
+              cells: List<Pair<String, String>>,
+              headingLine: String,
+          ) {
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 20.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                  val arrowColor = if (relBearing != null) p.ink else p.muted
+                  Canvas(Modifier.size(236.dp)) {
+                      rotate(relBearing ?: 0f) {
+                          val c = center
+                          val h = size.minDimension
+                          val path = Path().apply {
+                              moveTo(c.x, c.y - h * 0.42f)
+                              lineTo(c.x + h * 0.25f, c.y + h * 0.33f)
+                              lineTo(c.x, c.y + h * 0.16f)
+                              lineTo(c.x - h * 0.25f, c.y + h * 0.33f)
+                              close()
+                          }
+                          drawPath(path, arrowColor)
+                      }
+                  }
+                  Spacer(Modifier.height(4.dp))
+                  DistanceHero(distance, p, numeralSize = 106.sp, numeralLine = 100.sp, unitSize = 20.sp, display = true)
+                  Spacer(Modifier.height(18.dp))
+                  FaceCells(cells, p)
+                  Spacer(Modifier.height(14.dp))
+                  Text(headingLine, fontFamily = MonoFamily, fontSize = 13.sp, letterSpacing = 0.8.sp, color = p.muted)
+              }
+          }
+
+          @Composable
+          private fun DistanceHero(
+              distance: String,
+              p: FacePalette,
+              numeralSize: androidx.compose.ui.unit.TextUnit,
+              numeralLine: androidx.compose.ui.unit.TextUnit,
+              unitSize: androidx.compose.ui.unit.TextUnit,
+              display: Boolean,
+          ) {
+              val number = distance.substringBeforeLast(' ')
+              val unit = if (distance.contains(' ')) distance.substringAfterLast(' ') else ""
+              Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                  Text(
+                      number,
+                      fontFamily = if (display) NumeralFamily else MonoFamily,
+                      fontWeight = FontWeight.Bold,
+                      fontSize = numeralSize,
+                      lineHeight = numeralLine,
+                      color = p.ink,
+                      maxLines = 1,
+                      softWrap = false,
+                  )
+                  if (unit.isNotEmpty()) {
+                      Text(
+                          unit,
+                          fontFamily = if (display) MonoFamily else LabelFamily,
+                          fontSize = unitSize,
+                          color = p.muted,
+                          modifier = Modifier.padding(bottom = 14.dp),
+                      )
+                  }
+              }
+          }
+
+          // ---------------------------------------------------------------------------
+          // Dial faces
+          // ---------------------------------------------------------------------------
+
+          @Composable
+          fun DialPositionFace(
+              p: FacePalette,
+              style: Int,
+              dialSize: Dp,
+              parts: Coordinates.MgrsParts?,
+              acquiring: Boolean,
+              quality: FixQuality,
+              fixLine: String,
+              precisionLabel: String,
+              onCyclePrecision: () -> Unit,
+              headingRef: Float?,
+              cells: List<Pair<String, String>>,
+              rows: List<Triple<String, String, Boolean>>,
+          ) {
+              val lensatic = style == Face.LENSATIC
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 15.dp, vertical = 6.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                  CompassDial(
+                      size = dialSize,
+                      style = style,
+                      p = p,
+                      rotation = if (lensatic) -(headingRef ?: 0f) else 0f,
+                      lumeMarkAt = if (!lensatic) headingRef else null,
+                  ) {
+                      val numeralSize = if (lensatic) 40.sp else 56.sp
+                      val numeralLine = if (lensatic) 44.sp else 60.sp
+                      Column(
+                          Modifier.clickable(
+                              interactionSource = remember { MutableInteractionSource() },
+                              indication = null,
+                              onClick = onCyclePrecision,
+                          ),
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                      ) {
+                          if (parts != null && parts.square.isEmpty()) {
+                              Text(parts.full, fontFamily = MonoFamily, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = p.ink, textAlign = TextAlign.Center)
+                          } else {
+                              Text(
+                                  if (parts != null) "${parts.gzd} ${parts.square}" else "—",
+                                  fontFamily = MonoFamily,
+                                  fontSize = if (lensatic) 13.sp else 16.sp,
+                                  letterSpacing = 3.sp,
+                                  color = p.muted,
+                              )
+                              val e = parts?.easting?.ifEmpty { "—" } ?: "-----"
+                              val n = parts?.northing?.ifEmpty { "—" } ?: "-----"
+                              val ink = if (parts == null) p.muted else p.ink
+                              Text(e, fontFamily = MonoFamily, fontWeight = FontWeight.Bold, fontSize = numeralSize, lineHeight = numeralLine, letterSpacing = 1.5.sp, color = ink, maxLines = 1, softWrap = false)
+                              Text(n, fontFamily = MonoFamily, fontWeight = FontWeight.Bold, fontSize = numeralSize, lineHeight = numeralLine, letterSpacing = 1.5.sp, color = ink, maxLines = 1, softWrap = false)
+                          }
+                          Spacer(Modifier.height(4.dp))
+                          Text(
+                              "$fixLine · $precisionLabel",
+                              fontFamily = LabelFamily,
+                              fontSize = 11.sp,
+                              fontWeight = FontWeight.Medium,
+                              letterSpacing = 1.4.sp,
+                              color = if (acquiring) p.muted else fixColor(quality, p),
+                          )
+                      }
+                  }
+                  Spacer(Modifier.height(14.dp))
+                  FaceCells(cells, p)
+                  Column(Modifier.padding(horizontal = 5.dp)) {
+                      rows.forEachIndexed { i, (l, r, label) ->
+                          FaceRow(l, r, p, rightInk = i == 0, labelFont = label, rule = i > 0)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun DialNavigateFace(
+              p: FacePalette,
+              style: Int,
+              dialSize: Dp,
+              headingRef: Float?,
+              targetRef: Float?,
+              headingText: String,
+              deviation: Float?,
+              angleUnit: Int,
+              distance: String,
+              cells: List<Pair<String, String>>,
+          ) {
+              val lensatic = style == Face.LENSATIC
+              Column(
+                  Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 15.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+              ) {
+                  CompassDial(
+                      size = dialSize,
+                      style = style,
+                      p = p,
+                      rotation = -(headingRef ?: 0f),
+                      bezelLineAt = if (lensatic) targetRef?.let { -it } else null,
+                      needleAt = if (!lensatic && headingRef != null && targetRef != null) (targetRef - headingRef + 360f) % 360f else null,
+                      lubber = !lensatic,
+                  ) {
+                      if (lensatic) {
+                          val steer = steerText(deviation, angleUnit)
+                          Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                              Text("HEADING", fontFamily = LabelFamily, fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.6.sp, color = p.muted)
+                              Text(headingText, fontFamily = MonoFamily, fontWeight = FontWeight.Bold, fontSize = 40.sp, lineHeight = 44.sp, color = p.ink, maxLines = 1)
+                              Text(
+                                  steer,
+                                  fontFamily = LabelFamily,
+                                  fontSize = 12.sp,
+                                  fontWeight = FontWeight.Medium,
+                                  letterSpacing = 1.6.sp,
+                                  color = when {
+                                      deviation == null -> p.muted
+                                      steer == "ON COURSE" -> p.lume
+                                      else -> p.accent
+                                  },
+                              )
+                          }
+                      }
+                  }
+                  Spacer(Modifier.height(if (lensatic) 12.dp else 6.dp))
+                  if (!lensatic) {
+                      Text(
+                          "HDG $headingText · ${steerText(deviation, angleUnit)}",
+                          fontFamily = MonoFamily,
+                          fontSize = 13.sp,
+                          letterSpacing = 0.8.sp,
+                          color = if (deviation != null && abs(deviation) <= 3f) p.lume else p.muted,
+                      )
+                      Spacer(Modifier.height(6.dp))
+                  }
+                  DistanceHero(distance, p, numeralSize = 56.sp, numeralLine = 60.sp, unitSize = 16.sp, display = false)
+                  Spacer(Modifier.height(12.dp))
+                  FaceCells(cells, p)
+                  Spacer(Modifier.height(12.dp))
+                  Text(
+                      if (lensatic) "BEZEL IS SET TO THE AZIMUTH · TURN UNTIL THE NORTH ARROW SITS UNDER THE BEZEL LINE"
+                      else "CARD TURNS WITH YOU · NEEDLE POINTS AT THE TARGET",
+                      fontFamily = LabelFamily,
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium,
+                      letterSpacing = 1.2.sp,
+                      color = p.muted,
+                      textAlign = TextAlign.Center,
+                  )
+              }
+          }
+
+          // ---------------------------------------------------------------------------
+          // The dial itself. Geometry is authored at the mock size (360 px lensatic,
+          // 330 px clean) and scaled; all ring labels are measured once per size.
+          // ---------------------------------------------------------------------------
+
+          private class DialLabel(
+              val layout: TextLayoutResult,
+              val angle: Float,      // dial bearing of the label
+              val radius: Float,     // px from centre
+              val color: Color,
+              val radial: Boolean,   // true: text reads outward like a real dial; false: stays upright
+          )
+
+          private class LensaticColors(
+              val case: Color, val bezel: Color, val bezelTick: Color, val face: Color,
+              val mils: Color, val degTick: Color, val red: Color,
+          )
+
+          private fun lensaticColors(night: Boolean) = if (night) LensaticColors(
+              case = Color(0xFF2A0906), bezel = Color(0xFF0E0202), bezelTick = Color(0xFF6E170F), face = Color(0xFF000000),
+              mils = Color(0xFF7A1A12), degTick = Color(0xFF7A1A12), red = Color(0xFF8F1D14),
+          ) else LensaticColors(
+              case = Color(0xFF4A5433), bezel = Color(0xFF1C1D1B), bezelTick = Color(0xFF8E938A), face = Color(0xFF050505),
+              mils = Color(0xFFD9D4C8), degTick = Color(0xFFB5B0A4), red = Color(0xFFE8442F),
+          )
+
+          @Composable
+          fun CompassDial(
+              size: Dp,
+              style: Int,
+              p: FacePalette,
+              rotation: Float,
+              bezelLineAt: Float? = null,
+              needleAt: Float? = null,
+              lumeMarkAt: Float? = null,
+              lubber: Boolean = false,
+              content: @Composable BoxScope.() -> Unit = {},
+          ) {
+              val density = LocalDensity.current
+              val px = with(density) { size.toPx() }
+              val lensatic = style == Face.LENSATIC
+              val s = px / (if (lensatic) 360f else 330f)   // px per mock pixel
+              val lc = lensaticColors(p.night)
+              val measurer = rememberTextMeasurer()
+              val labels = remember(px, style, p.ink, p.muted, p.lume, p.night) {
+                  val r = px / 2f
+                  val out = ArrayList<DialLabel>()
+                  fun ts(sizePx: Float, weight: FontWeight, color: Color) = TextStyle(
+                      fontFamily = LabelFamily,
+                      fontSize = with(density) { sizePx.toSp() },
+                      fontWeight = weight,
+                      color = color,
+                  )
+                  if (lensatic) {
+                      val big = r - 26f * s
+                      val milsStyle = ts(8.5f * s, FontWeight.Normal, lc.mils)
+                      for (k in 1 until 32) {
+                          val mils = k * 200
+                          out += DialLabel(measurer.measure(AnnotatedString((mils / 100).toString()), milsStyle), mils * 360f / 6400f, big - 16f * s, lc.mils, radial = true)
+                      }
+                      val degStyle = ts(10.5f * s, FontWeight.SemiBold, lc.red)
+                      for (d in 20 until 360 step 20) {
+                          out += DialLabel(measurer.measure(AnnotatedString(d.toString()), degStyle), d.toFloat(), big - 40f * s, lc.red, radial = true)
+                      }
+                      val cardinal = ts(17f * s, FontWeight.SemiBold, p.ink)
+                      out += DialLabel(measurer.measure(AnnotatedString("E"), cardinal), 90f, big - 52f * s, p.lume, radial = true)
+                      out += DialLabel(measurer.measure(AnnotatedString("S"), cardinal), 180f, big - 52f * s, p.ink, radial = true)
+                      out += DialLabel(measurer.measure(AnnotatedString("W"), cardinal), 270f, big - 52f * s, p.lume, radial = true)
+                  } else {
+                      val cardinal = ts(18f * s, FontWeight.SemiBold, p.ink)
+                      listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f).forEach { (lab, ang) ->
+                          out += DialLabel(measurer.measure(AnnotatedString(lab), cardinal), ang, r - 36f * s, if (lab == "N") p.lume else p.ink, radial = false)
+                      }
+                  }
+                  out
+              }
+
+              Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+                  Canvas(Modifier.matchParentSize()) {
+                      val c = center
+                      val r = px / 2f
+                      if (lensatic) {
+                          drawLensatic(c, r, s, lc, p, rotation, bezelLineAt, labels)
+                      } else {
+                          drawCleanDial(c, r, s, p, rotation, labels)
+                      }
+                      lumeMarkAt?.let { a ->
+                          val pos = polar(c, r - 22f * s, a)
+                          rotate(a + 180f, pivot = pos) {
+                              val path = Path().apply {
+                                  moveTo(pos.x, pos.y - 9f * s)
+                                  lineTo(pos.x + 6f * s, pos.y + 3f * s)
+                                  lineTo(pos.x - 6f * s, pos.y + 3f * s)
+                                  close()
+                              }
+                              drawPath(path, p.lume)
+                          }
+                      }
+                      needleAt?.let { a ->
+                          rotate(a, pivot = c) {
+                              drawLine(p.lume, Offset(c.x, c.y + 6f * s), Offset(c.x, c.y - 118f * s), 4f * s, cap = StrokeCap.Round)
+                              val head = Path().apply {
+                                  moveTo(c.x, c.y - 140f * s)
+                                  lineTo(c.x - 9f * s, c.y - 116f * s)
+                                  lineTo(c.x + 9f * s, c.y - 116f * s)
+                                  close()
+                              }
+                              drawPath(head, p.lume)
+                          }
+                          drawCircle(p.ink, radius = 5f * s, center = c)
+                      }
+                      if (lubber) {
+                          val path = Path().apply {
+                              moveTo(c.x, c.y - r + 18f * s)
+                              lineTo(c.x - 8f * s, c.y - r + 4f * s)
+                              lineTo(c.x + 8f * s, c.y - r + 4f * s)
+                              close()
+                          }
+                          drawPath(path, p.ink)
+                      }
+                  }
+                  content()
+              }
+          }
+
+          private fun polar(c: Offset, radius: Float, bearingDeg: Float): Offset {
+              val a = Math.toRadians((bearingDeg - 90f).toDouble())
+              return Offset(c.x + radius * cos(a).toFloat(), c.y + radius * sin(a).toFloat())
+          }
+
+          private fun DrawScope.tick(c: Offset, bearingDeg: Float, from: Float, to: Float, color: Color, width: Float) {
+              drawLine(color, polar(c, from, bearingDeg), polar(c, to, bearingDeg), width)
+          }
+
+          private fun DrawScope.drawLabels(c: Offset, labels: List<DialLabel>, rotation: Float) {
+              for (l in labels) {
+                  val pos = polar(c, l.radius, l.angle)
+                  val w = l.layout.size.width.toFloat()
+                  val h = l.layout.size.height.toFloat()
+                  rotate(if (l.radial) l.angle else -rotation, pivot = pos) {
+                      drawText(l.layout, color = l.color, topLeft = Offset(pos.x - w / 2f, pos.y - h / 2f))
+                  }
+              }
+          }
+
+          private fun DrawScope.drawLensatic(
+              c: Offset, r: Float, s: Float, lc: LensaticColors, p: FacePalette,
+              rotation: Float, bezelLineAt: Float?, labels: List<DialLabel>,
+          ) {
+              val big = r - 26f * s
+              drawCircle(lc.case, radius = r - 1f * s, center = c)
+              drawCircle(lc.bezel, radius = r - 8f * s, center = c)
+              for (i in 0 until 120) {
+                  tick(c, i * 3f, r - 22f * s, r - 11f * s, lc.bezelTick, (if (i % 10 == 0) 1.4f else 0.8f) * s)
+              }
+              bezelLineAt?.let { a ->
+                  drawLine(p.lume, polar(c, r - 25f * s, a), polar(c, r - 9f * s, a), 3.5f * s, cap = StrokeCap.Round)
+              }
+              drawCircle(lc.face, radius = big, center = c)
+              drawCircle(p.line, radius = big, center = c, style = Stroke(1f * s))
+              rotate(rotation, pivot = c) {
+                  for (k in 0 until 320) {
+                      val mils = k * 20
+                      val long = mils % 100 == 0
+                      tick(c, mils * 360f / 6400f, big - (if (long) 9f else 5f) * s, big - 1f * s, lc.mils, (if (long) 1.1f else 0.6f) * s)
+                  }
+                  for (d in 0 until 360 step 5) {
+                      val long = d % 10 == 0
+                      tick(c, d.toFloat(), big - 23f * s, big - (if (long) 30f else 27f) * s, lc.degTick, (if (long) 1f else 0.7f) * s)
+                  }
+                  // luminous north arrow
+                  val tip = big - 32f * s
+                  val base = big - 54f * s
+                  val stem = big - 74f * s
+                  val arrow = Path().apply {
+                      moveTo(c.x, c.y - tip)
+                      lineTo(c.x - 7.5f * s, c.y - base)
+                      lineTo(c.x + 7.5f * s, c.y - base)
+                      close()
+                  }
+                  drawPath(arrow, p.lume)
+                  drawRect(p.lume, topLeft = Offset(c.x - 2.5f * s, c.y - base), size = Size(5f * s, base - stem))
+                  drawLabels(c, labels, rotation)
+              }
+              // fixed index line on the crystal
+              drawLine(p.ink, Offset(c.x, c.y - r + 9f * s), Offset(c.x, c.y - r + 58f * s), 2f * s, cap = StrokeCap.Round)
+          }
+
+          private fun DrawScope.drawCleanDial(
+              c: Offset, r: Float, s: Float, p: FacePalette, rotation: Float, labels: List<DialLabel>,
+          ) {
+              val bezel = if (p.night) p.line else Color(0xFF3A3A34)
+              drawCircle(bezel, radius = r - 2f * s, center = c, style = Stroke(1.5f * s))
+              rotate(rotation, pivot = c) {
+                  for (d in 0 until 360 step 10) {
+                      val big = d % 30 == 0
+                      tick(c, d.toFloat(), r - (if (big) 16f else 9f) * s, r - 3f * s, if (big) p.ink else p.muted, (if (big) 2f else 1f) * s)
+                  }
+                  drawLabels(c, labels, rotation)
+              }
           }
           EOF_GRIDFIX
           mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
@@ -1344,6 +2150,7 @@ jobs:
                                   Icons.Outlined.AddLocationAlt,
                                   contentDescription = "Waypoint at crosshair",
                                   tint = MaterialTheme.colorScheme.onPrimary,
+                                  modifier = Modifier.size(30.dp),
                               )
                           }
                       }
@@ -2330,10 +3137,10 @@ jobs:
                       label.uppercase(java.util.Locale.US),
                       style = androidx.compose.ui.text.TextStyle(
                           fontFamily = LabelFamily,
-                          fontSize = 9.sp,
-                          lineHeight = 10.sp,
+                          fontSize = 11.sp,
+                          lineHeight = 12.sp,
                           fontWeight = FontWeight.Medium,
-                          letterSpacing = 0.6.sp,
+                          letterSpacing = 0.4.sp,
                           lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
                               alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
                               trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
@@ -2343,12 +3150,12 @@ jobs:
                       color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                       maxLines = 1,
                   )
-                  Spacer(Modifier.height(5.dp))
+                  Spacer(Modifier.height(4.dp))
                   Icon(
                       icon,
                       contentDescription = label,
                       tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                      modifier = Modifier.size(22.dp),
+                      modifier = Modifier.size(28.dp),
                   )
               }
           }
@@ -2451,168 +3258,426 @@ jobs:
                   }
               }
           EOF_GRIDFIX
-          mkdir -p 'app/src/main/java/app/gridfix/android/ui/theme'
-          cat > 'app/src/main/java/app/gridfix/android/ui/theme/Theme.kt' <<'EOF_GRIDFIX'
-          package app.gridfix.android.ui.theme
+          mkdir -p 'app/src/main/java/app/gridfix/android/ui/screens'
+          cat > 'app/src/main/java/app/gridfix/android/ui/screens/PositionScreen.kt' <<'EOF_GRIDFIX'
+          package app.gridfix.android.ui.screens
 
-          import androidx.compose.foundation.shape.RoundedCornerShape
+          import android.hardware.GeomagneticField
+          import android.location.Location
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.BoxWithConstraints
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.outlined.QrCode2
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.ButtonDefaults
+          import androidx.compose.material3.Card
+          import androidx.compose.material3.CardDefaults
+          import androidx.compose.material3.Icon
+          import androidx.compose.material3.IconButton
           import androidx.compose.material3.MaterialTheme
-          import androidx.compose.material3.Shapes
-          import androidx.compose.material3.Typography
-          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.material3.Text
           import androidx.compose.runtime.Composable
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.text.font.Font
-          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.produceState
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
-          import app.gridfix.android.R
-
-          // ---------------------------------------------------------------------------
-          // Fonts (all SIL Open Font License, bundled in res/font by the build).
-          //   LabelFamily   - Saira Semi Condensed: every label, title and body line.
-          //   MonoFamily    - Fira Mono: grids, azimuths, distances, times - anything
-          //                   a soldier reads digit by digit.
-          //   NumeralFamily - Antonio: the oversized grid numerals of the Glance face
-          //                   (variable font; the weight is applied by Android 8+).
-          // ---------------------------------------------------------------------------
-          val LabelFamily = FontFamily(
-              Font(R.font.saira_semi_condensed_regular, FontWeight.Normal),
-              Font(R.font.saira_semi_condensed_medium, FontWeight.Medium),
-              Font(R.font.saira_semi_condensed_semibold, FontWeight.SemiBold),
-              Font(R.font.saira_semi_condensed_bold, FontWeight.Bold),
-          )
-
-          val MonoFamily = FontFamily(
-              Font(R.font.fira_mono_regular, FontWeight.Normal),
-              Font(R.font.fira_mono_medium, FontWeight.Medium),
-              Font(R.font.fira_mono_bold, FontWeight.Bold),
-          )
-
-          val NumeralFamily = FontFamily(
-              Font(R.font.antonio, FontWeight.Bold),
-          )
-
-          // ---------------------------------------------------------------------------
-          // Blackout palette (day): pure black, bone-white ink, a single amber accent,
-          // watch-lume green for "good" status. Rules instead of boxes wherever the
-          // layout allows; cards are barely lifted off the black.
-          // ---------------------------------------------------------------------------
-          private val Bone = Color(0xFFF5F5F0)
-          private val Amber = Color(0xFFFFB300)
-          private val Lume = Color(0xFFBFFF7A)
-          private val Muted = Color(0xFF7E8794)
-          private val Rule = Color(0xFF1F2630)
-
-          private val BlackoutColors = darkColorScheme(
-              primary = Amber,
-              onPrimary = Color(0xFF000000),
-              primaryContainer = Color(0xFF3D2A00),
-              onPrimaryContainer = Amber,
-              secondary = Amber,
-              onSecondary = Color(0xFF000000),
-              secondaryContainer = Color(0xFF1A1F26),
-              onSecondaryContainer = Bone,
-              tertiary = Lume,
-              onTertiary = Color(0xFF000000),
-              tertiaryContainer = Color(0xFF1E2E10),
-              onTertiaryContainer = Lume,
-              background = Color(0xFF000000),
-              onBackground = Bone,
-              surface = Color(0xFF0B0D10),
-              onSurface = Bone,
-              surfaceVariant = Color(0xFF141920),
-              onSurfaceVariant = Muted,
-              surfaceContainerLowest = Color(0xFF000000),
-              surfaceContainerLow = Color(0xFF0B0D10),
-              surfaceContainer = Color(0xFF0F1216),
-              surfaceContainerHigh = Color(0xFF141920),
-              surfaceContainerHighest = Color(0xFF1A2028),
-              outline = Rule,
-              outlineVariant = Color(0xFF151A21),
-              error = Color(0xFFFF6B61),
-              onError = Color(0xFF000000),
-              // Tonal elevation tints surfaces with this colour; Material's default (primary)
-              // would turn every dialog and raised card amber-brown. Keep elevation neutral.
-              surfaceTint = Color(0xFF9AA4B2),
-          )
-
-          // Night-vision palette: red on black to preserve dark adaptation
-          private val NightColors = darkColorScheme(
-              primary = Color(0xFFFF3B30),
-              onPrimary = Color(0xFF000000),
-              primaryContainer = Color(0xFF3A0A06),
-              onPrimaryContainer = Color(0xFFFF3B30),
-              secondary = Color(0xFFB3251C),
-              onSecondary = Color(0xFF000000),
-              secondaryContainer = Color(0xFF1C0300),
-              onSecondaryContainer = Color(0xFFFF3B30),
-              tertiary = Color(0xFFFF3B30),
-              onTertiary = Color(0xFF000000),
-              tertiaryContainer = Color(0xFF3A0A06),
-              onTertiaryContainer = Color(0xFFFF3B30),
-              background = Color(0xFF000000),
-              onBackground = Color(0xFFFF3B30),
-              surface = Color(0xFF120000),
-              onSurface = Color(0xFFFF3B30),
-              surfaceVariant = Color(0xFF1C0300),
-              onSurfaceVariant = Color(0xFFB3251C),
-              surfaceContainerLowest = Color(0xFF000000),
-              surfaceContainerLow = Color(0xFF0A0000),
-              surfaceContainer = Color(0xFF120000),
-              surfaceContainerHigh = Color(0xFF1C0300),
-              surfaceContainerHighest = Color(0xFF260500),
-              outline = Color(0xFF5A100A),
-              outlineVariant = Color(0xFF3A0A06),
-              error = Color(0xFFFF3B30),
-              onError = Color(0xFF000000),
-          )
-
-          private fun Typography.withFamily(family: FontFamily): Typography = Typography(
-              displayLarge = displayLarge.copy(fontFamily = family),
-              displayMedium = displayMedium.copy(fontFamily = family),
-              displaySmall = displaySmall.copy(fontFamily = family),
-              headlineLarge = headlineLarge.copy(fontFamily = family),
-              headlineMedium = headlineMedium.copy(fontFamily = family),
-              headlineSmall = headlineSmall.copy(fontFamily = family),
-              titleLarge = titleLarge.copy(fontFamily = family),
-              titleMedium = titleMedium.copy(fontFamily = family, fontWeight = FontWeight.SemiBold),
-              titleSmall = titleSmall.copy(fontFamily = family, fontWeight = FontWeight.SemiBold),
-              bodyLarge = bodyLarge.copy(fontFamily = family),
-              bodyMedium = bodyMedium.copy(fontFamily = family),
-              bodySmall = bodySmall.copy(fontFamily = family),
-              labelLarge = labelLarge.copy(fontFamily = family, fontWeight = FontWeight.Medium),
-              labelMedium = labelMedium.copy(fontFamily = family, fontWeight = FontWeight.Medium),
-              labelSmall = labelSmall.copy(fontFamily = family, fontWeight = FontWeight.Medium),
-          )
-
-          private val GridFixTypography = Typography().withFamily(LabelFamily)
-
-          // Equipment corners: near-square. Buttons keep Material's pill shape.
-          private val GridFixShapes = Shapes(
-              extraSmall = RoundedCornerShape(2.dp),
-              small = RoundedCornerShape(2.dp),
-              medium = RoundedCornerShape(4.dp),
-              large = RoundedCornerShape(6.dp),
-              extraLarge = RoundedCornerShape(8.dp),
-          )
+          import androidx.compose.ui.unit.sp
+          import androidx.lifecycle.compose.collectAsStateWithLifecycle
+          import app.gridfix.android.coords.Coordinates
+          import app.gridfix.android.coords.Phonetic
+          import app.gridfix.android.coords.SunMoon
+          import app.gridfix.android.data.AppSettings
+          import app.gridfix.android.data.SettingsRepository
+          import app.gridfix.android.location.CompassTracker
+          import app.gridfix.android.location.FixData
+          import app.gridfix.android.ui.QrDialog
+          import app.gridfix.android.ui.faces.DialPositionFace
+          import app.gridfix.android.ui.faces.Face
+          import app.gridfix.android.ui.faces.GlancePositionFace
+          import app.gridfix.android.ui.faces.FixBars
+          import app.gridfix.android.ui.faces.facePalette
+          import app.gridfix.android.ui.faces.fixColor
+          import app.gridfix.android.ui.faces.fixQuality
+          import app.gridfix.android.ui.faces.fixSummary
+          import app.gridfix.android.ui.faces.northRefLetter
+          import app.gridfix.android.ui.faces.toNorthRef
+          import app.gridfix.android.ui.geoUri
+          import app.gridfix.android.ui.theme.MonoFamily
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import java.util.Calendar
+          import kotlin.math.abs
+          import kotlin.math.roundToInt
 
           @Composable
-          fun GridFixTheme(
-              nightMode: Boolean,
-              content: @Composable () -> Unit,
+          fun PositionScreen(
+              fix: FixData,
+              settings: AppSettings,
+              repo: SettingsRepository,
+              onMark: (() -> Unit)? = null,
           ) {
-              MaterialTheme(
-                  colorScheme = if (nightMode) NightColors else BlackoutColors,
-                  typography = GridFixTypography,
-                  shapes = GridFixShapes,
-                  content = content,
+              val context = LocalContext.current
+              val scope = rememberCoroutineScope()
+              var markedAt by remember { mutableStateOf(0L) }
+              var qrOpen by remember { mutableStateOf(false) }
+
+              // 1 Hz ticker for the clock and fix age
+              val now by produceState(initialValue = System.currentTimeMillis()) {
+                  while (true) {
+                      value = System.currentTimeMillis()
+                      delay(1000)
+                  }
+              }
+
+              // The dial faces are live compasses; the Glance face does not need the sensor.
+              val compass = remember { CompassTracker(context.applicationContext) }
+              DisposableEffect(settings.face) {
+                  if (settings.face != Face.GLANCE) compass.start()
+                  onDispose { compass.stop() }
+              }
+              val compassData by compass.data.collectAsStateWithLifecycle()
+
+              val loc = fix.location
+              val parts = loc?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
+              val palette = facePalette(settings.nightMode)
+
+              // Declination and grid convergence, refreshed when we move ~10 km
+              val declination = remember(
+                  loc?.latitude?.let { (it * 10).toInt() },
+                  loc?.longitude?.let { (it * 10).toInt() },
+              ) {
+                  if (loc == null) 0f else GeomagneticField(
+                      loc.latitude.toFloat(),
+                      loc.longitude.toFloat(),
+                      if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
+                      loc.time,
+                  ).declination
+              }
+              val convergence = if (loc == null) 0f else Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
+
+              // Heading: compass sensor when a dial face is up, GPS course as the fallback while moving
+              val headingTrue: Float? = when {
+                  settings.face != Face.GLANCE && compassData.hasSensor && compassData.hasReading ->
+                      (compassData.azimuthMagnetic + declination + 360f) % 360f
+                  loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f -> (loc.bearing + 360f) % 360f
+                  else -> null
+              }
+              val headingRef = headingTrue?.let { toNorthRef(it, settings.northRef, declination, convergence) }
+              val refLetter = northRefLetter(settings.northRef)
+
+              val elevText = if (loc != null && loc.hasAltitude()) Coordinates.formatAltitude(loc.altitude, settings.units) else "—"
+              val speedText = if (loc != null && loc.hasSpeed()) Coordinates.formatSpeed(loc.speed, settings.units) else "—"
+              val headingText = headingRef?.let { Coordinates.formatAngle(it, settings.angleUnit) + " " + refLetter } ?: "—"
+              val cells = listOf("Elev" to elevText, "Heading" to headingText, "Speed" to speedText)
+              val utmText = loc?.let { Coordinates.formatUtm(Coordinates.utm(it.latitude, it.longitude)) } ?: "—"
+              val dtgText = Coordinates.dtg(now)
+              val accuracyText = if (loc != null && loc.hasAccuracy()) Coordinates.formatAccuracy(loc.accuracy, settings.units) else null
+              val quality = fixQuality(loc, fix.satellitesUsed)
+              val statusLine = when {
+                  loc == null && !fix.gpsEnabled -> "GPS OFF · enable Location in phone settings"
+                  else -> fixSummary(quality, fix.satellitesUsed, accuracyText)
+              }
+              val precisionLabel = "${settings.mgrsDigits}-DIGIT"
+              val cyclePrecision: () -> Unit = {
+                  val next = when (settings.mgrsDigits) {
+                      4 -> 6
+                      6 -> 8
+                      8 -> 10
+                      else -> 4
+                  }
+                  scope.launch { repo.setMgrsDigits(next) }
+              }
+
+              // Light data for the dial faces: local day at the fix, device time zone
+              val sunRow = remember(loc?.latitude?.let { (it * 100).toInt() }, loc?.longitude?.let { (it * 100).toInt() }, now / 600_000) {
+                  if (loc == null) "—" to "—" else {
+                      val cal = Calendar.getInstance()
+                      val y = cal.get(Calendar.YEAR)
+                      val m = cal.get(Calendar.MONTH) + 1
+                      val d = cal.get(Calendar.DAY_OF_MONTH)
+                      val t = SunMoon.sunTimes(y, m, d, loc.latitude, loc.longitude)
+                      ("BMNT ${SunMoon.formatLocal(t.bmnt, y, m, d)} · SR ${SunMoon.formatLocal(t.sunrise, y, m, d)}") to
+                          ("SS ${SunMoon.formatLocal(t.sunset, y, m, d)} · EENT ${SunMoon.formatLocal(t.eent, y, m, d)}")
+                  }
+              }
+              val declText = if (loc == null) "DECL —" else {
+                  val d = declination.roundToInt()
+                  "DECL ${abs(d)}° ${if (declination >= 0f) "E" else "W"}"
+              }
+              val latLonShort = loc?.let { Coordinates.formatLatLon(it.latitude, it.longitude, 0).replace("   ", " ") } ?: "—"
+              val rows = listOf(
+                  Triple(utmText, dtgText, false),
+                  Triple(latLonShort, declText, false),
+                  Triple(sunRow.first, sunRow.second, true),
               )
+
+              BoxWithConstraints(Modifier.fillMaxSize()) {
+                  val viewport = maxHeight
+                  val dialSize = (maxWidth - 30.dp).coerceAtMost(if (settings.face == Face.LENSATIC) 360.dp else 330.dp)
+                  Column(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .verticalScroll(rememberScrollState()),
+                  ) {
+                      // ---- The face ----
+                      when (settings.face) {
+                          Face.GLANCE -> GlancePositionFace(
+                              p = palette,
+                              parts = parts,
+                              acquiring = loc == null,
+                              quality = quality,
+                              statusLine = statusLine,
+                              precisionLabel = precisionLabel,
+                              onCyclePrecision = cyclePrecision,
+                              cells = cells,
+                              utm = utmText,
+                              dtg = dtgText,
+                              minHeight = viewport,
+                          )
+                          else -> DialPositionFace(
+                              p = palette,
+                              style = settings.face,
+                              dialSize = dialSize,
+                              parts = parts,
+                              acquiring = loc == null,
+                              quality = quality,
+                              fixLine = when {
+                                  loc == null -> "ACQUIRING · ${fix.satellitesUsed} SATS"
+                                  accuracyText != null -> "${quality.word} $accuracyText"
+                                  else -> quality.word
+                              },
+                              precisionLabel = precisionLabel,
+                              onCyclePrecision = cyclePrecision,
+                              headingRef = headingRef,
+                              cells = cells,
+                              rows = rows,
+                          )
+                      }
+
+                      // ---- Below the fold: phonetic, MARK, full readouts ----
+                      Column(
+                          Modifier
+                              .fillMaxWidth()
+                              .padding(16.dp),
+                          verticalArrangement = Arrangement.spacedBy(12.dp),
+                      ) {
+                          if (loc == null && !fix.gpsEnabled) {
+                              Text(
+                                  "GPS is off — enable Location in your phone's settings.",
+                                  style = MaterialTheme.typography.bodyMedium,
+                                  color = MaterialTheme.colorScheme.error,
+                              )
+                          }
+
+                          if (loc != null && parts != null && parts.square.isNotEmpty()) {
+                              Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                                  Row(
+                                      Modifier
+                                          .fillMaxWidth()
+                                          .padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                                      verticalAlignment = Alignment.CenterVertically,
+                                  ) {
+                                      Column(Modifier.weight(1f)) {
+                                          Text(
+                                              "PHONETIC",
+                                              style = MaterialTheme.typography.labelSmall,
+                                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                              letterSpacing = 1.2.sp,
+                                          )
+                                          Spacer(Modifier.height(4.dp))
+                                          Text(
+                                              Phonetic.mgrs(parts.full),
+                                              style = MaterialTheme.typography.bodySmall,
+                                              fontFamily = MonoFamily,
+                                              color = MaterialTheme.colorScheme.onSurface,
+                                          )
+                                      }
+                                      IconButton(onClick = { qrOpen = true }) {
+                                          Icon(
+                                              Icons.Outlined.QrCode2,
+                                              contentDescription = "Share as QR code",
+                                              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                          )
+                                      }
+                                  }
+                              }
+                          }
+
+                          // One-tap MARK: timestamped waypoint at the current fix
+                          if (onMark != null) {
+                              Button(
+                                  onClick = {
+                                      onMark()
+                                      markedAt = now
+                                  },
+                                  enabled = loc != null,
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .height(52.dp),
+                                  colors = ButtonDefaults.buttonColors(
+                                      containerColor = MaterialTheme.colorScheme.secondary,
+                                      contentColor = MaterialTheme.colorScheme.onSecondary,
+                                  ),
+                              ) {
+                                  Text(
+                                      if (now - markedAt < 3000) "MARKED — set as Navigate target" else "MARK",
+                                      fontFamily = MonoFamily,
+                                      fontWeight = FontWeight.Bold,
+                                      letterSpacing = 2.sp,
+                                  )
+                              }
+                          }
+
+                          InfoCard(
+                              label = "LAT / LON",
+                              value = loc?.let { Coordinates.formatLatLon(it.latitude, it.longitude, settings.latLonFormat) } ?: "—",
+                              modifier = Modifier.fillMaxWidth(),
+                          )
+                          InfoCard(
+                              label = "UTM",
+                              value = utmText,
+                              modifier = Modifier.fillMaxWidth(),
+                          )
+                          Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                              InfoCard(
+                                  label = "ALTITUDE (GPS)",
+                                  value = elevText,
+                                  modifier = Modifier.weight(1f),
+                              )
+                              InfoCard(
+                                  label = "ACCURACY",
+                                  value = accuracyText ?: "—",
+                                  modifier = Modifier.weight(1f),
+                              )
+                          }
+                          Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                              InfoCard(
+                                  label = "SPEED",
+                                  value = speedText,
+                                  modifier = Modifier.weight(1f),
+                              )
+                              InfoCard(
+                                  label = "COURSE (GPS)",
+                                  value = if (loc != null && loc.hasBearing() && loc.hasSpeed() && loc.speed > 0.5f) {
+                                      "${loc.bearing.roundToInt()}° T"
+                                  } else "—",
+                                  modifier = Modifier.weight(1f),
+                              )
+                          }
+                          Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                              InfoCard(
+                                  label = "DTG ZULU",
+                                  value = dtgText,
+                                  modifier = Modifier.weight(1f),
+                              )
+                              InfoCard(
+                                  label = "FIX AGE",
+                                  value = loc?.let { fixAge(it, now) } ?: "—",
+                                  modifier = Modifier.weight(1f),
+                              )
+                          }
+                          // Fix quality the operator can act on: bars, a word, and which
+                          // MGRS precision the error circle actually supports
+                          Row(
+                              Modifier
+                                  .fillMaxWidth()
+                                  .padding(top = 4.dp),
+                              verticalAlignment = Alignment.CenterVertically,
+                              horizontalArrangement = Arrangement.Center,
+                          ) {
+                              FixBars(quality, palette, height = 16.dp)
+                              Spacer(Modifier.size(10.dp))
+                              Text(
+                                  (if (loc == null) "ACQUIRING" else "${quality.word} FIX") +
+                                      " · ${fix.satellitesUsed} OF ${fix.satellitesVisible} SATS USED" +
+                                      (if (loc != null) " · TRUST ${quality.trustDigits}-DIGIT" else ""),
+                                  style = MaterialTheme.typography.labelSmall,
+                                  color = if (loc == null) MaterialTheme.colorScheme.onSurfaceVariant else fixColor(quality, palette),
+                                  letterSpacing = 1.2.sp,
+                                  maxLines = 1,
+                              )
+                          }
+                          Text(
+                              when {
+                                  loc == null -> "Waiting for a position. Clear sky helps; the count is satellites the receiver is using of those it can hear."
+                                  quality.bars >= 4 -> "Accuracy is the error circle around the fix. This one supports ${quality.trustDigits}-digit grids; finer digits are noise."
+                                  quality.bars >= 2 -> "Usable, but read no finer than ${quality.trustDigits} digits and confirm with terrain association."
+                                  else -> "Do not trust this fix for a grid — move to open sky, wait, and rely on pace count and map."
+                              },
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              textAlign = TextAlign.Center,
+                              modifier = Modifier.fillMaxWidth(),
+                          )
+                      }
+                  }
+              }
+
+              if (qrOpen && loc != null) {
+                  QrDialog(
+                      title = "My position",
+                      payload = geoUri(loc.latitude, loc.longitude, "Position " + Coordinates.dtg(now).take(7)),
+                      caption = parts?.full ?: "",
+                      onDismiss = { qrOpen = false },
+                  )
+              }
+          }
+
+          private fun fixAge(loc: Location, now: Long): String {
+              val s = ((now - loc.time) / 1000).coerceAtLeast(0)
+              return when {
+                  s < 60 -> "${s}s"
+                  s < 3600 -> "${s / 60}m ${s % 60}s"
+                  else -> ">1h"
+              }
+          }
+
+          @Composable
+          private fun InfoCard(label: String, value: String, modifier: Modifier = Modifier) {
+              Card(
+                  modifier = modifier,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+              ) {
+                  Column(Modifier.padding(14.dp)) {
+                      Text(
+                          label,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          letterSpacing = 1.2.sp,
+                      )
+                      Spacer(Modifier.height(6.dp))
+                      Text(
+                          value,
+                          style = MaterialTheme.typography.titleMedium,
+                          fontFamily = MonoFamily,
+                          color = MaterialTheme.colorScheme.onSurface,
+                      )
+                  }
+              }
           }
           EOF_GRIDFIX
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.9.10 (deck polish) source from bootstrap workflow'
+            git -c user.name='GridFix CI' -c user.email='ci@gridfix.local' commit -qm 'Sync v0.9.11 (fix quality) source from bootstrap workflow'
             git push origin HEAD:main
           fi
 
