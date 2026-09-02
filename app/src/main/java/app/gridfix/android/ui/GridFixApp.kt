@@ -233,7 +233,7 @@ fun GridFixApp() {
     // the phone's own auto-rotate says. The activity handles the config change
     // itself (manifest configChanges), so nothing is recreated.
     LaunchedEffect(settings.orientation) {
-        context.findActivity()?.requestedOrientation = ScreenOrientation.toActivityInfo(settings.orientation)
+        context.hostActivity()?.requestedOrientation = ScreenOrientation.toActivityInfo(settings.orientation)
     }
     val landscape = isLandscape()
 

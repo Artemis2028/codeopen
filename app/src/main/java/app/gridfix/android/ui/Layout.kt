@@ -34,7 +34,8 @@ object ScreenOrientation {
 fun isLandscape(): Boolean =
     LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-fun Context.findActivity(): Activity? {
+/** The Activity hosting this context (PaywallScreen has its own private finder). */
+fun Context.hostActivity(): Activity? {
     var c: Context = this
     while (c is ContextWrapper) {
         if (c is Activity) return c

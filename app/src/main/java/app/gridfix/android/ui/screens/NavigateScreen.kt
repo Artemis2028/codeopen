@@ -248,9 +248,11 @@ fun NavigateScreen(
     val steerLine = "HDG $headingText · ${steerText(deviation, settings.angleUnit)}"
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
+        // Read here: the constraints scope is not reachable from inside the Column below
+        val viewport = maxHeight
         // 16 dp of padding each side; the dial must fit inside it
         val dialSize = if (landscape) {
-            (maxHeight - 40.dp).coerceIn(160.dp, 300.dp)
+            (viewport - 40.dp).coerceIn(160.dp, 300.dp)
         } else {
             (maxWidth - 62.dp).coerceAtMost(if (settings.face == Face.LENSATIC) 360.dp else 330.dp)
         }
@@ -268,7 +270,7 @@ fun NavigateScreen(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .heightIn(min = maxHeight - 32.dp),
+                        .heightIn(min = viewport - 32.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     CompositionLocalProvider(LocalDensity provides faceDensity) {
