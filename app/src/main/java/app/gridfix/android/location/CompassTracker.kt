@@ -26,6 +26,9 @@ data class CompassData(
  */
 class CompassTracker(context: Context) : SensorEventListener {
 
+    private val appContext = context.applicationContext
+    private val remapped = FloatArray(9)
+
     private val sensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotationSensor: Sensor? =
@@ -56,7 +59,21 @@ class CompassTracker(context: Context) : SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
         SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-        SensorManager.getOrientation(rotationMatrix, orientationAngles)
+        // The raw azimuth is the device's natural "up" edge. Remap to the current
+        // display rotation so a landscape phone (or landscape-natural tablet)
+        // does not read 90 or 180 degrees off.
+        val rotation = runCatching {
+            (appContext.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager)
+                .defaultDisplay.rotation
+        }.getOrDefault(android.view.Surface.ROTATION_0)
+        val (ax, ay) = when (rotation) {
+            android.view.Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
+            android.view.Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
+            android.view.Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
+            else -> SensorManager.AXIS_X to SensorManager.AXIS_Y
+        }
+        SensorManager.remapCoordinateSystem(rotationMatrix, ax, ay, remapped)
+        SensorManager.getOrientation(remapped, orientationAngles)
         val azimuth = Math.toDegrees(orientationAngles[0].toDouble())
         val rad = Math.toRadians(azimuth)
 

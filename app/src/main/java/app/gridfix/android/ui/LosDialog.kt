@@ -286,13 +286,30 @@ fun LosDialog(
                 result?.let { r ->
                     val dist = Coordinates.formatDistance(r.profile.totalM, settings.units)
                     if (r.visible) {
+                        // DEM cells are ~19 m and a few metres in error; a sight line that
+                        // only just clears a crest deserves a warning, not a green light.
+                        val marginal = !r.minClearanceM.isNaN() && r.minClearanceM < 5f
                         Text(
-                            "VISIBLE — $dist",
+                            (if (marginal) "MARGINAL — " else "VISIBLE — ") + dist,
                             style = MaterialTheme.typography.titleMedium,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = if (marginal) MaterialTheme.colorScheme.tertiary
+                            else MaterialTheme.colorScheme.primary,
                         )
+                        if (!r.minClearanceM.isNaN()) {
+                            Text(
+                                String.format(
+                                    Locale.US,
+                                    "Clears terrain by %.0f m at %s%s",
+                                    r.minClearanceM,
+                                    Coordinates.formatDistance(r.minClearanceDistM, settings.units),
+                                    if (marginal) " — verify on the ground" else "",
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
                     } else {
                         Text(
                             "MASKED — $dist",

@@ -146,6 +146,17 @@ fun RayFixDialog(
             q2.lat, q2.lon, trueBearing(q2, a2),
         )
     }
+    // Angle of cut between the two rays: a fix is only as good as its geometry.
+    // Doctrine wants roughly 30 to 150 degrees; outside that, small compass
+    // errors move the fix a long way.
+    val cutAngle = run {
+        val a1 = az1.toFloatOrNull() ?: return@run null
+        val a2 = az2.toFloatOrNull() ?: return@run null
+        val q1 = p1 ?: return@run null
+        val q2 = p2 ?: return@run null
+        val d = kotlin.math.abs(trueBearing(q1, a1) - trueBearing(q2, a2)) % 360.0
+        if (d > 180.0) 360.0 - d else d
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -186,13 +197,25 @@ fun RayFixDialog(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 if (fix != null) {
+                    // 8-digit: a compass fix is a 10 m answer at best, never a 1 m one
                     Text(
-                        (Coordinates.mgrs(fix.lat, fix.lon, 10)?.full ?: "—"),
+                        (Coordinates.mgrs(fix.lat, fix.lon, 8)?.full ?: "—"),
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
+                    if (cutAngle != null && (cutAngle < 30.0 || cutAngle > 150.0)) {
+                        Text(
+                            String.format(
+                                java.util.Locale.US,
+                                "Poor angle of cut (%.0f°) — pick points that cross closer to 90°",
+                                cutAngle,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Text(
                         "Ranges: " + Coordinates.formatDistance(fix.dist1.toFloat(), settings.units) +
                             " / " + Coordinates.formatDistance(fix.dist2.toFloat(), settings.units),

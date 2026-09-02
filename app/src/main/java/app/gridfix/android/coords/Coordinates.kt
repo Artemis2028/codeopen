@@ -36,17 +36,30 @@ object Coordinates {
             8 -> GridType.TEN_METER
             else -> GridType.METER
         }
-        val full = mgrs.coordinate(gridType).uppercase(Locale.US)
-        val match = Regex("^(\\d{1,2}[A-Z])([A-Z]{2})(\\d*)$").find(full)
+        // The library formats with the device locale; Arabic/Persian/Bengali phones
+        // would get native digits, which nothing downstream can read. Force ASCII.
+        val full = asciiDigits(mgrs.coordinate(gridType)).uppercase(Locale.US)
+        val match = Regex("^([0-9]{1,2}[A-Z])([A-Z]{2})([0-9]*)$").find(full)
         if (match != null) {
             val (gzd, square, num) = match.destructured
             val half = num.length / 2
-            MgrsParts(gzd, square, num.substring(0, half), num.substring(half), full)
+            val e = num.substring(0, half)
+            val n = num.substring(half)
+            // Canonical written form keeps the group breaks: "18T VP 3808 9755"
+            val spaced = if (num.isEmpty()) "$gzd $square" else "$gzd $square $e $n"
+            MgrsParts(gzd, square, e, n, spaced)
         } else {
             // Polar regions (no zone number) or unexpected shape: show as-is
             MgrsParts(full, "", "", "", full)
         }
     }.getOrNull()
+
+    private fun asciiDigits(s: String): String = buildString(s.length) {
+        for (c in s) {
+            val d = Character.digit(c, 10)
+            append(if (d in 0..9) '0' + d else c)
+        }
+    }
 
     data class UtmCoord(val zone: Int, val hemisphere: Char, val easting: Long, val northing: Long)
 
@@ -111,15 +124,18 @@ object Coordinates {
             return when (format) {
                 0 -> String.format(Locale.US, "%.5f° %c", v, hemi)
                 2 -> {
-                    val d = v.toInt()
-                    val mFull = (v - d) * 60.0
-                    val mm = mFull.toInt()
-                    val s = (mFull - mm) * 60.0
+                    // work in tenths of arc-seconds so carries propagate cleanly
+                    val tenths = (v * 36000.0).roundToLong()
+                    val d = tenths / 36000
+                    val mm = (tenths % 36000) / 600
+                    val s = (tenths % 600) / 10.0
                     String.format(Locale.US, "%d° %02d' %04.1f\" %c", d, mm, s, hemi)
                 }
                 else -> {
-                    val d = v.toInt()
-                    val mFull = (v - d) * 60.0
+                    // work in thousandths of minutes
+                    val milli = (v * 60000.0).roundToLong()
+                    val d = milli / 60000
+                    val mFull = (milli % 60000) / 1000.0
                     String.format(Locale.US, "%d° %06.3f' %c", d, mFull, hemi)
                 }
             }
@@ -245,16 +261,30 @@ object Coordinates {
 
     /** Format an angle in degrees (0..360) as degrees or NATO mils per the angle-unit setting. */
     fun formatAngle(degrees: Float, angleUnit: Int): String = when (angleUnit) {
-        1 -> String.format(Locale.US, "%.0f mils", (degrees * 6400f / 360f + 6400f) % 6400f)
-        else -> String.format(Locale.US, "%03.0f°", (degrees + 360f) % 360f)
+        1 -> {
+            val mils = Math.round(degrees * 6400.0 / 360.0)
+            String.format(Locale.US, "%d mils", ((mils % 6400) + 6400) % 6400)
+        }
+        else -> {
+            val deg = Math.round(degrees.toDouble())
+            String.format(Locale.US, "%03d°", ((deg % 360) + 360) % 360)
+        }
     }
 
     /** Parse an MGRS string (spaces allowed, case-insensitive) to lat/lon. Null if invalid. */
     fun parseMgrs(text: String): Pair<Double, Double>? = runCatching {
-        val cleaned = text.trim().uppercase(Locale.US).replace(" ", "")
+        val cleaned = asciiDigits(text.trim()).uppercase(Locale.US).replace(" ", "")
         if (cleaned.isEmpty()) return null
-        val point = MGRS.parse(cleaned).toPoint()
-        point.latitude to point.longitude
+        val mgrs = MGRS.parse(cleaned)
+        // The library lands on the SW corner of the designated cell. Aim at the
+        // centre instead: a 6-digit grid means "somewhere in this 100 m square",
+        // and re-formatting a corner point can fall into the neighbouring cell.
+        val digits = cleaned.dropWhile { it.isDigit() }.drop(1).drop(2).count { it.isDigit() }
+        val cell = if (digits == 0) 100000.0 else 10.0.pow(5 - digits / 2)
+        val utm = mgrs.toUTM()
+        val north = utm.hemisphere.toString().uppercase(Locale.US).startsWith("N")
+        val ll = utmInverse(utm.easting + cell / 2.0, utm.northing + cell / 2.0, utm.zone, north)
+        ll[0] to ll[1]
     }.getOrNull()
 
     // ---- Grid-overlay math: forced-zone UTM forward and the Snyder-series inverse ----

@@ -740,8 +740,10 @@ fun GridFixApp() {
             val target = waypoints.firstOrNull { it.id == c.waypointIds[c.nextIndex] }
                 ?: return@LaunchedEffect
             val nav = Coordinates.navInfo(loc.latitude, loc.longitude, target.lat, target.lon)
-            val accuracyOk = !loc.hasAccuracy() || loc.accuracy < 40f
-            if (nav.distanceMeters < 25f && accuracyOk) {
+            // "Inside 25 m" has to mean it: the fix's own error must fit inside the ring,
+            // and a fix with no accuracy estimate at all cannot score a point.
+            val acc = if (loc.hasAccuracy()) loc.accuracy else Float.POSITIVE_INFINITY
+            if (nav.distanceMeters + acc < 25f) {
                 courseRepo.markFound(System.currentTimeMillis())
                 buzz(context)
                 if (c.foundAt.size + 1 >= c.waypointIds.size) {

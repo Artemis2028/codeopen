@@ -170,15 +170,27 @@ object SunMoon {
         val rises = ArrayList<Double>()
         val sets = ArrayList<Double>()
         val std = 0.125   // net standard altitude for the moon (parallax vs refraction)
-        var prev = moonAltitude(julianDay(y, m, d, 0.0), lat, lon) - std
+        // Scan the LOCAL calendar day (its midnight expressed in UT hours of date d),
+        // not 00:00-24:00 UT — otherwise a phone in UTC+4 or UTC-7 reports the
+        // neighbouring day's moonrise, or misses tonight's entirely.
+        val startUt = -localOffsetHours(y, m, d)
+        var prev = moonAltitude(julianDay(y, m, d, startUt), lat, lon) - std
         for (i in 1..144) {
-            val tHour = i * 10.0 / 60.0
+            val tHour = startUt + i * 10.0 / 60.0
             val cur = moonAltitude(julianDay(y, m, d, tHour), lat, lon) - std
             if (prev <= 0 && cur > 0) rises.add(tHour - (10.0 / 60.0) * cur / (cur - prev))
             if (prev > 0 && cur <= 0) sets.add(tHour - (10.0 / 60.0) * cur / (cur - prev))
             prev = cur
         }
         return MoonInfo(name, illum, rises, sets)
+    }
+
+    /** The device zone's offset from UT at local midnight of the given date, in hours. */
+    private fun localOffsetHours(y: Int, m: Int, d: Int): Double {
+        val cal = Calendar.getInstance(TimeZone.getDefault())
+        cal.clear()
+        cal.set(y, m - 1, d, 0, 0, 0)
+        return TimeZone.getDefault().getOffset(cal.timeInMillis) / 3600000.0
     }
 
     // ---------------- formatting ----------------

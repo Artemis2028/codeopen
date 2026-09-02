@@ -155,7 +155,15 @@ class ContourOverlay(
                 val tc = cached(key)
                 if (tc == null) {
                     if (shouldStart(key)) {
-                        scope.launch(Dispatchers.Default) { compute(tx, ty, interval, key) }
+                        scope.launch(Dispatchers.Default) {
+                            // A throwing compute must never kill the app or leave the
+                            // key stuck in flight; treat it as a failed tile and move on.
+                            try {
+                                compute(tx, ty, interval, key)
+                            } catch (e: Exception) {
+                                finished(key, ok = false)
+                            }
+                        }
                     }
                     continue
                 }

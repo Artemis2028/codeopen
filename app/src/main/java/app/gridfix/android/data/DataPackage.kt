@@ -113,6 +113,8 @@ object DataPackage {
         val la = lat ?: return null
         val lo = lon ?: return null
         if (la == 0.0 && lo == 0.0) return null
+        // Routes (b-m-r), drawings (u-d-*) and chat/position reports are not markers
+        if (type.startsWith("b-m-r") || type.startsWith("u-d-") || type.startsWith("b-t-")) return null
         WaypointDraft(
             name = callsign.ifBlank { uid.ifBlank { "ATAK point" } }.take(30),
             lat = la,
@@ -170,11 +172,13 @@ object DataPackage {
         waypoints.forEachIndexed { i, w ->
             val entryName = "cot/gridfix-$i.cot"
             entries.add(entryName)
-            val uid = "GRIDFIX-${w.id.take(12)}-$i"
+            // Stable per waypoint (no list index): a re-sent package updates the
+            // same marker in ATAK instead of creating a duplicate.
+            val uid = "GRIDFIX-" + w.id
             val cot = buildString {
                 append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
                 append("<event version=\"2.0\" uid=\"").append(esc(uid))
-                append("\" type=\"").append(cotType(w.affiliation))
+                append("\" type=\"").append(if (w.kind == KIND_UNIT) cotType(w.affiliation) else "b-m-p-w")
                 append("\" time=\"").append(time)
                 append("\" start=\"").append(time)
                 append("\" stale=\"").append(stale)

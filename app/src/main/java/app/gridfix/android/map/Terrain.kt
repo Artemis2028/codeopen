@@ -142,6 +142,10 @@ object Terrain {
         val blockLat: Double,
         val blockLon: Double,
         val clearObserverHeight: Float, // min observer height (m AGL) that would see the target
+        /** Smallest gap between the sight line and terrain (m); the margin of a VISIBLE result. */
+        val minClearanceM: Float,
+        /** Along-path distance (m) of that tightest point. */
+        val minClearanceDistM: Float,
         /** Sight-line height (curvature-corrected frame) per sample, for drawing. */
         val sightLine: FloatArray,
         /** Terrain in the same curvature-corrected frame, for drawing. */
@@ -309,10 +313,17 @@ object Terrain {
         val clearance = 0.5f
         var blockIdx = -1
         var required = 0f
+        var minGap = Float.POSITIVE_INFINITY
+        var minGapDist = 0f
         for (i in 0 until n) {
             val t = if (totalD == 0.0) 0f else (prof.distancesM[i] / prof.totalM)
             sight[i] = a + (b - a) * t
             if (i in 1 until n - 1 && !eff[i].isNaN()) {
+                val gap = sight[i] - eff[i]
+                if (gap < minGap) {
+                    minGap = gap
+                    minGapDist = prof.distancesM[i]
+                }
                 if (eff[i] + clearance > sight[i] && blockIdx == -1) {
                     blockIdx = i
                 }
@@ -337,6 +348,8 @@ object Terrain {
             blockLat = obsLat + (tgtLat - obsLat) * blockT,
             blockLon = obsLon + (tgtLon - obsLon) * blockT,
             clearObserverHeight = max(required, 0f),
+            minClearanceM = if (minGap.isFinite()) minGap else Float.NaN,
+            minClearanceDistM = minGapDist,
             sightLine = sight,
             effectiveTerrain = eff,
         )

@@ -90,25 +90,58 @@ object Elevation {
         memory[key] = bmp
     }
 
+    // Tiles that failed to download recently: skip them for a while instead of
+    // re-opening a connection per sample (a viewshed offline is ~100k samples).
+    private val failedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private const val RETRY_AFTER_MS = 60_000L
+
     private fun tileBitmap(context: Context, z: Int, x: Int, y: Int): Bitmap? {
         if (x < 0 || y < 0 || x >= (1 shl z) || y >= (1 shl z)) return null
         val key = "$z/$x/$y"
         cached(key)?.let { return it }
         val file = File(cacheDir(context), "${z}_${x}_$y.png")
         if (!file.exists()) {
-            runCatching {
+            val lastFail = failedAt[key]
+            if (lastFail != null && System.currentTimeMillis() - lastFail < RETRY_AFTER_MS) return null
+            val ok = runCatching {
                 val url = URL("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$z/$x/$y.png")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 8000
                 conn.readTimeout = 8000
                 conn.setRequestProperty("User-Agent", "MGRS GPS/" + BuildConfig.VERSION_NAME + " (rafaelm2002@gmail.com)")
-                conn.inputStream.use { input ->
-                    val tmp = File(file.parentFile, file.name + ".tmp")
-                    tmp.outputStream().use { out -> input.copyTo(out) }
-                    tmp.renameTo(file)
+                try {
+                    // Only a real PNG tile gets cached: a captive-portal page or an
+                    // error body must never be stored as elevation data.
+                    if (conn.responseCode != 200) return@runCatching false
+                    val type = conn.contentType ?: ""
+                    if (!type.startsWith("image/png")) return@runCatching false
+                    // Unique temp name: concurrent callers (crosshair, contours, viewshed)
+                    // must not publish each other's half-written files.
+                    val tmp = File.createTempFile("dem", ".part", file.parentFile)
+                    conn.inputStream.use { input ->
+                        tmp.outputStream().use { out -> input.copyTo(out) }
+                    }
+                    val probe = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(tmp.absolutePath, probe)
+                    if (probe.outWidth != 256 || probe.outHeight != 256) {
+                        tmp.delete()
+                        return@runCatching false
+                    }
+                    if (!tmp.renameTo(file)) {
+                        tmp.delete()
+                        // another caller won the race; use whatever it published
+                        return@runCatching file.exists()
+                    }
+                    true
+                } finally {
+                    conn.disconnect()
                 }
-                conn.disconnect()
-            }.getOrElse { return null }
+            }.getOrDefault(false)
+            if (!ok) {
+                failedAt[key] = System.currentTimeMillis()
+                return null
+            }
+            failedAt.remove(key)
         }
         val bmp = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
             ?: run {

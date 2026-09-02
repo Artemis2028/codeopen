@@ -334,6 +334,24 @@ fun MapScreen(
 
             androidx.compose.ui.viewinterop.AndroidView(
                 modifier = Modifier.fillMaxSize(),
+                onRelease = { view ->
+                    // Runs for the exact MapView leaving the composition. When the
+                    // layer key changes, the new map may already be in the holder —
+                    // never detach or null that one.
+                    view.onDetach()
+                    if (holder.map === view) {
+                        holder.map = null
+                        holder.grid = null
+                        holder.cm = null
+                        holder.tracks = null
+                        holder.hillshade = null
+                        holder.contours = null
+                        holder.viewshed = null
+                        holder.appliedLayer = ""
+                        holder.appliedNight = null
+                        holder.appliedGrid = null
+                    }
+                },
                 factory = { ctx ->
                     val map = MapView(ctx)
                     map.setMultiTouchControls(true)
@@ -468,6 +486,9 @@ fun MapScreen(
                         loadingLineColor = android.graphics.Color.TRANSPARENT
                         isEnabled = false
                     }
+                    // A second provider does not know the map's redraw handler by itself;
+                    // without this, finished hillshade tiles wait for the next unrelated redraw.
+                    runCatching { hs.tileProvider.tileRequestCompleteHandlers.add(map.tileRequestCompleteHandler) }
                     holder.hillshade = hs
                     map.overlays.add(1, hs)   // under the grid; events overlay stays first
                     // Contours from cached elevation, drawn above shading but under the grid
@@ -598,17 +619,7 @@ fun MapScreen(
                 lifecycleOwner.lifecycle.addObserver(observer)
                 onDispose {
                     lifecycleOwner.lifecycle.removeObserver(observer)
-                    holder.map?.onDetach()
-                    holder.map = null
-                    holder.grid = null
-                    holder.cm = null
-                    holder.tracks = null
-                    holder.hillshade = null
-                    holder.contours = null
-                    holder.viewshed = null
-                    holder.appliedLayer = ""
-                    holder.appliedNight = null
-                    holder.appliedGrid = null
+                    // MapView teardown happens in AndroidView(onRelease) for the exact view
                 }
             }
 
@@ -775,10 +786,21 @@ fun MapScreen(
                                         val cur = editPts.getOrNull(idx) ?: return@detectDragGestures
                                         val sp = android.graphics.Point()
                                         toScreenPoint(m, m.projection, GeoPoint(cur.lat, cur.lon), sp)
-                                        val ng = m.projection.fromPixels(
-                                            (sp.x + dragAmount.x).toInt(),
-                                            (sp.y + dragAmount.y).toInt(),
-                                        )
+                                        var tx = sp.x + dragAmount.x
+                                        var ty = sp.y + dragAmount.y
+                                        // toScreenPoint rotated by the map orientation about the
+                                        // view centre; fromPixels expects unrotated coordinates.
+                                        val deg = m.mapOrientation
+                                        if (deg != 0f) {
+                                            val rad = Math.toRadians(-deg.toDouble())
+                                            val cx = m.width / 2.0
+                                            val cy = m.height / 2.0
+                                            val dx = tx - cx
+                                            val dy = ty - cy
+                                            tx = (cx + dx * Math.cos(rad) - dy * Math.sin(rad)).toFloat()
+                                            ty = (cy + dx * Math.sin(rad) + dy * Math.cos(rad)).toFloat()
+                                        }
+                                        val ng = m.projection.fromPixels(tx.toInt(), ty.toInt())
                                         editPts = editPts.toMutableList().also {
                                             it[idx] = GeoVertex(ng.latitude, ng.longitude)
                                         }
@@ -855,7 +877,8 @@ fun MapScreen(
                     iconRotation = orientation,
                 ) {
                     holder.map?.let { m ->
-                        m.controller.animateTo(m.mapCenter, m.zoomLevelDouble, 400L, 0f)
+                        m.mapOrientation = 0f
+                        m.invalidate()
                     }
                     cameraTick++
                 }
@@ -2166,6 +2189,7 @@ private fun listMbtiles(context: Context): List<String> =
  */
 private suspend fun importMbtiles(context: Context, uri: Uri): Pair<String?, String> =
     withContext(Dispatchers.IO) {
+        var copied: File? = null
         try {
             var display = "imported.mbtiles"
             context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -2183,6 +2207,7 @@ private suspend fun importMbtiles(context: Context, uri: Uri): Pair<String?, Str
                 target = File(dir, name.removeSuffix(".mbtiles") + "-$counter.mbtiles")
                 counter++
             }
+            copied = target
             val input = context.contentResolver.openInputStream(uri)
                 ?: return@withContext null to "Couldn't open that file"
             input.use { stream ->
@@ -2213,6 +2238,8 @@ private suspend fun importMbtiles(context: Context, uri: Uri): Pair<String?, Str
             }
             target.name to "Imported ${target.name}"
         } catch (e: Exception) {
+            // A copy that never validated must not linger as a selectable "layer"
+            runCatching { copied?.delete() }
             null to "Import failed: ${e.message ?: "unknown error"}"
         }
     }
