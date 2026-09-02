@@ -18,7 +18,17 @@ private val Context.wpStore by preferencesDataStore(
     corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
 )
 
-const val DEFAULT_FOLDER = "Waypoints"
+const val DEFAULT_FOLDER = "Base"
+
+/**
+ * Folder names as stored. Before 0.9.9 waypoints defaulted to "Waypoints" and drawn
+ * graphics to "Graphics"; both collapse into the one base folder that now holds
+ * waypoints, graphics and tracks together, so one eye switch clears the map.
+ */
+fun canonicalFolder(raw: String?): String = when (raw?.trim().orEmpty()) {
+    "", "Waypoints", "Graphics" -> DEFAULT_FOLDER
+    else -> raw!!.trim()
+}
 const val DEFAULT_SYMBOL = "flag"
 
 data class Waypoint(
@@ -78,8 +88,8 @@ class WaypointRepository(private val context: Context) {
     }
 
     suspend fun addFolder(name: String) {
-        val clean = name.trim()
-        if (clean.isEmpty()) return
+        val clean = canonicalFolder(name)
+        if (name.isBlank()) return
         context.wpStore.edit { p ->
             p[foldersKey] = encodeFolders(
                 upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), clean, null)
@@ -105,7 +115,7 @@ class WaypointRepository(private val context: Context) {
                 lat = draft.lat,
                 lon = draft.lon,
                 createdAt = nowMillis,
-                folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                folder = canonicalFolder(draft.folder),
                 symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                 affiliation = draft.affiliation,
                 echelon = draft.echelon,
@@ -131,14 +141,14 @@ class WaypointRepository(private val context: Context) {
             val current = decode(p[listKey] ?: "[]")
             var folders = decodeFolders(p[foldersKey] ?: "[]")
             val added = drafts.map { draft ->
-                folders = upsertFolder(folders, draft.folder.ifBlank { DEFAULT_FOLDER }, null)
+                folders = upsertFolder(folders, canonicalFolder(draft.folder), null)
                 Waypoint(
                     id = UUID.randomUUID().toString(),
                     name = draft.name,
                     lat = draft.lat,
                     lon = draft.lon,
                     createdAt = nowMillis,
-                    folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                    folder = canonicalFolder(draft.folder),
                     symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                     affiliation = draft.affiliation,
                     echelon = draft.echelon,
@@ -183,7 +193,7 @@ class WaypointRepository(private val context: Context) {
                         name = draft.name,
                         lat = draft.lat,
                         lon = draft.lon,
-                        folder = draft.folder.ifBlank { DEFAULT_FOLDER },
+                        folder = canonicalFolder(draft.folder),
                         symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                         affiliation = draft.affiliation,
                         echelon = draft.echelon,
@@ -196,7 +206,7 @@ class WaypointRepository(private val context: Context) {
             p[foldersKey] = encodeFolders(
                 upsertFolder(
                     decodeFolders(p[foldersKey] ?: "[]"),
-                    draft.folder.ifBlank { DEFAULT_FOLDER },
+                    canonicalFolder(draft.folder),
                     null,
                 )
             )
@@ -230,7 +240,7 @@ class WaypointRepository(private val context: Context) {
                         lat = o.getDouble("lat"),
                         lon = o.getDouble("lon"),
                         createdAt = o.optLong("createdAt"),
-                        folder = o.optString("folder", DEFAULT_FOLDER),
+                        folder = canonicalFolder(o.optString("folder", DEFAULT_FOLDER)),
                         symbol = o.optString("symbol", DEFAULT_SYMBOL),
                         affiliation = o.optString("affiliation", "none"),
                         echelon = o.optString("echelon", ""),
@@ -262,7 +272,9 @@ class WaypointRepository(private val context: Context) {
         buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                add(FolderInfo(o.getString("name"), o.optBoolean("visible", true)))
+                val name = canonicalFolder(o.getString("name"))
+                // legacy "Waypoints" + "Graphics" both map to the base folder: keep one entry
+                if (none { it.name == name }) add(FolderInfo(name, o.optBoolean("visible", true)))
             }
         }
     }.getOrDefault(emptyList())

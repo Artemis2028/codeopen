@@ -259,6 +259,11 @@ class MgrsGridOverlay(private val density: Float) : Overlay() {
         if (visibleW >= 72f * density) {
             gp.setCoords((cs + cn) / 2.0, (cw + ce) / 2.0)
             proj.toPixels(gp, pt)
+            // The crosshair readout already names the zone under it; a label there would
+            // sit on top of the crosshair. Zone boundaries in view still get theirs.
+            val nearCrosshair = abs(pt.x - canvas.width / 2f) < 44f * density &&
+                abs(pt.y - canvas.height / 2f) < 44f * density
+            if (nearCrosshair) return
             val size = 15f * density
             textFill.textSize = size
             textHalo.textSize = size

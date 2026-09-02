@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FileDownload
@@ -112,6 +113,7 @@ fun WaypointsScreen(
     viewedTrackId: String?,
     onViewTrack: (String?) -> Unit,
     onDeleteTrack: (String) -> Unit,
+    onMoveTrack: (id: String, folder: String) -> Unit = { _, _ -> },
     onBacktrackTrack: (TrackInfo) -> Unit,
     onShowOnMap: (Waypoint) -> Unit,
     onShowGraphicOnMap: (TacGraphic) -> Unit,
@@ -187,14 +189,11 @@ fun WaypointsScreen(
         }
     }
 
-    // ---- Cards view: one row of filter tabs, then distance-sorted cards ----
+    // ---- Cards view: ALL or one folder; each shows its WAYPOINTS / GRAPHICS / TRACKS ----
     var filter by remember { mutableStateOf(FILTER_ALL) }
+    var moveTrackCandidate by remember { mutableStateOf<TrackInfo?>(null) }
     val folderNames = folders.map { it.name }
-    val activeFilter = when {
-        filter == FILTER_ALL || filter == FILTER_TRACKS || filter == FILTER_GRAPHICS -> filter
-        filter in folderNames -> filter
-        else -> FILTER_ALL
-    }
+    val activeFilter = if (filter == FILTER_ALL || filter in folderNames) filter else FILTER_ALL
     val visibleFolders = folders.filter { it.visible }.map { it.name }.toSet()
     val declination = remember(
         loc?.latitude?.let { (it * 10).toInt() },
@@ -211,16 +210,19 @@ fun WaypointsScreen(
     val refLetter = northRefLetter(settings.northRef)
     fun distanceTo(w: Waypoint): Float =
         if (loc == null) Float.MAX_VALUE else Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon).distanceMeters
-    val listed: List<Waypoint> = when (activeFilter) {
-        FILTER_ALL -> waypoints.filter { it.folder in visibleFolders || it.folder !in folderNames }
-        FILTER_TRACKS, FILTER_GRAPHICS -> emptyList()
-        else -> byFolder[activeFilter].orEmpty()
-    }.let { list -> if (loc != null) list.sortedBy { distanceTo(it) } else list }
     val currentFolder = folders.firstOrNull { it.name == activeFilter }
+    val listed: List<Waypoint> = (
+        if (currentFolder == null) waypoints.filter { it.folder in visibleFolders || it.folder !in folderNames }
+        else byFolder[currentFolder.name].orEmpty()
+        ).let { list -> if (loc != null) list.sortedBy { distanceTo(it) } else list }
+    val listedGraphics: List<TacGraphic> =
+        if (currentFolder == null) graphics else graphicsByFolder[currentFolder.name].orEmpty()
+    val listedTracks: List<TrackInfo> =
+        if (currentFolder == null) tracks else tracks.filter { it.folder == currentFolder.name }
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            // Filter tabs
+            // Folder tabs
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -232,29 +234,24 @@ fun WaypointsScreen(
                 folders.forEach { f ->
                     FilterTab(f.name, activeFilter == f.name, dim = !f.visible) { filter = f.name }
                 }
-                if (tracks.isNotEmpty()) FilterTab("Tracks", activeFilter == FILTER_TRACKS) { filter = FILTER_TRACKS }
-                if (graphics.isNotEmpty()) FilterTab("Graphics", activeFilter == FILTER_GRAPHICS) { filter = FILTER_GRAPHICS }
-                FilterTab("+ Folder", false) { newFolderOpen = true }
+                FilterTab("Folder", false, icon = Icons.Outlined.CreateNewFolder) { newFolderOpen = true }
             }
 
-            // Caption line: what is listed, and the folder's map visibility
+            // Caption: what is listed; the folder's one eye switch for the map; import / export
             Row(
                 Modifier
                     .fillMaxWidth()
                     .padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val caption = when (activeFilter) {
-                    FILTER_ALL -> if (loc != null) "Sorted by distance · ${listed.size} waypoints" else "${listed.size} waypoints"
-                    FILTER_TRACKS -> "${tracks.size} tracks"
-                    FILTER_GRAPHICS -> "${graphics.size} graphics"
-                    else -> {
-                        val g = graphicsByFolder[activeFilter].orEmpty().size
-                        (if (loc != null) "By distance · " else "") + "${listed.size} waypoints" + (if (g > 0) " · $g graphics" else "")
-                    }
+                val parts = buildList {
+                    if (currentFolder == null && loc != null && listed.isNotEmpty()) add("By distance")
+                    add("${listed.size} waypoints")
+                    if (listedGraphics.isNotEmpty()) add("${listedGraphics.size} graphics")
+                    if (listedTracks.isNotEmpty()) add("${listedTracks.size} tracks")
                 }
                 Text(
-                    caption.uppercase(Locale.US),
+                    parts.joinToString(" · ").uppercase(Locale.US),
                     fontFamily = LabelFamily,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
@@ -267,7 +264,7 @@ fun WaypointsScreen(
                     IconButton(onClick = { onSetFolderVisible(f.name, !f.visible) }) {
                         Icon(
                             if (f.visible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            contentDescription = if (f.visible) "Hide folder on map" else "Show folder on map",
+                            contentDescription = if (f.visible) "Hide this folder on the map" else "Show this folder on the map",
                             tint = if (f.visible) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -317,105 +314,81 @@ fun WaypointsScreen(
                 if (currentFolder != null && !currentFolder.visible) {
                     item(key = "hidden-hint") {
                         Text(
-                            "${currentFolder.name} is hidden on the map — tap the eye to show it.",
+                            "${currentFolder.name} is hidden on the map — its waypoints, graphics and tracks come back with the eye.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
 
-                when (activeFilter) {
-                    FILTER_TRACKS -> items(tracks, key = { "t-" + it.id }) { t ->
-                        TrackRow(
-                            t = t,
+                // ---- WAYPOINTS ----
+                if (listed.isNotEmpty()) {
+                    item(key = "sec-wp") { SectionLabel("Waypoints · ${listed.size}") }
+                    items(listed, key = { it.id }) { w ->
+                        WaypointCard(
+                            w = w,
+                            loc = loc,
                             settings = settings,
-                            viewed = t.id == viewedTrackId,
-                            onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
-                            onShare = { shareGpx(t) },
-                            onDelete = { deleteTrackCandidate = t },
-                            onBacktrack = { onBacktrackTrack(t) },
+                            declination = declination,
+                            convergence = convergence,
+                            refLetter = refLetter,
+                            showFolder = currentFolder == null,
+                            onClick = { if (w.kind == KIND_UNIT) onShowOnMap(w) else onNavigateTo(w.id) },
+                            onNavigate = { onNavigateTo(w.id) },
+                            onEdit = { editing = w; dialogOpen = true },
+                            onDelete = { deleteCandidate = w },
+                            onShowOnMap = { onShowOnMap(w) },
                         )
                     }
-                    FILTER_GRAPHICS -> folders.forEach { folder ->
-                        val glist = graphicsByFolder[folder.name].orEmpty()
-                        if (glist.isNotEmpty()) {
-                            item(key = "ghead-${folder.name}") {
-                                Text(
-                                    folder.name.uppercase(Locale.US),
-                                    fontFamily = LabelFamily,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    letterSpacing = 1.6.sp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(top = 6.dp),
-                                )
-                            }
-                            items(glist, key = { "g-" + it.id }) { g ->
-                                GraphicRow(
-                                    g = g,
-                                    night = settings.nightMode,
-                                    onClick = { onShowGraphicOnMap(g) },
-                                    onCard = if (g.type == "route") {
-                                        { routeCardFor = g }
-                                    } else null,
-                                    onDelete = { deleteGraphicCandidate = g },
-                                )
-                            }
-                            if (glist.size > 1) {
-                                item(key = "clear-${folder.name}") {
-                                    TextButton(onClick = { clearFolderCandidate = folder.name }) {
-                                        Text("Clear ${glist.size} graphics in ${folder.name}")
-                                    }
-                                }
-                            }
-                        }
+                }
+
+                // ---- GRAPHICS (drawings, routes, areas) ----
+                if (listedGraphics.isNotEmpty()) {
+                    item(key = "sec-g") { SectionLabel("Graphics · ${listedGraphics.size}") }
+                    items(listedGraphics, key = { "g-" + it.id }) { g ->
+                        GraphicRow(
+                            g = g,
+                            night = settings.nightMode,
+                            folderLabel = if (currentFolder == null) g.folder else null,
+                            onClick = { onShowGraphicOnMap(g) },
+                            onCard = if (g.type == "route") {
+                                { routeCardFor = g }
+                            } else null,
+                            onDelete = { deleteGraphicCandidate = g },
+                        )
                     }
-                    else -> {
-                        items(listed, key = { it.id }) { w ->
-                            WaypointCard(
-                                w = w,
-                                loc = loc,
-                                settings = settings,
-                                declination = declination,
-                                convergence = convergence,
-                                refLetter = refLetter,
-                                showFolder = activeFilter == FILTER_ALL,
-                                onClick = { if (w.kind == KIND_UNIT) onShowOnMap(w) else onNavigateTo(w.id) },
-                                onNavigate = { onNavigateTo(w.id) },
-                                onEdit = { editing = w; dialogOpen = true },
-                                onDelete = { deleteCandidate = w },
-                                onShowOnMap = { onShowOnMap(w) },
-                            )
-                        }
-                        if (currentFolder != null) {
-                            val glist = graphicsByFolder[currentFolder.name].orEmpty()
-                            items(glist, key = { "g-" + it.id }) { g ->
-                                GraphicRow(
-                                    g = g,
-                                    night = settings.nightMode,
-                                    onClick = { onShowGraphicOnMap(g) },
-                                    onCard = if (g.type == "route") {
-                                        { routeCardFor = g }
-                                    } else null,
-                                    onDelete = { deleteGraphicCandidate = g },
-                                )
-                            }
-                            if (glist.size > 1) {
-                                item(key = "clear-${currentFolder.name}") {
-                                    TextButton(onClick = { clearFolderCandidate = currentFolder.name }) {
-                                        Text("Clear ${glist.size} graphics in ${currentFolder.name}")
-                                    }
-                                }
+                    if (currentFolder != null && listedGraphics.size > 1) {
+                        item(key = "clear-${currentFolder.name}") {
+                            TextButton(onClick = { clearFolderCandidate = currentFolder.name }) {
+                                Text("Clear ${listedGraphics.size} graphics in ${currentFolder.name}")
                             }
                         }
                     }
                 }
 
-                if (activeFilter != FILTER_TRACKS && activeFilter != FILTER_GRAPHICS && listed.isEmpty()) {
+                // ---- TRACKS ----
+                if (listedTracks.isNotEmpty()) {
+                    item(key = "sec-t") { SectionLabel("Tracks · ${listedTracks.size}") }
+                    items(listedTracks, key = { "t-" + it.id }) { t ->
+                        TrackRow(
+                            t = t,
+                            settings = settings,
+                            viewed = t.id == viewedTrackId,
+                            folderLabel = if (currentFolder == null) t.folder else null,
+                            onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
+                            onShare = { shareGpx(t) },
+                            onDelete = { deleteTrackCandidate = t },
+                            onBacktrack = { onBacktrackTrack(t) },
+                            onMove = { moveTrackCandidate = t },
+                        )
+                    }
+                }
+
+                if (listed.isEmpty() && listedGraphics.isEmpty() && listedTracks.isEmpty()) {
                     item(key = "empty-hint") {
                         Text(
                             if (waypoints.isEmpty()) "No waypoints yet — tap + to mark your current position or enter an MGRS grid."
-                            else "Nothing here yet — tap + to add a waypoint to this folder.",
+                            else "Nothing in this folder yet — tap + to add a waypoint, or draw on the map and pick this folder.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -439,6 +412,29 @@ fun WaypointsScreen(
         ) {
             Icon(Icons.Filled.Add, contentDescription = "Add waypoint")
         }
+    }
+
+    moveTrackCandidate?.let { t ->
+        AlertDialog(
+            onDismissRequest = { moveTrackCandidate = null },
+            title = { Text("Move ${t.name} to…") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    folders.forEach { f ->
+                        TextButton(
+                            onClick = {
+                                onMoveTrack(t.id, f.name)
+                                moveTrackCandidate = null
+                            },
+                            enabled = f.name != t.folder,
+                        ) { Text(if (f.name == t.folder) "${f.name}  (current)" else f.name) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { moveTrackCandidate = null }) { Text("Cancel") }
+            },
+        )
     }
 
     if (dialogOpen) {
@@ -599,14 +595,29 @@ fun WaypointsScreen(
 }
 
 @Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text.uppercase(Locale.US),
+        fontFamily = LabelFamily,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 2.sp,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+    )
+}
+
+@Composable
 private fun TrackRow(
     t: TrackInfo,
     settings: AppSettings,
     viewed: Boolean,
+    folderLabel: String?,
     onView: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
     onBacktrack: () -> Unit,
+    onMove: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -641,6 +652,7 @@ private fun TrackRow(
                     color = if (viewed) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                folderLabel?.let { FolderTag(it) }
             }
             var menuOpen by remember { mutableStateOf(false) }
             Box {
@@ -663,6 +675,11 @@ private fun TrackRow(
                         onClick = { menuOpen = false; onShare() },
                     )
                     DropdownMenuItem(
+                        text = { Text("Move to folder…") },
+                        leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                        onClick = { menuOpen = false; onMove() },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Delete") },
                         leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
                         onClick = { menuOpen = false; onDelete() },
@@ -674,9 +691,24 @@ private fun TrackRow(
 }
 
 @Composable
+private fun FolderTag(text: String) {
+    Text(
+        text.uppercase(Locale.US),
+        fontFamily = LabelFamily,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 1.2.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        modifier = Modifier.padding(top = 3.dp),
+    )
+}
+
+@Composable
 private fun GraphicRow(
     g: TacGraphic,
     night: Boolean,
+    folderLabel: String?,
     onClick: () -> Unit,
     onCard: (() -> Unit)?,
     onDelete: () -> Unit,
@@ -711,13 +743,29 @@ private fun GraphicRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                folderLabel?.let { FolderTag(it) }
             }
             if (onCard != null) {
-                IconButton(onClick = onCard) {
+                Row(
+                    Modifier
+                        .clickable(onClick = onCard)
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Icon(
                         Icons.Outlined.Description,
-                        contentDescription = "Route card",
+                        contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        "ROUTE CARD",
+                        fontFamily = LabelFamily,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.4.sp,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
@@ -733,23 +781,36 @@ private fun GraphicRow(
 }
 
 private const val FILTER_ALL = "\u0000all"
-private const val FILTER_TRACKS = "\u0000tracks"
-private const val FILTER_GRAPHICS = "\u0000graphics"
 
 /** One tab in the filter row: outlined when idle, amber-filled when selected, dimmed for hidden folders. */
 @Composable
-private fun FilterTab(label: String, selected: Boolean, dim: Boolean = false, onClick: () -> Unit) {
+private fun FilterTab(
+    label: String,
+    selected: Boolean,
+    dim: Boolean = false,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    onClick: () -> Unit,
+) {
     val line = MaterialTheme.colorScheme.outline
     val fill = MaterialTheme.colorScheme.primary
-    Box(
+    Row(
         Modifier
             .height(36.dp)
             .border(1.dp, if (selected) fill else line)
             .background(if (selected) fill else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        if (icon != null) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
         Text(
             label.uppercase(Locale.US),
             fontFamily = LabelFamily,

@@ -81,6 +81,7 @@ object Backup {
                     .put("id", t.id).put("name", t.name)
                     .put("startedAt", t.startedAt).put("endedAt", t.endedAt)
                     .put("distanceM", t.distanceM).put("pointCount", t.pointCount)
+                    .put("folder", t.folder)
             )
         })
         root.put("courseHistory", JSONArray().also { a ->
@@ -172,7 +173,7 @@ object Backup {
                         id = o.getString("id"), name = o.getString("name"),
                         lat = o.getDouble("lat"), lon = o.getDouble("lon"),
                         createdAt = o.optLong("createdAt"),
-                        folder = o.optString("folder", DEFAULT_FOLDER),
+                        folder = canonicalFolder(o.optString("folder", DEFAULT_FOLDER)),
                         symbol = o.optString("symbol", DEFAULT_SYMBOL),
                         affiliation = o.optString("affiliation", "none"),
                         echelon = o.optString("echelon", ""),
@@ -206,7 +207,7 @@ object Backup {
                     TacGraphic(
                         id = o.getString("id"), name = o.getString("name"),
                         type = o.getString("type"), points = pts,
-                        folder = o.optString("folder", DEFAULT_FOLDER),
+                        folder = canonicalFolder(o.optString("folder", DEFAULT_FOLDER)),
                         affiliation = o.optString("affiliation", "none"),
                         createdAt = o.optLong("createdAt"),
                         echelon = o.optString("echelon", ""),
@@ -225,6 +226,7 @@ object Backup {
                     startedAt = o.optLong("startedAt"), endedAt = o.optLong("endedAt"),
                     distanceM = o.optDouble("distanceM", 0.0),
                     pointCount = o.optInt("pointCount", 0),
+                    folder = canonicalFolder(o.optString("folder", DEFAULT_FOLDER)),
                 )
                 val ptBytes = entries["tracks/${info.id}.txt"] ?: continue
                 val pts = String(ptBytes).lines().mapNotNull { line ->

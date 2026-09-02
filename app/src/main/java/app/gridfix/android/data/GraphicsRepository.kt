@@ -152,7 +152,7 @@ class GraphicsRepository(private val context: Context) {
             name = name.trim(),
             type = type,
             points = points,
-            folder = folder.ifBlank { DEFAULT_FOLDER },
+            folder = canonicalFolder(folder),
             affiliation = affiliation,
             createdAt = nowMillis,
             echelon = echelon,
@@ -175,7 +175,7 @@ class GraphicsRepository(private val context: Context) {
                 decode(p[listKey] ?: "[]").map {
                     if (it.id == id) it.copy(
                         name = name.trim(),
-                        folder = folder.ifBlank { DEFAULT_FOLDER },
+                        folder = canonicalFolder(folder),
                         affiliation = affiliation,
                         echelon = echelon,
                     ) else it
@@ -240,7 +240,7 @@ class GraphicsRepository(private val context: Context) {
                         name = o.getString("name"),
                         type = o.getString("type"),
                         points = vertices,
-                        folder = o.optString("folder", DEFAULT_FOLDER),
+                        folder = canonicalFolder(o.optString("folder", DEFAULT_FOLDER)),
                         affiliation = o.optString("affiliation", "none"),
                         createdAt = o.optLong("createdAt"),
                         echelon = o.optString("echelon", ""),

@@ -34,6 +34,7 @@ data class TrackInfo(
     val endedAt: Long,        // 0 while recording
     val distanceM: Double,
     val pointCount: Int,
+    val folder: String = DEFAULT_FOLDER,   // overlay folder, shares the eye switch with waypoints and graphics
 )
 
 data class TrackPoint(val lat: Double, val lon: Double, val time: Long, val alt: Double)
@@ -157,6 +158,17 @@ class TrackRepository(private val context: Context) {
         }
     }
 
+    suspend fun setFolder(id: String, folder: String) {
+        val clean = canonicalFolder(folder)
+        context.trackStore.edit { p ->
+            p[listKey] = encode(
+                decode(p[listKey] ?: "[]").map {
+                    if (it.id == id) it.copy(folder = clean) else it
+                }
+            )
+        }
+    }
+
     suspend fun delete(id: String) {
         context.trackStore.edit { p ->
             p[listKey] = encode(decode(p[listKey] ?: "[]").filterNot { it.id == id })
@@ -201,6 +213,7 @@ class TrackRepository(private val context: Context) {
                         endedAt = o.optLong("endedAt"),
                         distanceM = o.optDouble("distanceM", 0.0),
                         pointCount = o.optInt("pointCount", 0),
+                        folder = canonicalFolder(o.optString("folder", DEFAULT_FOLDER)),
                     )
                 }.getOrNull()?.let { add(it) }
             }
@@ -218,6 +231,7 @@ class TrackRepository(private val context: Context) {
                     .put("endedAt", t.endedAt)
                     .put("distanceM", t.distanceM)
                     .put("pointCount", t.pointCount)
+                    .put("folder", t.folder)
             )
         }
         return arr.toString()

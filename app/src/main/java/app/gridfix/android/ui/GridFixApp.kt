@@ -435,7 +435,10 @@ fun GridFixApp() {
                                 )
                             }
                         },
-                        viewedTrackId = viewedTrackId,
+                        viewedTrackId = viewedTrackId?.takeIf { id ->
+                            val f = tracks.firstOrNull { it.id == id }?.folder
+                            f == null || folders.firstOrNull { it.name == f }?.visible != false
+                        },
                         onRecordStart = {
                             if (recordGate.compareAndSet(false, true)) {
                                 scope.launch {
@@ -505,6 +508,12 @@ fun GridFixApp() {
                             if (viewedTrackId == id) viewedTrackId = null
                             scope.launch { trackRepo.delete(id) }
                         },
+                        onMoveTrack = { id, folder ->
+                            scope.launch {
+                                waypointRepo.addFolder(folder)
+                                trackRepo.setFolder(id, folder)
+                            }
+                        },
                         onBacktrackTrack = { t ->
                             scope.launch {
                                 val pts = TrackRepository.readPoints(context, t.id)
@@ -521,10 +530,10 @@ fun GridFixApp() {
                                     if (dec.last().lat != last.lat || dec.last().lon != last.lon) {
                                         dec.add(GeoVertex(last.lat, last.lon))
                                     }
-                                    waypointRepo.addFolder("Graphics")
+                                    waypointRepo.addFolder(t.folder)
                                     graphicsRepo.add(
                                         ("Back " + t.name).take(20), "route",
-                                        dec.take(64), "Graphics", "none",
+                                        dec.take(64), t.folder, "none",
                                         System.currentTimeMillis(),
                                     )
                                     mapFocus = dec.first().lat to dec.first().lon

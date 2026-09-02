@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -1182,11 +1183,12 @@ fun MapScreen(
             Row(
                 Modifier
                     .fillMaxWidth()
+                    .height(64.dp)
                     .drawBehind { drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) }
-                    .padding(start = 4.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
+                    .padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(Modifier.weight(1f)) {
+                Row(Modifier.weight(1f).fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
                     ToolCell(Icons.Outlined.Layers, "Layers", false, Modifier.weight(1f)) { layersOpen = true }
                     ToolCell(Icons.Outlined.MyLocation, "Locate", following, Modifier.weight(1f)) {
                         if (!hasPermission) {
@@ -1212,7 +1214,8 @@ fun MapScreen(
                 Box(
                     Modifier
                         .padding(start = 6.dp)
-                        .size(48.dp)
+                        .fillMaxHeight()
+                        .width(56.dp)
                         .background(MaterialTheme.colorScheme.primary)
                         .clickable {
                             holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
@@ -1526,7 +1529,7 @@ fun MapScreen(
             drawNameOpen = false
         } else {
             var gName by remember(dt) { mutableStateOf("") }
-            var gFolder by remember(dt) { mutableStateOf("Graphics") }
+            var gFolder by remember(dt) { mutableStateOf(app.gridfix.android.data.DEFAULT_FOLDER) }
             var gAff by remember(dt) { mutableStateOf(drawAffiliation) }
             var gEch by remember(dt) { mutableStateOf("") }
             AlertDialog(
@@ -1588,9 +1591,8 @@ fun MapScreen(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            (folders.map { it.name } + "Graphics")
+                            (folders.map { it.name } + app.gridfix.android.data.DEFAULT_FOLDER)
                                 .distinct()
-                                .filter { it != app.gridfix.android.data.DEFAULT_FOLDER }
                                 .forEach { f ->
                                     FilterChip(
                                         selected = f == gFolder,
@@ -1719,9 +1721,8 @@ fun MapScreen(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        (folders.map { it.name } + g.folder + "Graphics")
+                        (folders.map { it.name } + g.folder + app.gridfix.android.data.DEFAULT_FOLDER)
                             .distinct()
-                            .filter { it != app.gridfix.android.data.DEFAULT_FOLDER || it == g.folder }
                             .forEach { f ->
                                 FilterChip(
                                     selected = f == gFolder,
@@ -2185,19 +2186,16 @@ private fun ToolCell(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    // Label over icon, the whole cell as tall as the deck, so the six tools and the
+    // amber action line up on one baseline.
     Column(
         modifier
+            .fillMaxHeight()
             .clickable(onClick = onClick)
-            .padding(horizontal = 2.dp, vertical = 4.dp),
+            .padding(horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+        verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(22.dp),
-        )
         Text(
             label.uppercase(java.util.Locale.US),
             fontFamily = LabelFamily,
@@ -2206,6 +2204,13 @@ private fun ToolCell(
             letterSpacing = 0.6.sp,
             color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
+        )
+        Spacer(Modifier.height(4.dp))
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(22.dp),
         )
     }
 }
