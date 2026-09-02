@@ -91,6 +91,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gridfix.android.ui.isLandscape
 import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
@@ -312,6 +313,7 @@ fun MapScreen(
     var readoutHeightPx by remember { mutableIntStateOf(0) }
     var pillHeightPx by remember { mutableIntStateOf(0) }
     val pillHeightDp = with(LocalDensity.current) { pillHeightPx.toDp() }
+    val readoutHeightDp = with(LocalDensity.current) { readoutHeightPx.toDp() }
     var mbtilesFiles by remember { mutableStateOf(listMbtiles(context)) }
 
     val offlineName = if (p.baseLayer.startsWith("mbtiles:")) p.baseLayer.removePrefix("mbtiles:") else null
@@ -333,7 +335,49 @@ fun MapScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    val landscape = isLandscape()
+    // The seven tools and the amber action, shared by the bottom deck (portrait)
+    // and the right-hand rail (worn sideways)
+    val deckTools = listOf(
+        DeckTool(Icons.Outlined.Layers, "Layers", false) { layersOpen = true },
+        DeckTool(Icons.Outlined.MyLocation, "Locate", following) {
+            if (!hasPermission) {
+                onRequestPermission()
+            } else {
+                following = true
+                fix.location?.let { loc ->
+                    holder.map?.controller?.animateTo(GeoPoint(loc.latitude, loc.longitude))
+                }
+            }
+        },
+        DeckTool(Icons.Outlined.Straighten, "Ruler", rulerAnchor != null) {
+            rulerAnchor = if (rulerAnchor == null) {
+                holder.map?.mapCenter?.let { GeoPoint(it.latitude, it.longitude) }
+            } else null
+        },
+        DeckTool(Icons.Outlined.Timeline, "Draw", drawType != null) {
+            if (drawType == null) drawPickerOpen = true
+        },
+        DeckTool(Icons.Outlined.Search, "Go to", false) { gotoOpen = true },
+        DeckTool(Icons.Outlined.Calculate, "Tools", fieldTool != null) { fieldToolsOpen = true },
+        DeckTool(Icons.Outlined.FiberManualRecord, if (activeTrack != null) "Stop" else "Record", activeTrack != null) {
+            if (activeTrack != null) {
+                stopTrackOpen = true
+            } else if (!hasPermission) {
+                onRequestPermission()
+            } else if (android.os.Build.VERSION.SDK_INT >= 33) {
+                notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                onRecordStart()
+            }
+        },
+    )
+    val addWaypointAtCrosshair: () -> Unit = {
+        holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
+    }
+
+    Row(Modifier.fillMaxSize()) {
+    Box(Modifier.weight(1f).fillMaxHeight()) {
         key(offlineFile?.absolutePath ?: "online") {
             var mapView by remember { mutableStateOf<MapView?>(null) }
 
@@ -876,6 +920,7 @@ fun MapScreen(
                 if (rotated) "Reset to north-up" else "North-up",
                 rotated,
                 iconRotation = orientation,
+                enabled = rotated,
             ) {
                 holder.map?.let { m ->
                     m.mapOrientation = 0f
@@ -890,11 +935,11 @@ fun MapScreen(
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(start = 12.dp, top = 10.dp),
+                .padding(start = 12.dp, top = 10.dp, end = 72.dp),
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Spacer(Modifier.height(pillHeightDp + 6.dp))
+            if (!landscape) Spacer(Modifier.height(pillHeightDp + 6.dp))
             downloadStatus?.let { status ->
                 StatusChip(status) { downloadStatus = null }
             }
@@ -949,12 +994,20 @@ fun MapScreen(
         @Suppress("UNUSED_EXPRESSION")
         cameraTick
         val center = holder.map?.mapCenter
-        // Top-left pill: the crosshair grid, tap to copy, hold to share
+        // The crosshair grid, tap to copy, hold to share. Portrait: a pill top-left.
+        // Sideways the vertical axis is the scarce one, so it becomes a square
+        // block in the bottom-right corner, out of the way of the map.
         Surface(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 12.dp, top = 10.dp)
-                .onSizeChanged { pillHeightPx = it.height },
+            modifier = if (landscape) {
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 10.dp, bottom = readoutHeightDp + 10.dp)   // clears the draw bar
+            } else {
+                Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 12.dp, top = 10.dp, end = 72.dp)   // never under the north button
+                    .onSizeChanged { pillHeightPx = it.height }
+            },
             color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         ) {
@@ -994,7 +1047,27 @@ fun MapScreen(
                 horizontalAlignment = Alignment.Start,
             ) {
                 val parts = center?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                if (landscape && parts != null && parts.easting.isNotEmpty()) {
+                    // Square block: zone and square on one line, the numbers under them
+                    Text(
+                        "${parts.gzd} ${parts.square}",
+                        fontFamily = MonoFamily,
+                        fontSize = 12.sp,
+                        letterSpacing = 1.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    Text(
+                        "${parts.easting} ${parts.northing}",
+                        fontFamily = MonoFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                } else {
                     Text(
                         if (parts == null) "—"
                         else if (parts.easting.isEmpty()) parts.full
@@ -1004,25 +1077,23 @@ fun MapScreen(
                         fontSize = 16.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
+                        softWrap = false,
                     )
-                    if (gridInterval.isNotEmpty()) {
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            gridInterval,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = MonoFamily,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    crossElevation?.let { elev ->
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "▲" + Coordinates.formatAltitude(elev, settings.units),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = MonoFamily,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                }
+                // Grid interval and crosshair elevation on their own line, so the grid
+                // never pushes the pill under the north button on a narrow phone
+                val detail = listOfNotNull(
+                    gridInterval.takeIf { it.isNotEmpty() },
+                    crossElevation?.let { "▲" + Coordinates.formatAltitude(it, settings.units) },
+                ).joinToString(" · ")
+                if (detail.isNotEmpty()) {
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = MonoFamily,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
                 }
                 Spacer(Modifier.height(2.dp))
                 val loc = fix.location
@@ -1047,28 +1118,41 @@ fun MapScreen(
                     else -> "T"
                 }
                 val anchor = rulerAnchor
+                // (what, measurement): one line in the portrait pill, two in the square block
                 val line2 = when {
                     anchor != null && center != null -> {
                         val nav = Coordinates.navInfo(anchor.latitude, anchor.longitude, center.latitude, center.longitude)
-                        "RULER  " + Coordinates.formatDistance(nav.distanceMeters, settings.units) +
-                            "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter +
-                            "  back " + Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit)
+                        "RULER" to (
+                            Coordinates.formatDistance(nav.distanceMeters, settings.units) +
+                                "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter +
+                                "  back " + Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit)
+                            )
                     }
                     loc != null && center != null -> {
                         val nav = Coordinates.navInfo(loc.latitude, loc.longitude, center.latitude, center.longitude)
-                        "ME → CROSSHAIR  " + Coordinates.formatDistance(nav.distanceMeters, settings.units) +
-                            "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
+                        "ME → CROSSHAIR" to (
+                            Coordinates.formatDistance(nav.distanceMeters, settings.units) +
+                                "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
+                            )
                     }
-                    else -> "long-press the map to drop a waypoint"
+                    else -> "long-press the map" to "to drop a waypoint"
                 }
-                Text(
-                    line2,
-                    fontFamily = MonoFamily,
-                    fontSize = 11.sp,
-                    color = if (anchor != null) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
+                val line2Color = if (anchor != null) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+                if (landscape) {
+                    Text(line2.first, fontFamily = MonoFamily, fontSize = 11.sp, color = line2Color, maxLines = 1, softWrap = false)
+                    Text(line2.second, fontFamily = MonoFamily, fontSize = 11.sp, color = line2Color, maxLines = 1, softWrap = false)
+                } else {
+                    Text(
+                        // measurements get a double space between the fields; the hint reads as a sentence
+                        if (anchor == null && (loc == null || center == null)) "${line2.first} ${line2.second}"
+                        else "${line2.first}  ${line2.second}",
+                        fontFamily = MonoFamily,
+                        fontSize = 11.sp,
+                        color = line2Color,
+                        maxLines = 1,
+                    )
+                }
             }
         }
 
@@ -1169,6 +1253,7 @@ fun MapScreen(
             }
         }
         // Deck: the tools within thumb reach, one amber primary action
+        if (!landscape) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
@@ -1182,42 +1267,8 @@ fun MapScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(Modifier.weight(1f).fillMaxHeight().padding(start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    ToolCell(Icons.Outlined.Layers, "Layers", false, Modifier.weight(1f)) { layersOpen = true }
-                    ToolCell(Icons.Outlined.MyLocation, "Locate", following, Modifier.weight(1f)) {
-                        if (!hasPermission) {
-                            onRequestPermission()
-                        } else {
-                            following = true
-                            fix.location?.let { loc ->
-                                holder.map?.controller?.animateTo(GeoPoint(loc.latitude, loc.longitude))
-                            }
-                        }
-                    }
-                    ToolCell(Icons.Outlined.Straighten, "Ruler", rulerAnchor != null, Modifier.weight(1f)) {
-                        rulerAnchor = if (rulerAnchor == null) {
-                            holder.map?.mapCenter?.let { GeoPoint(it.latitude, it.longitude) }
-                        } else null
-                    }
-                    ToolCell(Icons.Outlined.Timeline, "Draw", drawType != null, Modifier.weight(1f)) {
-                        if (drawType == null) drawPickerOpen = true
-                    }
-                    ToolCell(Icons.Outlined.Search, "Go to", false, Modifier.weight(1f)) { gotoOpen = true }
-                    ToolCell(Icons.Outlined.Calculate, "Tools", fieldTool != null, Modifier.weight(1f)) { fieldToolsOpen = true }
-                    ToolCell(
-                        Icons.Outlined.FiberManualRecord,
-                        if (activeTrack != null) "Stop" else "Record",
-                        activeTrack != null,
-                        Modifier.weight(1f),
-                    ) {
-                        if (activeTrack != null) {
-                            stopTrackOpen = true
-                        } else if (!hasPermission) {
-                            onRequestPermission()
-                        } else if (android.os.Build.VERSION.SDK_INT >= 33) {
-                            notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            onRecordStart()
-                        }
+                    deckTools.forEach { t ->
+                        ToolCell(t.icon, t.label, t.active, Modifier.weight(1f).fillMaxHeight(), onClick = t.onClick)
                     }
                 }
                 // The primary action fills its whole block, edge to edge
@@ -1226,9 +1277,7 @@ fun MapScreen(
                         .fillMaxHeight()
                         .width(64.dp)
                         .background(MaterialTheme.colorScheme.primary)
-                        .clickable {
-                            holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
-                        },
+                        .clickable(onClick = addWaypointAtCrosshair),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -1241,6 +1290,44 @@ fun MapScreen(
             }
         }
         }
+        }
+    }
+    // Worn sideways: the deck stands on the right of the map as a rail, so the
+    // crosshair and the grid stay clear of it
+    if (landscape) {
+        val rule = MaterialTheme.colorScheme.outline
+        Surface(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(64.dp),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxHeight()
+                    .drawBehind { drawLine(rule, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx()) },
+            ) {
+                deckTools.forEach { t ->
+                    ToolCell(t.icon, t.label, t.active, Modifier.weight(1f).fillMaxWidth(), compact = true, onClick = t.onClick)
+                }
+                Box(
+                    Modifier
+                        .weight(1.3f)
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable(onClick = addWaypointAtCrosshair),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.AddLocationAlt,
+                        contentDescription = "Waypoint at crosshair",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
+            }
+        }
+    }
     }
 
     // ---- Dialogs ----
@@ -2180,6 +2267,7 @@ private fun MapButton(
     description: String,
     active: Boolean,
     iconRotation: Float = 0f,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -2187,7 +2275,7 @@ private fun MapButton(
         color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
-        IconButton(onClick = onClick) {
+        IconButton(onClick = onClick, enabled = enabled) {
             Icon(
                 icon,
                 contentDescription = description,
@@ -2199,33 +2287,45 @@ private fun MapButton(
     }
 }
 
-/** One tool on the deck: icon over a tiny label, amber when its mode is active. */
+/** A deck tool: what it shows, whether its mode is on, what a tap does. */
+private class DeckTool(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+    val active: Boolean,
+    val onClick: () -> Unit,
+)
+
+/**
+ * One tool on the deck: a tiny label over the icon, amber when its mode is active.
+ * The caller sizes the cell (weight in a Row for the bottom deck, in a Column for
+ * the landscape rail); [compact] is the rail's smaller type and icon.
+ */
 @Composable
 private fun ToolCell(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     active: Boolean,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
     onClick: () -> Unit,
 ) {
-    // Label over icon, the whole cell as tall as the deck, so the six tools and the
-    // amber action line up on one baseline.
     Column(
         modifier
-            .fillMaxHeight()
             .clickable(onClick = onClick)
             .padding(horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        // "RECORD" at 11 sp with tracking is wider than a 38 dp cell on a 360 dp
+        // phone: 10 sp, no tracking, never wrapped, allowed to overflow a hair
         Text(
             label.uppercase(java.util.Locale.US),
             style = androidx.compose.ui.text.TextStyle(
                 fontFamily = LabelFamily,
-                fontSize = 11.sp,
-                lineHeight = 12.sp,
+                fontSize = if (compact) 8.sp else 10.sp,
+                lineHeight = if (compact) 9.sp else 11.sp,
                 fontWeight = FontWeight.Medium,
-                letterSpacing = 0.4.sp,
+                letterSpacing = 0.sp,
                 lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
                     alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
                     trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
@@ -2234,13 +2334,15 @@ private fun ToolCell(
             ),
             color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
+            softWrap = false,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Visible,
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(if (compact) 2.dp else 4.dp))
         Icon(
             icon,
-            contentDescription = label,
+            contentDescription = null,
             tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(28.dp),
+            modifier = Modifier.size(if (compact) 20.dp else 28.dp),
         )
     }
 }
