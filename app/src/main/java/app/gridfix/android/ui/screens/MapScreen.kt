@@ -477,10 +477,8 @@ fun MapScreen(
                     holder.tracks = trk
                     map.overlays.add(trk)
                     // Hybrid terrain: shadow-only hillshade, inserted under the grid on demand
-                    val hs = org.osmdroid.views.overlay.TilesOverlay(
-                        org.osmdroid.tileprovider.MapTileProviderBasic(ctx, MapSetup.hillshadeSource),
-                        ctx,
-                    ).apply {
+                    val hsProvider = org.osmdroid.tileprovider.MapTileProviderBasic(ctx, MapSetup.hillshadeSource)
+                    val hs = org.osmdroid.views.overlay.TilesOverlay(hsProvider, ctx).apply {
                         setColorFilter(MapSetup.hillshadeShadowFilter)
                         loadingBackgroundColor = android.graphics.Color.TRANSPARENT
                         loadingLineColor = android.graphics.Color.TRANSPARENT
@@ -488,7 +486,7 @@ fun MapScreen(
                     }
                     // A second provider does not know the map's redraw handler by itself;
                     // without this, finished hillshade tiles wait for the next unrelated redraw.
-                    runCatching { hs.tileProvider.tileRequestCompleteHandlers.add(map.tileRequestCompleteHandler) }
+                    runCatching { hsProvider.tileRequestCompleteHandlers.add(map.tileRequestCompleteHandler) }
                     holder.hillshade = hs
                     map.overlays.add(1, hs)   // under the grid; events overlay stays first
                     // Contours from cached elevation, drawn above shading but under the grid
