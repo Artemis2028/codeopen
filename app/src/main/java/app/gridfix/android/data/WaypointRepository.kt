@@ -269,7 +269,7 @@ class WaypointRepository(private val context: Context) {
 
     private fun decodeFolders(json: String): List<FolderInfo> = runCatching {
         val arr = JSONArray(json)
-        buildList {
+        buildList<FolderInfo> {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val name = canonicalFolder(o.getString("name"))
