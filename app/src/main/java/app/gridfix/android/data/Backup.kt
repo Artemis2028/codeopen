@@ -140,7 +140,21 @@ object Backup {
         val zin = ZipInputStream(input)
         var e: ZipEntry? = zin.nextEntry
         while (e != null) {
-            if (!e.isDirectory) entries[e.name] = zin.readBytes()
+            val wanted = e.name == "gridfix-backup.json" || e.name.startsWith("tracks/")
+            if (!e.isDirectory && wanted) {
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(16 * 1024)
+                var total = 0L
+                var tooBig = false
+                while (true) {
+                    val n = zin.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (total > 64L * 1024 * 1024) { tooBig = true; break }
+                    out.write(buf, 0, n)
+                }
+                if (!tooBig) entries[e.name] = out.toByteArray()
+            }
             zin.closeEntry()
             e = zin.nextEntry
         }

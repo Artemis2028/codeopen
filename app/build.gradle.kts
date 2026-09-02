@@ -12,8 +12,8 @@ android {
         applicationId = "app.gridfix.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.9.3"
+        versionCode = 32
+        versionName = "0.9.4"
     }
 
     // Play upload key: CI decodes the keystore secret to a file and exports
@@ -77,4 +77,7 @@ dependencies {
 
     // Google Play Billing for the GridFix Pro subscription
     implementation("com.android.billingclient:billing-ktx:9.1.0")
+
+    // Transitive androidx.fragment 1.1.0 is flagged outdated by Play; pin a current one
+    implementation("androidx.fragment:fragment:1.8.5")
 }

@@ -253,7 +253,7 @@ fun PositionScreen(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             InfoCard(
-                label = "ALTITUDE MSL",
+                label = "ALTITUDE (GPS)",
                 value = if (loc != null && loc.hasAltitude()) {
                     Coordinates.formatAltitude(loc.altitude, settings.units)
                 } else "—",

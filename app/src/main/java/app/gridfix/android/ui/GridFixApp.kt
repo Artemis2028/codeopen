@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,6 +34,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +56,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -103,9 +108,19 @@ fun GridFixApp() {
     val billing = remember { BillingManager(context.applicationContext) }
     val entitlement by billing.state.collectAsStateWithLifecycle()
     var paywallPreview by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
         billing.start()
-        onDispose { billing.close() }
+        // Re-check on every return to the foreground: purchases made in the Play
+        // Store app, pending purchases completing, and lapsed subscriptions.
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) billing.refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            billing.close()
+        }
     }
     val waypointRepo = remember { WaypointRepository(context.applicationContext) }
     val waypoints by waypointRepo.waypoints.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -144,6 +159,7 @@ fun GridFixApp() {
         waypoints.filter { it.folder in visibleNames }
     }
     val scope = rememberCoroutineScope()
+    val recordGate = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     // Location permission + shared tracker, hoisted so every screen can use the fix
     var hasPermission by remember {
@@ -153,10 +169,14 @@ fun GridFixApp() {
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
+    // "Approximate" (coarse-only) is not enough for a GPS grid readout: the GPS
+    // provider refuses it. Only a precise grant counts; coarse-only gets a hint.
+    var approximateOnly by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        hasPermission = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+        hasPermission = result[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        approximateOnly = !hasPermission &&
             result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
     }
     val requestPermission = {
@@ -168,6 +188,9 @@ fun GridFixApp() {
         )
     }
     val tracker = remember { LocationTracker(context.applicationContext) }
+    LaunchedEffect(Unit) {
+        runCatching { trackRepo.finalizeOrphans(TrackRecorderService.active.value?.trackId) }
+    }
     DisposableEffect(hasPermission) {
         if (hasPermission) tracker.start()
         onDispose { tracker.stop() }
@@ -209,8 +232,19 @@ fun GridFixApp() {
         if (!BuildConfig.DEBUG) {
             when (entitlement) {
                 BillingManager.State.CHECKING -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+                    Box(
+                        Modifier.fillMaxSize().safeDrawingPadding(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "Checking your subscription…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     return@GridFixTheme
                 }
@@ -289,7 +323,7 @@ fun GridFixApp() {
                 modifier = Modifier.padding(innerPadding),
             ) {
                 composable("position") {
-                    if (!hasPermission) PermissionGate(requestPermission)
+                    if (!hasPermission) PermissionGate(requestPermission, approximateOnly)
                     else PositionScreen(
                         fix = fix,
                         settings = settings,
@@ -315,7 +349,7 @@ fun GridFixApp() {
                     )
                 }
                 composable("navigate") {
-                    if (!hasPermission) PermissionGate(requestPermission)
+                    if (!hasPermission) PermissionGate(requestPermission, approximateOnly)
                     else NavigateScreen(
                         fix = fix,
                         settings = settings,
@@ -382,9 +416,15 @@ fun GridFixApp() {
                         },
                         viewedTrackId = viewedTrackId,
                         onRecordStart = {
-                            scope.launch {
-                                val id = trackRepo.startTrack(System.currentTimeMillis())
-                                TrackRecorderService.start(context.applicationContext, id)
+                            if (recordGate.compareAndSet(false, true)) {
+                                scope.launch {
+                                    val id = trackRepo.startTrack(System.currentTimeMillis())
+                                    val ok = runCatching {
+                                        TrackRecorderService.start(context.applicationContext, id)
+                                    }.isSuccess
+                                    if (!ok) trackRepo.discard(id)
+                                    recordGate.set(false)
+                                }
                             }
                         },
                         onRecordStop = { name, discard ->
@@ -485,20 +525,24 @@ fun GridFixApp() {
                         unitNameFor = unitNameFor,
                         onImport = { data, onDone ->
                             scope.launch {
-                                val now = System.currentTimeMillis()
-                                waypointRepo.addAll(data.waypoints, now)
-                                for (l in data.lines) {
-                                    waypointRepo.addFolder(l.folder)
-                                    graphicsRepo.add(l.name, "route", l.points, l.folder, "none", now)
+                                runCatching {
+                                    val now = System.currentTimeMillis()
+                                    waypointRepo.addAll(data.waypoints, now)
+                                    for (l in data.lines) {
+                                        waypointRepo.addFolder(l.folder)
+                                        graphicsRepo.add(l.name, "route", l.points, l.folder, "none", now)
+                                    }
+                                    for (a in data.areas) {
+                                        waypointRepo.addFolder(a.folder)
+                                        graphicsRepo.add(a.name, "aa", a.points, a.folder, "none", now)
+                                    }
+                                    for (t in data.tracks) {
+                                        trackRepo.importTrack(t.name, t.points, now)
+                                    }
+                                    onDone(data.summary())
+                                }.getOrElse {
+                                    onDone("Import failed — " + (it.message ?: "the file has bad data"))
                                 }
-                                for (a in data.areas) {
-                                    waypointRepo.addFolder(a.folder)
-                                    graphicsRepo.add(a.name, "aa", a.points, a.folder, "none", now)
-                                }
-                                for (t in data.tracks) {
-                                    trackRepo.importTrack(t.name, t.points, now)
-                                }
-                                onDone(data.summary())
                             }
                         },
                         onExport = { format, onDone ->
@@ -732,7 +776,8 @@ private fun buzz(context: android.content.Context) {
 }
 
 @Composable
-private fun PermissionGate(onRequest: () -> Unit) {
+private fun PermissionGate(onRequest: () -> Unit, approximateOnly: Boolean = false) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -747,17 +792,38 @@ private fun PermissionGate(onRequest: () -> Unit) {
             tint = MaterialTheme.colorScheme.primary,
         )
         Spacer(Modifier.height(16.dp))
-        Text("Location access needed", style = MaterialTheme.typography.titleLarge)
+        Text(
+            if (approximateOnly) "Precise location needed" else "Location access needed",
+            style = MaterialTheme.typography.titleLarge,
+        )
         Spacer(Modifier.height(8.dp))
         Text(
-            "MGRS GPS reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed.",
+            if (approximateOnly) {
+                "Only approximate location was allowed. A grid readout needs the GPS chip — " +
+                    "choose \"Precise\" when asked, or switch it on in the app's permission settings."
+            } else {
+                "MGRS GPS reads your position straight from the GPS chip. Everything stays on your phone — no account, no tracking, no internet needed."
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(24.dp))
         Button(onClick = onRequest) {
-            Text("Grant location access")
+            Text(if (approximateOnly) "Allow precise location" else "Grant location access")
+        }
+        if (approximateOnly) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.fromParts("package", context.packageName, null),
+                        )
+                    )
+                }
+            }) { Text("Open app settings") }
         }
     }
 }

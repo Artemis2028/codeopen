@@ -1,6 +1,7 @@
 package app.gridfix.android.map
 
 import android.content.Context
+import app.gridfix.android.BuildConfig
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
@@ -100,7 +101,7 @@ object Elevation {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 8000
                 conn.readTimeout = 8000
-                conn.setRequestProperty("User-Agent", "GridFix (github.com/Artemis2028/gridfix)")
+                conn.setRequestProperty("User-Agent", "MGRS GPS/" + BuildConfig.VERSION_NAME + " (rafaelm2002@gmail.com)")
                 conn.inputStream.use { input ->
                     val tmp = File(file.parentFile, file.name + ".tmp")
                     tmp.outputStream().use { out -> input.copyTo(out) }

@@ -81,28 +81,36 @@ class LocationTracker(context: Context) {
         if (started) return
         started = true
         val looper = Looper.getMainLooper()
-        try {
-            val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-            if (gpsEnabled) {
+        // Each provider is requested independently: an "Approximate" (coarse-only)
+        // grant makes the GPS request throw, which must not also cost us the
+        // network provider and the GNSS status callback.
+        var any = false
+        val gpsEnabled = runCatching {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        }.getOrDefault(false)
+        if (gpsEnabled) {
+            runCatching {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER, 1000L, 0f, listener, looper
                 )
+                any = true
             }
+        }
+        runCatching {
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 locationManager.requestLocationUpdates(
                     LocationManager.NETWORK_PROVIDER, 5000L, 0f, listener, looper
                 )
+                any = true
             }
-            locationManager.registerGnssStatusCallback(gnssCallback, Handler(looper))
-
+        }
+        runCatching { locationManager.registerGnssStatusCallback(gnssCallback, Handler(looper)) }
+        runCatching {
             val last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
             _fix.update { it.copy(location = last ?: it.location, gpsEnabled = gpsEnabled) }
-        } catch (_: SecurityException) {
-            started = false
-        } catch (_: IllegalArgumentException) {
-            // A provider does not exist on this device; ignore
         }
+        if (!any) started = false
     }
 
     fun stop() {

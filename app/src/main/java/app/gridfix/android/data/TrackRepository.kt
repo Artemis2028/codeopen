@@ -2,11 +2,14 @@ package app.gridfix.android.data
 
 import android.content.Context
 import android.location.Location
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -18,7 +21,10 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
 
-private val Context.trackStore by preferencesDataStore(name = "tracks")
+private val Context.trackStore by preferencesDataStore(
+    name = "tracks",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 /** Track metadata; the point log lives in files/tracks/<id>.txt (one point per line). */
 data class TrackInfo(
@@ -161,12 +167,33 @@ class TrackRepository(private val context: Context) {
     /** Remove a recording that was discarded before saving. */
     suspend fun discard(id: String) = delete(id)
 
-    private fun decode(json: String): List<TrackInfo> = runCatching {
-        val arr = JSONArray(json)
-        buildList {
+    /**
+     * Heal recordings the OS killed mid-way: any track still open (endedAt == 0)
+     * that is not the one currently recording is closed out from its point log
+     * (the points are on disk — only the summary was lost), or removed when it
+     * never logged a point.
+     */
+    suspend fun finalizeOrphans(activeId: String?) {
+        val open = decode(context.trackStore.data.first()[listKey] ?: "[]")
+            .filter { it.endedAt == 0L && it.id != activeId }
+        for (t in open) {
+            val pts = readPoints(context, t.id)
+            if (pts.isEmpty()) {
+                delete(t.id)
+            } else {
+                val last = pts.last().time
+                finishTrack(t.id, null, if (last > t.startedAt) last else System.currentTimeMillis())
+            }
+        }
+    }
+
+    // One damaged record must not take the whole list with it: skip it, keep the rest.
+    private fun decode(json: String): List<TrackInfo> {
+        val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
+        return buildList {
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(
+                runCatching {
+                    val o = arr.getJSONObject(i)
                     TrackInfo(
                         id = o.getString("id"),
                         name = o.getString("name"),
@@ -175,10 +202,10 @@ class TrackRepository(private val context: Context) {
                         distanceM = o.optDouble("distanceM", 0.0),
                         pointCount = o.optInt("pointCount", 0),
                     )
-                )
+                }.getOrNull()?.let { add(it) }
             }
         }
-    }.getOrDefault(emptyList())
+    }
 
     private fun encode(list: List<TrackInfo>): String {
         val arr = JSONArray()

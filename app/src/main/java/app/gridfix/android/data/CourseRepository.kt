@@ -1,7 +1,9 @@
 package app.gridfix.android.data
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -9,7 +11,10 @@ import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
 
-private val Context.courseStore by preferencesDataStore(name = "course")
+private val Context.courseStore by preferencesDataStore(
+    name = "course",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 /** A practice land-nav course in progress: ordered waypoints + split times. */
 data class CourseState(
@@ -147,13 +152,13 @@ class CourseRepository(private val context: Context) {
         )
     }.getOrNull()
 
-    private fun decodeHistory(json: String): List<CourseResult> = runCatching {
-        val arr = JSONArray(json)
-        buildList {
+    private fun decodeHistory(json: String): List<CourseResult> {
+        val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
+        return buildList {
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val splits = o.getJSONArray("splits")
-                add(
+                runCatching {
+                    val o = arr.getJSONObject(i)
+                    val splits = o.getJSONArray("splits")
                     CourseResult(
                         name = o.getString("name"),
                         points = o.getInt("points"),
@@ -163,8 +168,8 @@ class CourseRepository(private val context: Context) {
                             for (j in 0 until splits.length()) add(splits.getLong(j))
                         },
                     )
-                )
+                }.getOrNull()?.let { add(it) }
             }
         }.reversed()   // newest first
-    }.getOrDefault(emptyList())
+    }
 }

@@ -1276,7 +1276,7 @@ fun MapScreen(
                     TextButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
                         Text("Import MBTiles file…")
                     }
-                    if (offlineFile == null) {
+                    if (offlineFile == null && layer.bulkDownload) {
                         TextButton(onClick = { layersOpen = false; downloadOpen = true }) {
                             Icon(
                                 Icons.Outlined.Download,
@@ -1286,6 +1286,17 @@ fun MapScreen(
                             Spacer(Modifier.width(6.dp))
                             Text("Download visible area for offline")
                         }
+                    }
+                    if (offlineFile == null && !layer.bulkDownload) {
+                        Text(
+                            "Offline: this basemap's terms allow the browse cache only — " +
+                                "pan the area at the zooms you need and it stays on the phone " +
+                                "(600 MB). Area download is available on USGS Topo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (offlineFile == null) {
                         TextButton(onClick = {
                             layersOpen = false
                             val bbox = holder.map?.boundingBox
@@ -1346,7 +1357,7 @@ fun MapScreen(
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = !tooBig && tiles > 0,
+                        enabled = !tooBig && tiles > 0 && layer.bulkDownload,
                         onClick = {
                             downloadOpen = false
                             downloadStatus = "Starting download…"

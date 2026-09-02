@@ -1,7 +1,9 @@
 package app.gridfix.android.data
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -10,7 +12,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-private val Context.graphicsStore by preferencesDataStore(name = "graphics")
+private val Context.graphicsStore by preferencesDataStore(
+    name = "graphics",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 /** A simple lat/lon vertex for tactical graphics. */
 data class GeoVertex(val lat: Double, val lon: Double)
@@ -216,19 +221,20 @@ class GraphicsRepository(private val context: Context) {
         }
     }
 
-    private fun decode(json: String): List<TacGraphic> = runCatching {
-        val arr = JSONArray(json)
-        buildList {
+    // One damaged record must not take the whole list with it: skip it, keep the rest.
+    private fun decode(json: String): List<TacGraphic> {
+        val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
+        return buildList {
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val pts = o.getJSONArray("points")
-                val vertices = buildList {
-                    for (j in 0 until pts.length()) {
-                        val v = pts.getJSONArray(j)
-                        add(GeoVertex(v.getDouble(0), v.getDouble(1)))
+                runCatching {
+                    val o = arr.getJSONObject(i)
+                    val pts = o.getJSONArray("points")
+                    val vertices = buildList {
+                        for (j in 0 until pts.length()) {
+                            val v = pts.getJSONArray(j)
+                            add(GeoVertex(v.getDouble(0), v.getDouble(1)))
+                        }
                     }
-                }
-                add(
                     TacGraphic(
                         id = o.getString("id"),
                         name = o.getString("name"),
@@ -239,10 +245,10 @@ class GraphicsRepository(private val context: Context) {
                         createdAt = o.optLong("createdAt"),
                         echelon = o.optString("echelon", ""),
                     )
-                )
+                }.getOrNull()?.let { add(it) }
             }
         }
-    }.getOrDefault(emptyList())
+    }
 
     private fun encode(list: List<TacGraphic>): String {
         val arr = JSONArray()

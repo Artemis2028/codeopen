@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -58,6 +59,7 @@ fun PaywallScreen(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val plans by billing.plans.collectAsStateWithLifecycle()
+    val plansStatus by billing.plansStatus.collectAsStateWithLifecycle()
     val notice by billing.notice.collectAsStateWithLifecycle()
     var selectedId by rememberSaveable { mutableStateOf(BillingManager.MONTHLY) }
     val selected = plans.firstOrNull { it.productId == selectedId } ?: plans.firstOrNull()
@@ -66,6 +68,7 @@ fun PaywallScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .safeDrawingPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -98,13 +101,21 @@ fun PaywallScreen(
             Spacer(Modifier.height(20.dp))
 
             if (plans.isEmpty()) {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Loading plans from Google Play…",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (plansStatus == BillingManager.PlansStatus.LOADING) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Loading plans from Google Play…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "Plans are not available right now.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = { billing.restore() }) { Text("Retry") }
             } else {
@@ -121,7 +132,7 @@ fun PaywallScreen(
                         PlanCard(
                             plan = plan,
                             savings = savings,
-                            selected = plan.productId == selectedId,
+                            selected = selected?.productId == plan.productId,
                             onSelect = { selectedId = plan.productId },
                         )
                     }

@@ -17,6 +17,12 @@ import java.util.zip.ZipInputStream
  */
 object InterchangeFiles {
 
+    /** A coordinate attribute as a finite, in-range double, else NaN (rejects "NaN", "Infinity", 120). */
+    private fun coord(raw: String?, limit: Double): Double {
+        val v = raw?.trim()?.toDoubleOrNull() ?: return Double.NaN
+        return if (v.isFinite() && v >= -limit && v <= limit) v else Double.NaN
+    }
+
     data class ImportedLine(val name: String, val folder: String, val points: List<GeoVertex>)
     data class ImportedTrack(val name: String, val points: List<TrackPoint>)
 
@@ -87,8 +93,8 @@ object InterchangeFiles {
                         "wpt" -> {
                             inWpt = true
                             name = ""
-                            wptLat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull() ?: Double.NaN
-                            wptLon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull() ?: Double.NaN
+                            wptLat = coord(parser.getAttributeValue(null, "lat"), 90.0)
+                            wptLon = coord(parser.getAttributeValue(null, "lon"), 180.0)
                         }
                         "trk" -> {
                             inTrk = true
@@ -101,18 +107,18 @@ object InterchangeFiles {
                             rtePts = ArrayList()
                         }
                         "trkpt" -> {
-                            val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
-                            val lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull()
+                            val lat = coord(parser.getAttributeValue(null, "lat"), 90.0)
+                            val lon = coord(parser.getAttributeValue(null, "lon"), 180.0)
                             pendingTime = 0L
                             pendingEle = 0.0
-                            if (lat != null && lon != null && inTrk) {
+                            if (!lat.isNaN() && !lon.isNaN() && inTrk) {
                                 trkPts.add(TrackPoint(lat, lon, 0L, 0.0))
                             }
                         }
                         "rtept" -> {
-                            val lat = parser.getAttributeValue(null, "lat")?.toDoubleOrNull()
-                            val lon = parser.getAttributeValue(null, "lon")?.toDoubleOrNull()
-                            if (lat != null && lon != null && inRte) {
+                            val lat = coord(parser.getAttributeValue(null, "lat"), 90.0)
+                            val lon = coord(parser.getAttributeValue(null, "lon"), 180.0)
+                            if (!lat.isNaN() && !lon.isNaN() && inRte) {
                                 rtePts.add(GeoVertex(lat, lon))
                             }
                         }
@@ -127,7 +133,7 @@ object InterchangeFiles {
                             else if (inTrk && trkName.isEmpty()) trkName = t
                             else if (inRte && rteName.isEmpty()) rteName = t
                         }
-                        "ele" -> pendingEle = textBuf.trim().toDoubleOrNull() ?: 0.0
+                        "ele" -> pendingEle = textBuf.trim().toDoubleOrNull()?.takeIf { it.isFinite() } ?: 0.0
                         "time" -> pendingTime = parseIsoTime(textBuf.trim())
                         "trkpt" -> {
                             if (inTrk && trkPts.isNotEmpty()) {

@@ -1,6 +1,7 @@
 package app.gridfix.android.map
 
 import android.content.Context
+import app.gridfix.android.BuildConfig
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import org.osmdroid.config.Configuration
@@ -18,6 +19,11 @@ data class BaseLayer(
     val attribution: String,
     /** Highest zoom worth bulk-downloading from this provider. */
     val maxDownloadZoom: Int,
+    /**
+     * Whether the provider's usage terms permit pre-downloading an area. Only
+     * public-domain USGS does; the others allow the ordinary browse cache only.
+     */
+    val bulkDownload: Boolean = false,
 )
 
 object MapSetup {
@@ -35,7 +41,7 @@ object MapSetup {
         Configuration.getInstance().apply {
             osmdroidBasePath = base
             osmdroidTileCache = tiles
-            userAgentValue = "GridFix/0.3 (github.com/Artemis2028/gridfix)"
+            userAgentValue = "MGRS GPS/" + BuildConfig.VERSION_NAME + " (rafaelm2002@gmail.com)"
             tileFileSystemCacheMaxBytes = 600L * 1024 * 1024
             tileFileSystemCacheTrimBytes = 500L * 1024 * 1024
             // Keep serving cached tiles long after their nominal expiry — offline-first.
@@ -119,6 +125,7 @@ object MapSetup {
             source = usgsTopo,
             attribution = "USGS The National Map",
             maxDownloadZoom = 15,
+            bulkDownload = true,
         ),
         BaseLayer(
             key = "hillshade",

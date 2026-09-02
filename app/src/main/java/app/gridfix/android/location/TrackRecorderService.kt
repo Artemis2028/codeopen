@@ -55,10 +55,13 @@ class TrackRecorderService : Service() {
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             val id = trackId ?: return
+            // Skip junk fixes: poor accuracy, and jitter smaller than the fix's own error
+            if (loc.hasAccuracy() && loc.accuracy > 30f) return
             val last = lastPoint
             if (last != null) {
                 val d = loc.distanceTo(last)
-                if (d < 5f) return
+                val floor = if (loc.hasAccuracy()) maxOf(5f, loc.accuracy) else 5f
+                if (d < floor) return
                 distance += d
             }
             lastPoint = loc
@@ -88,7 +91,14 @@ class TrackRecorderService : Service() {
 
     @SuppressLint("MissingPermission")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            // Sticky restart after the OS killed the process: the in-memory
+            // recording is gone. Stop cleanly; the app closes out the track
+            // from its point log on next launch (TrackRepository.finalizeOrphans).
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        when (intent.action) {
             ACTION_START -> {
                 val id = intent.getStringExtra(EXTRA_TRACK_ID) ?: return START_NOT_STICKY
                 if (trackId != null) return START_STICKY
@@ -101,13 +111,23 @@ class TrackRecorderService : Service() {
 
                 createChannel()
                 val notif = buildNotification("Recording — 0 m")
-                if (Build.VERSION.SDK_INT >= 29) {
-                    ServiceCompat.startForeground(
-                        this, NOTIF_ID, notif,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
-                    )
-                } else {
-                    startForeground(NOTIF_ID, notif)
+                try {
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        ServiceCompat.startForeground(
+                            this, NOTIF_ID, notif,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+                        )
+                    } else {
+                        startForeground(NOTIF_ID, notif)
+                    }
+                } catch (e: Exception) {
+                    // ForegroundServiceStartNotAllowed / SecurityException: the app lost
+                    // foreground or location permission between tap and start. Bail out
+                    // without a half-started recording.
+                    trackId = null
+                    _active.value = null
+                    stopSelf()
+                    return START_NOT_STICKY
                 }
 
                 val thread = HandlerThread("track-recorder").also { it.start() }
@@ -164,7 +184,7 @@ class TrackRecorderService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_rec)
             .setContentTitle("MGRS GPS — recording track")
             .setContentText(text)
             .setOngoing(true)

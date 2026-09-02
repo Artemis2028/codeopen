@@ -24,6 +24,23 @@ import java.util.zip.ZipOutputStream
  */
 object DataPackage {
 
+    private const val MAX_ENTRY_BYTES = 32L * 1024 * 1024
+
+    /** Read one zip entry into memory, or null when it is larger than we are willing to hold. */
+    private fun readCapped(zin: ZipInputStream): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        var total = 0L
+        while (true) {
+            val n = zin.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > MAX_ENTRY_BYTES) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
     // ---------------- Import ----------------
 
     fun parse(stream: InputStream): InterchangeFiles.ImportedData {
@@ -37,8 +54,10 @@ object DataPackage {
         while (entry != null) {
             val name = entry.name
             val lower = name.lowercase(Locale.US)
-            if (!entry.isDirectory) {
-                val bytes = zin.readBytes()
+            val wanted = lower.endsWith(".cot") || lower.endsWith(".gpx") ||
+                lower.endsWith(".kml") || lower.endsWith(".kmz")
+            val bytes = if (!entry.isDirectory && wanted) readCapped(zin) else null
+            if (bytes != null) {
                 when {
                     lower.endsWith(".cot") ->
                         parseCot(ByteArrayInputStream(bytes))?.let { wps.add(it) }

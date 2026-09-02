@@ -195,7 +195,9 @@ fun SettingsScreen(
 
         Text(
             "MGRS GPS " + app.gridfix.android.BuildConfig.VERSION_NAME + "\n" +
-                "MGRS conversion by the NGA MGRS library (MIT license).\n\n" +
+                "MGRS conversion by the NGA MGRS library (MIT license).\n" +
+                "Elevation data: Terrarium tiles via AWS Open Data (Mapzen) — " +
+                "SRTM, USGS 3DEP/NED, GMTED2010, ETOPO1.\n\n" +
                 "MGRS GPS is a training and recreation aid, not a primary means of navigation.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

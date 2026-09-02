@@ -1,7 +1,9 @@
 package app.gridfix.android.data
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -11,7 +13,10 @@ import org.json.JSONObject
 import java.util.Locale
 import java.util.UUID
 
-private val Context.wpStore by preferencesDataStore(name = "waypoints")
+private val Context.wpStore by preferencesDataStore(
+    name = "waypoints",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 const val DEFAULT_FOLDER = "Waypoints"
 const val DEFAULT_SYMBOL = "flag"
@@ -212,12 +217,13 @@ class WaypointRepository(private val context: Context) {
         context.wpStore.edit { p -> p[selectedKey] = id }
     }
 
-    private fun decode(json: String): List<Waypoint> = runCatching {
-        val arr = JSONArray(json)
-        buildList {
+    // One damaged record must not take the whole list with it: skip it, keep the rest.
+    private fun decode(json: String): List<Waypoint> {
+        val arr = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
+        return buildList {
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(
+                val o = runCatching { arr.getJSONObject(i) }.getOrNull() ?: continue
+                runCatching {
                     Waypoint(
                         id = o.getString("id"),
                         name = o.getString("name"),
@@ -236,10 +242,10 @@ class WaypointRepository(private val context: Context) {
                         ),
                         rotation = o.optDouble("rotation", 0.0).toFloat(),
                     )
-                )
+                }.getOrNull()?.let { add(it) }
             }
         }
-    }.getOrDefault(emptyList())
+    }
 
     /** Add or update a folder entry; visible == null keeps the existing visibility. */
     private fun upsertFolder(list: List<FolderInfo>, name: String, visible: Boolean?): List<FolderInfo> {
