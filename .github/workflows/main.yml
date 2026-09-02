@@ -1187,7 +1187,7 @@ jobs:
               // the phone's own auto-rotate says. The activity handles the config change
               // itself (manifest configChanges), so nothing is recreated.
               LaunchedEffect(settings.orientation) {
-                  context.findActivity()?.requestedOrientation = ScreenOrientation.toActivityInfo(settings.orientation)
+                  context.hostActivity()?.requestedOrientation = ScreenOrientation.toActivityInfo(settings.orientation)
               }
               val landscape = isLandscape()
 
@@ -2032,7 +2032,8 @@ jobs:
           fun isLandscape(): Boolean =
               LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-          fun Context.findActivity(): Activity? {
+          /** The Activity hosting this context (PaywallScreen has its own private finder). */
+          fun Context.hostActivity(): Activity? {
               var c: Context = this
               while (c is ContextWrapper) {
                   if (c is Activity) return c
@@ -3440,9 +3441,11 @@ jobs:
               val steerLine = "HDG $headingText · ${steerText(deviation, settings.angleUnit)}"
 
               BoxWithConstraints(Modifier.fillMaxSize()) {
+                  // Read here: the constraints scope is not reachable from inside the Column below
+                  val viewport = maxHeight
                   // 16 dp of padding each side; the dial must fit inside it
                   val dialSize = if (landscape) {
-                      (maxHeight - 40.dp).coerceIn(160.dp, 300.dp)
+                      (viewport - 40.dp).coerceIn(160.dp, 300.dp)
                   } else {
                       (maxWidth - 62.dp).coerceAtMost(if (settings.face == Face.LENSATIC) 360.dp else 330.dp)
                   }
@@ -3460,7 +3463,7 @@ jobs:
                           Row(
                               Modifier
                                   .fillMaxWidth()
-                                  .heightIn(min = maxHeight - 32.dp),
+                                  .heightIn(min = viewport - 32.dp),
                               verticalAlignment = Alignment.CenterVertically,
                           ) {
                               CompositionLocalProvider(LocalDensity provides faceDensity) {
