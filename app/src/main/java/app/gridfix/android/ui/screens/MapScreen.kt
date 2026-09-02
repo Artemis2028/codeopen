@@ -72,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -89,6 +90,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
@@ -855,52 +857,29 @@ fun MapScreen(
             drawCircle(crossColor, radius = 2.dp.toPx(), center = Offset(c, c))
         }
 
-        // Right-side buttons
-        Column(
+        // Top-right: north indicator (tap to reset) and track recording
+        @Suppress("UNUSED_EXPRESSION")
+        cameraTick
+        Row(
             modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 10.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .align(Alignment.TopEnd)
+                .padding(top = 10.dp, end = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            @Suppress("UNUSED_EXPRESSION")
-            cameraTick
             val orientation = holder.map?.mapOrientation ?: 0f
-            if (orientation > 0.5f || orientation < -0.5f) {
-                MapButton(
-                    Icons.Outlined.Navigation,
-                    "Reset to north-up",
-                    true,
-                    iconRotation = orientation,
-                ) {
-                    holder.map?.let { m ->
-                        m.mapOrientation = 0f
-                        m.invalidate()
-                    }
-                    cameraTick++
+            val rotated = orientation > 0.5f || orientation < -0.5f
+            MapButton(
+                Icons.Outlined.Navigation,
+                if (rotated) "Reset to north-up" else "North-up",
+                rotated,
+                iconRotation = orientation,
+            ) {
+                holder.map?.let { m ->
+                    m.mapOrientation = 0f
+                    m.invalidate()
                 }
+                cameraTick++
             }
-            MapButton(Icons.Outlined.Layers, "Layers", false) { layersOpen = true }
-            MapButton(Icons.Outlined.MyLocation, "My location", following) {
-                if (!hasPermission) {
-                    onRequestPermission()
-                } else {
-                    following = true
-                    fix.location?.let { loc ->
-                        holder.map?.controller?.animateTo(GeoPoint(loc.latitude, loc.longitude))
-                    }
-                }
-            }
-            MapButton(Icons.Outlined.Straighten, "Ruler", rulerAnchor != null) {
-                rulerAnchor = if (rulerAnchor == null) {
-                    holder.map?.mapCenter?.let { GeoPoint(it.latitude, it.longitude) }
-                } else null
-            }
-            MapButton(Icons.Outlined.Timeline, "Draw graphic", drawType != null) {
-                if (drawType == null) drawPickerOpen = true
-            }
-            MapButton(Icons.Outlined.Search, "Go to grid", false) { gotoOpen = true }
             MapButton(Icons.Outlined.FiberManualRecord, "Record track", activeTrack != null) {
                 if (activeTrack != null) {
                     stopTrackOpen = true
@@ -912,19 +891,13 @@ fun MapScreen(
                     onRecordStart()
                 }
             }
-            MapButton(Icons.Outlined.Calculate, "Field tools", fieldTool != null) {
-                fieldToolsOpen = true
-            }
-            MapButton(Icons.Outlined.AddLocationAlt, "Waypoint at crosshair", false) {
-                holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
-            }
         }
 
         // Status chips (download progress / import result / no-permission hint)
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 10.dp),
+                .padding(top = 74.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -979,10 +952,132 @@ fun MapScreen(
             }
         }
 
-        // Bottom stack: draw-mode action bar (when drawing) above the crosshair readout
         @Suppress("UNUSED_EXPRESSION")
         cameraTick
         val center = holder.map?.mapCenter
+        // Top-left pill: the crosshair grid, tap to copy, hold to share
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 12.dp, top = 10.dp),
+            color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        ) {
+            val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+            Column(
+                Modifier
+                    .combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            val c = holder.map?.mapCenter ?: return@combinedClickable
+                            val full = Coordinates.mgrs(c.latitude, c.longitude, settings.mgrsDigits)?.full
+                            if (full != null) {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(full))
+                                notice = "Copied $full"
+                            }
+                        },
+                        onLongClick = {
+                            val c = holder.map?.mapCenter ?: return@combinedClickable
+                            val full = Coordinates.mgrs(c.latitude, c.longitude, settings.mgrsDigits)?.full
+                                ?: return@combinedClickable
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    android.content.Intent.EXTRA_TEXT,
+                                    "MGRS $full · " + Coordinates.dtg(System.currentTimeMillis()) + " · sent from MGRS GPS",
+                                )
+                            }
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent.createChooser(send, "Share position")
+                                )
+                            }
+                        },
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.Start,
+            ) {
+                val parts = center?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (parts == null) "—"
+                        else if (parts.easting.isEmpty()) parts.full
+                        else "${parts.gzd} ${parts.square} ${parts.easting} ${parts.northing}",
+                        fontFamily = MonoFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    if (gridInterval.isNotEmpty()) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            gridInterval,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = MonoFamily,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    crossElevation?.let { elev ->
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "▲" + Coordinates.formatAltitude(elev, settings.units),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = MonoFamily,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                val loc = fix.location
+                val declination = remember(
+                    loc?.latitude?.let { (it * 10).toInt() },
+                    loc?.longitude?.let { (it * 10).toInt() },
+                ) {
+                    if (loc == null) 0f else GeomagneticField(
+                        loc.latitude.toFloat(), loc.longitude.toFloat(),
+                        if (loc.hasAltitude()) loc.altitude.toFloat() else 0f, loc.time,
+                    ).declination
+                }
+                fun toRef(angleTrue: Float): Float = when (settings.northRef) {
+                    1 -> (angleTrue - declination + 360f) % 360f
+                    2 -> if (center == null) angleTrue else
+                        (angleTrue - Coordinates.gridConvergence(center.latitude, center.longitude).toFloat() + 360f) % 360f
+                    else -> angleTrue
+                }
+                val refLetter = when (settings.northRef) {
+                    1 -> "M"
+                    2 -> "G"
+                    else -> "T"
+                }
+                val anchor = rulerAnchor
+                val line2 = when {
+                    anchor != null && center != null -> {
+                        val nav = Coordinates.navInfo(anchor.latitude, anchor.longitude, center.latitude, center.longitude)
+                        "RULER  " + Coordinates.formatDistance(nav.distanceMeters, settings.units) +
+                            "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter +
+                            "  back " + Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit)
+                    }
+                    loc != null && center != null -> {
+                        val nav = Coordinates.navInfo(loc.latitude, loc.longitude, center.latitude, center.longitude)
+                        "ME → CROSSHAIR  " + Coordinates.formatDistance(nav.distanceMeters, settings.units) +
+                            "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
+                    }
+                    else -> "long-press the map to drop a waypoint"
+                }
+                Text(
+                    line2,
+                    fontFamily = MonoFamily,
+                    fontSize = 11.sp,
+                    color = if (anchor != null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        // Bottom stack: draw-mode action bar (when drawing) above the tool deck
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1078,121 +1173,58 @@ fun MapScreen(
                 }
             }
         }
+        // Deck: the tools within thumb reach, one amber primary action
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.93f),
+            color = MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
         ) {
-            val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-            Column(
+            val rule = MaterialTheme.colorScheme.outline
+            Row(
                 Modifier
-                    .combinedClickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {
-                            val c = holder.map?.mapCenter ?: return@combinedClickable
-                            val full = Coordinates.mgrs(c.latitude, c.longitude, settings.mgrsDigits)?.full
-                            if (full != null) {
-                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(full))
-                                notice = "Copied $full"
-                            }
-                        },
-                        onLongClick = {
-                            val c = holder.map?.mapCenter ?: return@combinedClickable
-                            val full = Coordinates.mgrs(c.latitude, c.longitude, settings.mgrsDigits)?.full
-                                ?: return@combinedClickable
-                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(
-                                    android.content.Intent.EXTRA_TEXT,
-                                    "MGRS $full · " + Coordinates.dtg(System.currentTimeMillis()) + " · sent from MGRS GPS",
-                                )
-                            }
-                            runCatching {
-                                context.startActivity(
-                                    android.content.Intent.createChooser(send, "Share position")
-                                )
-                            }
-                        },
-                    )
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                    .fillMaxWidth()
+                    .drawBehind { drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) }
+                    .padding(start = 4.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                val parts = center?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (parts == null) "—"
-                        else if (parts.easting.isEmpty()) parts.full
-                        else "${parts.gzd} ${parts.square} ${parts.easting} ${parts.northing}",
-                        fontFamily = MonoFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                    )
-                    if (gridInterval.isNotEmpty()) {
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            gridInterval,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = MonoFamily,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                Row(Modifier.weight(1f)) {
+                    ToolCell(Icons.Outlined.Layers, "Layers", false, Modifier.weight(1f)) { layersOpen = true }
+                    ToolCell(Icons.Outlined.MyLocation, "Locate", following, Modifier.weight(1f)) {
+                        if (!hasPermission) {
+                            onRequestPermission()
+                        } else {
+                            following = true
+                            fix.location?.let { loc ->
+                                holder.map?.controller?.animateTo(GeoPoint(loc.latitude, loc.longitude))
+                            }
+                        }
                     }
-                    crossElevation?.let { elev ->
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "▲" + Coordinates.formatAltitude(elev, settings.units),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = MonoFamily,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    ToolCell(Icons.Outlined.Straighten, "Ruler", rulerAnchor != null, Modifier.weight(1f)) {
+                        rulerAnchor = if (rulerAnchor == null) {
+                            holder.map?.mapCenter?.let { GeoPoint(it.latitude, it.longitude) }
+                        } else null
                     }
+                    ToolCell(Icons.Outlined.Timeline, "Draw", drawType != null, Modifier.weight(1f)) {
+                        if (drawType == null) drawPickerOpen = true
+                    }
+                    ToolCell(Icons.Outlined.Search, "Go to", false, Modifier.weight(1f)) { gotoOpen = true }
+                    ToolCell(Icons.Outlined.Calculate, "Tools", fieldTool != null, Modifier.weight(1f)) { fieldToolsOpen = true }
                 }
-                Spacer(Modifier.height(2.dp))
-                val loc = fix.location
-                val declination = remember(
-                    loc?.latitude?.let { (it * 10).toInt() },
-                    loc?.longitude?.let { (it * 10).toInt() },
+                Box(
+                    Modifier
+                        .padding(start = 6.dp)
+                        .size(48.dp)
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable {
+                            holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
+                        },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    if (loc == null) 0f else GeomagneticField(
-                        loc.latitude.toFloat(), loc.longitude.toFloat(),
-                        if (loc.hasAltitude()) loc.altitude.toFloat() else 0f, loc.time,
-                    ).declination
+                    Icon(
+                        Icons.Outlined.AddLocationAlt,
+                        contentDescription = "Waypoint at crosshair",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                    )
                 }
-                fun toRef(angleTrue: Float): Float = when (settings.northRef) {
-                    1 -> (angleTrue - declination + 360f) % 360f
-                    2 -> if (center == null) angleTrue else
-                        (angleTrue - Coordinates.gridConvergence(center.latitude, center.longitude).toFloat() + 360f) % 360f
-                    else -> angleTrue
-                }
-                val refLetter = when (settings.northRef) {
-                    1 -> "M"
-                    2 -> "G"
-                    else -> "T"
-                }
-                val anchor = rulerAnchor
-                val line2 = when {
-                    anchor != null && center != null -> {
-                        val nav = Coordinates.navInfo(anchor.latitude, anchor.longitude, center.latitude, center.longitude)
-                        "RULER  " + Coordinates.formatDistance(nav.distanceMeters, settings.units) +
-                            "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter +
-                            "  back " + Coordinates.formatAngle(toRef((nav.bearingTrue + 180f) % 360f), settings.angleUnit)
-                    }
-                    loc != null && center != null -> {
-                        val nav = Coordinates.navInfo(loc.latitude, loc.longitude, center.latitude, center.longitude)
-                        "ME → CROSSHAIR  " + Coordinates.formatDistance(nav.distanceMeters, settings.units) +
-                            "  " + Coordinates.formatAngle(toRef(nav.bearingTrue), settings.angleUnit) + " " + refLetter
-                    }
-                    else -> "long-press the map to drop a waypoint"
-                }
-                Text(
-                    line2,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = MonoFamily,
-                    color = if (anchor != null) MaterialTheme.colorScheme.secondary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
             }
         }
         }
@@ -2129,8 +2161,8 @@ private fun MapButton(
 ) {
     Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-        shadowElevation = 3.dp,
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
         IconButton(onClick = onClick) {
             Icon(
@@ -2141,6 +2173,40 @@ private fun MapButton(
                 modifier = Modifier.graphicsLayer { rotationZ = iconRotation },
             )
         }
+    }
+}
+
+/** One tool on the deck: icon over a tiny label, amber when its mode is active. */
+@Composable
+private fun ToolCell(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            label.uppercase(java.util.Locale.US),
+            fontFamily = LabelFamily,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.6.sp,
+            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
     }
 }
 

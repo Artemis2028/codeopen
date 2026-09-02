@@ -1,5 +1,9 @@
 package app.gridfix.android.ui.screens
 
+import android.hardware.GeomagneticField
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -15,19 +19,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.FileUpload
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Share
@@ -48,20 +50,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
+import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
+import app.gridfix.android.ui.faces.northRefLetter
+import app.gridfix.android.ui.faces.toNorthRef
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.FolderInfo
@@ -153,7 +158,6 @@ fun WaypointsScreen(
         }
     }
     var newFolderOpen by remember { mutableStateOf(false) }
-    val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     val loc = fix.location
     val byFolder = waypoints.groupBy { it.folder }
     val graphicsByFolder = graphics.groupBy { it.folder }
@@ -183,202 +187,243 @@ fun WaypointsScreen(
         }
     }
 
+    // ---- Cards view: one row of filter tabs, then distance-sorted cards ----
+    var filter by remember { mutableStateOf(FILTER_ALL) }
+    val folderNames = folders.map { it.name }
+    val activeFilter = when {
+        filter == FILTER_ALL || filter == FILTER_TRACKS || filter == FILTER_GRAPHICS -> filter
+        filter in folderNames -> filter
+        else -> FILTER_ALL
+    }
+    val visibleFolders = folders.filter { it.visible }.map { it.name }.toSet()
+    val declination = remember(
+        loc?.latitude?.let { (it * 10).toInt() },
+        loc?.longitude?.let { (it * 10).toInt() },
+    ) {
+        if (loc == null) 0f else GeomagneticField(
+            loc.latitude.toFloat(),
+            loc.longitude.toFloat(),
+            if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
+            loc.time,
+        ).declination
+    }
+    val convergence = if (loc == null) 0f else Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
+    val refLetter = northRefLetter(settings.northRef)
+    fun distanceTo(w: Waypoint): Float =
+        if (loc == null) Float.MAX_VALUE else Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon).distanceMeters
+    val listed: List<Waypoint> = when (activeFilter) {
+        FILTER_ALL -> waypoints.filter { it.folder in visibleFolders || it.folder !in folderNames }
+        FILTER_TRACKS, FILTER_GRAPHICS -> emptyList()
+        else -> byFolder[activeFilter].orEmpty()
+    }.let { list -> if (loc != null) list.sortedBy { distanceTo(it) } else list }
+    val currentFolder = folders.firstOrNull { it.name == activeFilter }
+
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item(key = "overlays-header") {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "OVERLAYS",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        letterSpacing = 2.sp,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
-                        Icon(
-                            Icons.Outlined.FileUpload,
-                            contentDescription = "Import GPX/KML/KMZ",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = { exportOpen = true }) {
-                        Icon(
-                            Icons.Outlined.FileDownload,
-                            contentDescription = "Export",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    TextButton(onClick = { newFolderOpen = true }) {
-                        Icon(
-                            Icons.Outlined.CreateNewFolder,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.size(6.dp))
-                        Text("New folder")
-                    }
+        Column(Modifier.fillMaxSize()) {
+            // Filter tabs
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilterTab("All", activeFilter == FILTER_ALL) { filter = FILTER_ALL }
+                folders.forEach { f ->
+                    FilterTab(f.name, activeFilter == f.name, dim = !f.visible) { filter = f.name }
                 }
+                if (tracks.isNotEmpty()) FilterTab("Tracks", activeFilter == FILTER_TRACKS) { filter = FILTER_TRACKS }
+                if (graphics.isNotEmpty()) FilterTab("Graphics", activeFilter == FILTER_GRAPHICS) { filter = FILTER_GRAPHICS }
+                FilterTab("+ Folder", false) { newFolderOpen = true }
             }
 
-            ioMessage?.let { msg ->
-                item(key = "io-message") {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { ioMessage = null },
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                    ) {
-                        Text(
-                            msg,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = MonoFamily,
-                            modifier = Modifier.padding(10.dp),
-                        )
+            // Caption line: what is listed, and the folder's map visibility
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val caption = when (activeFilter) {
+                    FILTER_ALL -> if (loc != null) "Sorted by distance · ${listed.size} waypoints" else "${listed.size} waypoints"
+                    FILTER_TRACKS -> "${tracks.size} tracks"
+                    FILTER_GRAPHICS -> "${graphics.size} graphics"
+                    else -> {
+                        val g = graphicsByFolder[activeFilter].orEmpty().size
+                        (if (loc != null) "By distance · " else "") + "${listed.size} waypoints" + (if (g > 0) " · $g graphics" else "")
                     }
                 }
-            }
-
-            folders.forEach { folder ->
-                val list = byFolder[folder.name].orEmpty()
-                val glist = graphicsByFolder[folder.name].orEmpty()
-                val isCollapsed = collapsed[folder.name] == true
-                item(key = "folder-${folder.name}") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { collapsed[folder.name] = !isCollapsed },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                Text(
+                    caption.uppercase(Locale.US),
+                    fontFamily = LabelFamily,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 1.6.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                currentFolder?.let { f ->
+                    IconButton(onClick = { onSetFolderVisible(f.name, !f.visible) }) {
                         Icon(
-                            if (isCollapsed || !folder.visible) Icons.Outlined.ExpandMore
-                            else Icons.Outlined.ExpandLess,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            folder.name.uppercase(Locale.US),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (folder.visible) MaterialTheme.colorScheme.primary
+                            if (f.visible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                            contentDescription = if (f.visible) "Hide folder on map" else "Show folder on map",
+                            tint = if (f.visible) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
-                            letterSpacing = 2.sp,
-                            modifier = Modifier.weight(1f),
                         )
+                    }
+                }
+                IconButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
+                    Icon(
+                        Icons.Outlined.FileUpload,
+                        contentDescription = "Import GPX/KML/KMZ",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = { exportOpen = true }) {
+                    Icon(
+                        Icons.Outlined.FileDownload,
+                        contentDescription = "Export",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ioMessage?.let { msg ->
+                    item(key = "io-message") {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { ioMessage = null },
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                        ) {
+                            Text(
+                                msg,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = MonoFamily,
+                                modifier = Modifier.padding(10.dp),
+                            )
+                        }
+                    }
+                }
+
+                if (currentFolder != null && !currentFolder.visible) {
+                    item(key = "hidden-hint") {
                         Text(
-                            if (glist.isEmpty()) "${list.size}" else "${list.size} + ${glist.size}",
-                            style = MaterialTheme.typography.labelMedium,
+                            "${currentFolder.name} is hidden on the map — tap the eye to show it.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        IconButton(onClick = { onSetFolderVisible(folder.name, !folder.visible) }) {
-                            Icon(
-                                if (folder.visible) Icons.Outlined.Visibility
-                                else Icons.Outlined.VisibilityOff,
-                                contentDescription = if (folder.visible) "Hide overlay" else "Show overlay",
-                                tint = if (folder.visible) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
                     }
                 }
-                if (folder.visible && !isCollapsed) {
-                    val (wps, units) = list.partition { it.kind != KIND_UNIT }
-                    items(wps, key = { it.id }) { w ->
-                        WaypointRow(
-                            w = w,
-                            loc = loc,
+
+                when (activeFilter) {
+                    FILTER_TRACKS -> items(tracks, key = { "t-" + it.id }) { t ->
+                        TrackRow(
+                            t = t,
                             settings = settings,
-                            onClick = { onNavigateTo(w.id) },
-                            onEdit = { editing = w; dialogOpen = true },
-                            onDelete = { deleteCandidate = w },
-                            onShowOnMap = { onShowOnMap(w) },
+                            viewed = t.id == viewedTrackId,
+                            onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
+                            onShare = { shareGpx(t) },
+                            onDelete = { deleteTrackCandidate = t },
+                            onBacktrack = { onBacktrackTrack(t) },
                         )
                     }
-                    if (units.isNotEmpty()) {
-                        item(key = "units-${folder.name}") {
-                            Text(
-                                "UNITS",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                letterSpacing = 2.sp,
-                                modifier = Modifier.padding(start = 4.dp, top = 4.dp),
-                            )
+                    FILTER_GRAPHICS -> folders.forEach { folder ->
+                        val glist = graphicsByFolder[folder.name].orEmpty()
+                        if (glist.isNotEmpty()) {
+                            item(key = "ghead-${folder.name}") {
+                                Text(
+                                    folder.name.uppercase(Locale.US),
+                                    fontFamily = LabelFamily,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    letterSpacing = 1.6.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 6.dp),
+                                )
+                            }
+                            items(glist, key = { "g-" + it.id }) { g ->
+                                GraphicRow(
+                                    g = g,
+                                    night = settings.nightMode,
+                                    onClick = { onShowGraphicOnMap(g) },
+                                    onCard = if (g.type == "route") {
+                                        { routeCardFor = g }
+                                    } else null,
+                                    onDelete = { deleteGraphicCandidate = g },
+                                )
+                            }
+                            if (glist.size > 1) {
+                                item(key = "clear-${folder.name}") {
+                                    TextButton(onClick = { clearFolderCandidate = folder.name }) {
+                                        Text("Clear ${glist.size} graphics in ${folder.name}")
+                                    }
+                                }
+                            }
                         }
                     }
-                    items(units, key = { it.id }) { w ->
-                        WaypointRow(
-                            w = w,
-                            loc = loc,
-                            settings = settings,
-                            onClick = { onShowOnMap(w) },
-                            onEdit = { editing = w; dialogOpen = true },
-                            onDelete = { deleteCandidate = w },
-                            onShowOnMap = { onShowOnMap(w) },
-                        )
-                    }
-                    items(glist, key = { "g-" + it.id }) { g ->
-                        GraphicRow(
-                            g = g,
-                            night = settings.nightMode,
-                            onClick = { onShowGraphicOnMap(g) },
-                            onCard = if (g.type == "route") {
-                                { routeCardFor = g }
-                            } else null,
-                            onDelete = { deleteGraphicCandidate = g },
-                        )
-                    }
-                    if (glist.size > 1) {
-                        item(key = "clear-${folder.name}") {
-                            TextButton(onClick = { clearFolderCandidate = folder.name }) {
-                                Text("Clear ${glist.size} graphics in ${folder.name}")
+                    else -> {
+                        items(listed, key = { it.id }) { w ->
+                            WaypointCard(
+                                w = w,
+                                loc = loc,
+                                settings = settings,
+                                declination = declination,
+                                convergence = convergence,
+                                refLetter = refLetter,
+                                showFolder = activeFilter == FILTER_ALL,
+                                onClick = { if (w.kind == KIND_UNIT) onShowOnMap(w) else onNavigateTo(w.id) },
+                                onNavigate = { onNavigateTo(w.id) },
+                                onEdit = { editing = w; dialogOpen = true },
+                                onDelete = { deleteCandidate = w },
+                                onShowOnMap = { onShowOnMap(w) },
+                            )
+                        }
+                        if (currentFolder != null) {
+                            val glist = graphicsByFolder[currentFolder.name].orEmpty()
+                            items(glist, key = { "g-" + it.id }) { g ->
+                                GraphicRow(
+                                    g = g,
+                                    night = settings.nightMode,
+                                    onClick = { onShowGraphicOnMap(g) },
+                                    onCard = if (g.type == "route") {
+                                        { routeCardFor = g }
+                                    } else null,
+                                    onDelete = { deleteGraphicCandidate = g },
+                                )
+                            }
+                            if (glist.size > 1) {
+                                item(key = "clear-${currentFolder.name}") {
+                                    TextButton(onClick = { clearFolderCandidate = currentFolder.name }) {
+                                        Text("Clear ${glist.size} graphics in ${currentFolder.name}")
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if (tracks.isNotEmpty()) {
-                item(key = "tracks-header") {
-                    Text(
-                        "TRACKS",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        letterSpacing = 2.sp,
-                        modifier = Modifier.padding(top = 12.dp),
-                    )
-                }
-                items(tracks, key = { "t-" + it.id }) { t ->
-                    TrackRow(
-                        t = t,
-                        settings = settings,
-                        viewed = t.id == viewedTrackId,
-                        onView = { onViewTrack(if (t.id == viewedTrackId) null else t.id) },
-                        onShare = { shareGpx(t) },
-                        onDelete = { deleteTrackCandidate = t },
-                        onBacktrack = { onBacktrackTrack(t) },
-                    )
-                }
-            }
-
-            if (waypoints.isEmpty()) {
-                item(key = "empty-hint") {
-                    Text(
-                        "No waypoints yet — tap + to mark your current position or enter an MGRS grid.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 24.dp),
-                    )
+                if (activeFilter != FILTER_TRACKS && activeFilter != FILTER_GRAPHICS && listed.isEmpty()) {
+                    item(key = "empty-hint") {
+                        Text(
+                            if (waypoints.isEmpty()) "No waypoints yet — tap + to mark your current position or enter an MGRS grid."
+                            else "Nothing here yet — tap + to add a waypoint to this folder.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 24.dp),
+                        )
+                    }
                 }
             }
         }
@@ -388,6 +433,7 @@ fun WaypointsScreen(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(20.dp),
+            shape = CircleShape,
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
         ) {
@@ -686,12 +732,51 @@ private fun GraphicRow(
     }
 }
 
+private const val FILTER_ALL = "\u0000all"
+private const val FILTER_TRACKS = "\u0000tracks"
+private const val FILTER_GRAPHICS = "\u0000graphics"
+
+/** One tab in the filter row: outlined when idle, amber-filled when selected, dimmed for hidden folders. */
 @Composable
-private fun WaypointRow(
+private fun FilterTab(label: String, selected: Boolean, dim: Boolean = false, onClick: () -> Unit) {
+    val line = MaterialTheme.colorScheme.outline
+    val fill = MaterialTheme.colorScheme.primary
+    Box(
+        Modifier
+            .height(36.dp)
+            .border(1.dp, if (selected) fill else line)
+            .background(if (selected) fill else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label.uppercase(Locale.US),
+            fontFamily = LabelFamily,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 1.2.sp,
+            color = when {
+                selected -> MaterialTheme.colorScheme.onPrimary
+                dim -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun WaypointCard(
     w: Waypoint,
     loc: android.location.Location?,
     settings: AppSettings,
+    declination: Float,
+    convergence: Float,
+    refLetter: String,
+    showFolder: Boolean,
     onClick: () -> Unit,
+    onNavigate: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onShowOnMap: () -> Unit,
@@ -701,6 +786,7 @@ private fun WaypointRow(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
         Row(
             Modifier
@@ -708,10 +794,17 @@ private fun WaypointRow(
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 34.dp, echelon = w.echelon, night = settings.nightMode, rotation = w.rotation)
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                WaypointMarker(symbol = w.symbol, affiliation = w.affiliation, size = 36.dp, echelon = w.echelon, night = settings.nightMode, rotation = w.rotation)
+            }
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(w.name, style = MaterialTheme.typography.titleMedium)
+                Text(w.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 Spacer(Modifier.height(2.dp))
                 Text(
                     Coordinates.mgrs(w.lat, w.lon, 8)?.full
@@ -719,36 +812,61 @@ private fun WaypointRow(
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = MonoFamily,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
-                if (w.kind == KIND_UNIT) {
+                val detail = if (w.kind == KIND_UNIT) {
                     val ech = Echelons.label(w.echelon).takeIf { w.echelon.isNotEmpty() }
+                    listOfNotNull(
+                        NatoSymbols.label(w.symbol),
+                        ech,
+                        w.designation.takeIf { it.isNotEmpty() },
+                        w.folder.takeIf { showFolder },
+                    ).joinToString(" · ")
+                } else if (showFolder) w.folder else ""
+                if (detail.isNotEmpty()) {
+                    Spacer(Modifier.height(3.dp))
                     Text(
-                        listOfNotNull(
-                            NatoSymbols.label(w.symbol),
-                            ech,
-                            w.designation.takeIf { it.isNotEmpty() },
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
+                        detail.uppercase(Locale.US),
+                        fontFamily = LabelFamily,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.2.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
             }
-            if (loc != null) {
-                val nav = Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon)
-                Column(horizontalAlignment = Alignment.End) {
+            Spacer(Modifier.size(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                if (loc != null) {
+                    val nav = Coordinates.navInfo(loc.latitude, loc.longitude, w.lat, w.lon)
                     Text(
                         Coordinates.formatDistance(nav.distanceMeters, settings.units),
-                        style = MaterialTheme.typography.titleMedium,
                         fontFamily = MonoFamily,
-                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
                     )
                     Text(
-                        Coordinates.formatAngle(nav.bearingTrue, settings.angleUnit) + " T",
+                        Coordinates.formatAngle(toNorthRef(nav.bearingTrue, settings.northRef, declination, convergence), settings.angleUnit) + " " + refLetter,
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = MonoFamily,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
+                Text(
+                    "NAVIGATE",
+                    fontFamily = LabelFamily,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.6.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable(onClick = onNavigate)
+                        .padding(top = 6.dp, bottom = 2.dp),
+                )
             }
             var menuOpen by remember { mutableStateOf(false) }
             Box {
@@ -780,4 +898,3 @@ private fun WaypointRow(
         }
     }
 }
-

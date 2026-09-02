@@ -2,20 +2,27 @@ package app.gridfix.android.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -27,15 +34,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.ui.faces.Face
+import app.gridfix.android.ui.theme.LabelFamily
+import app.gridfix.android.ui.theme.MonoFamily
 import kotlinx.coroutines.launch
 
 @Composable
@@ -62,31 +75,14 @@ fun SettingsScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            "SETTINGS",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            letterSpacing = 2.sp,
-        )
+        // ---------------- DISPLAY ----------------
+        SectionHeader("Display", first = true)
 
-        SettingSwitch(
-            title = "Night mode",
-            subtitle = "Red-on-black display to preserve night vision",
-            checked = settings.nightMode,
-        ) { scope.launch { repo.setNightMode(it) } }
-
-        SettingSwitch(
-            title = "Keep screen on",
-            subtitle = "Prevent the display from sleeping while MGRS GPS is open",
-            checked = settings.keepScreenOn,
-        ) { scope.launch { repo.setKeepScreenOn(it) } }
-
-        Column {
-            ChipGroup(
-                title = "Position & Navigate face",
+        Setting("Position & Navigate face") {
+            Segmented(
                 options = Face.names,
                 selected = settings.face,
             ) { index -> scope.launch { repo.setFace(index) } }
@@ -102,65 +98,80 @@ fun SettingsScreen(
             )
         }
 
-        ChipGroup(
-            title = "MGRS precision",
-            options = listOf("4-digit", "6-digit", "8-digit", "10-digit"),
-            selected = when (settings.mgrsDigits) {
-                4 -> 0
-                6 -> 1
-                8 -> 2
-                else -> 3
-            },
-        ) { index -> scope.launch { repo.setMgrsDigits(listOf(4, 6, 8, 10)[index]) } }
+        SettingSwitch(
+            title = "Night mode",
+            subtitle = "Red-on-black display to preserve night vision",
+            checked = settings.nightMode,
+        ) { scope.launch { repo.setNightMode(it) } }
 
-        ChipGroup(
-            title = "Lat/Lon format",
-            options = listOf("DD", "DDM", "DMS"),
-            selected = settings.latLonFormat,
-        ) { index -> scope.launch { repo.setLatLonFormat(index) } }
+        SettingSwitch(
+            title = "Keep screen on",
+            subtitle = "Prevent the display from sleeping while MGRS GPS is open",
+            checked = settings.keepScreenOn,
+        ) { scope.launch { repo.setKeepScreenOn(it) } }
 
-        ChipGroup(
-            title = "Units",
-            options = listOf("Metric", "Imperial", "Nautical"),
-            selected = settings.units,
-        ) { index -> scope.launch { repo.setUnits(index) } }
+        // ---------------- GRID & UNITS ----------------
+        SectionHeader("Grid & units")
 
-        ChipGroup(
-            title = "Angle unit",
-            options = listOf("Degrees", "Mils"),
-            selected = settings.angleUnit,
-        ) { index -> scope.launch { repo.setAngleUnit(index) } }
+        Setting("MGRS precision") {
+            Segmented(
+                options = listOf("4", "6", "8", "10"),
+                selected = when (settings.mgrsDigits) {
+                    4 -> 0
+                    6 -> 1
+                    8 -> 2
+                    else -> 3
+                },
+            ) { index -> scope.launch { repo.setMgrsDigits(listOf(4, 6, 8, 10)[index]) } }
+        }
 
-        ChipGroup(
-            title = "North reference",
-            options = listOf("True", "Magnetic", "Grid"),
-            selected = settings.northRef,
-        ) { index -> scope.launch { repo.setNorthRef(index) } }
+        Setting("Lat / Lon format") {
+            Segmented(options = listOf("DD", "DDM", "DMS"), selected = settings.latLonFormat) { index ->
+                scope.launch { repo.setLatLonFormat(index) }
+            }
+        }
+
+        Setting("Units") {
+            Segmented(options = listOf("Metric", "Imperial", "Nautical"), selected = settings.units) { index ->
+                scope.launch { repo.setUnits(index) }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.weight(1f)) {
+                Setting("Angle") {
+                    Segmented(options = listOf("Degrees", "Mils"), selected = settings.angleUnit) { index ->
+                        scope.launch { repo.setAngleUnit(index) }
+                    }
+                }
+            }
+            Box(Modifier.weight(1f)) {
+                Setting("North") {
+                    Segmented(options = listOf("True", "Mag", "Grid"), selected = settings.northRef) { index ->
+                        scope.launch { repo.setNorthRef(index) }
+                    }
+                }
+            }
+        }
 
         PaceSetting(
             current = settings.pacePer100m,
             onChange = { v -> scope.launch { repo.setPacePer100m(v) } },
         )
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        // ---------------- DATA ----------------
+        SectionHeader("Data")
 
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clickable { onOpenReference() }
-        ) {
-            Text("Field reference", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "Phonetic alphabet · grid reading · pace counts · contours · symbols",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        DataRow(
+            title = "Field reference",
+            subtitle = "Phonetic alphabet · grid reading · pace counts · contours · symbols",
+            onClick = onOpenReference,
+        )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Column {
-            Text("Backup & restore", style = MaterialTheme.typography.bodyLarge)
+            Text("Backup & restore", style = MaterialTheme.typography.titleMedium)
             Text(
                 "Everything — waypoints, units, graphics, tracks, settings, practice log — " +
                     "in one file you keep. Restoring never duplicates what's already here.",
@@ -189,7 +200,7 @@ fun SettingsScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         Column {
-            Text("MGRS GPS Pro", style = MaterialTheme.typography.bodyLarge)
+            Text("MGRS GPS Pro", style = MaterialTheme.typography.titleMedium)
             Text(
                 when {
                     entitled -> "Subscription active."
@@ -216,7 +227,8 @@ fun SettingsScreen(
             "MGRS GPS " + app.gridfix.android.BuildConfig.VERSION_NAME + "\n" +
                 "MGRS conversion by the NGA MGRS library (MIT license).\n" +
                 "Elevation data: Terrarium tiles via AWS Open Data (Mapzen) — " +
-                "SRTM, USGS 3DEP/NED, GMTED2010, ETOPO1.\n\n" +
+                "SRTM, USGS 3DEP/NED, GMTED2010, ETOPO1.\n" +
+                "Fonts: Saira Semi Condensed, Fira Mono, Antonio (SIL Open Font License).\n\n" +
                 "MGRS GPS is a training and recreation aid, not a primary means of navigation.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -224,17 +236,120 @@ fun SettingsScreen(
     }
 }
 
+/** Amber section title with a rule above it (except the first). */
 @Composable
-private fun PaceSetting(current: Int, onChange: (Int) -> Unit) {
-    var text by remember(current) { mutableStateOf(current.toString()) }
+private fun SectionHeader(title: String, first: Boolean = false) {
     Column {
-        Text("Pace count per 100 m", style = MaterialTheme.typography.titleMedium)
+        if (!first) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+            Spacer(Modifier.height(16.dp))
+        }
         Text(
-            "Your paces for 100 m on flat ground — used on route cards. Walk a known 100 m to find it.",
-            style = MaterialTheme.typography.bodySmall,
+            title.uppercase(),
+            fontFamily = LabelFamily,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 3.sp,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/** Small uppercase caption above a control. */
+@Composable
+private fun Setting(label: String, content: @Composable () -> Unit) {
+    Column {
+        Text(
+            label.uppercase(),
+            fontFamily = LabelFamily,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 1.8.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
+        content()
+    }
+}
+
+/** Joined segmented control: the active segment fills amber, the rest are outlined. */
+@Composable
+private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    val line = MaterialTheme.colorScheme.outline
+    val on = MaterialTheme.colorScheme.primary
+    val onText = MaterialTheme.colorScheme.onPrimary
+    val offText = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .border(1.dp, line),
+    ) {
+        options.forEachIndexed { index, label ->
+            val sel = index == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(if (sel) on else Color.Transparent)
+                    .drawBehind {
+                        if (index > 0) drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
+                    }
+                    .clickable { onSelect(index) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label.uppercase(),
+                    fontFamily = LabelFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 1.2.sp,
+                    color = if (sel) onText else offText,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DataRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun PaceSetting(current: Int, onChange: (Int) -> Unit) {
+    var text by remember(current) { mutableStateOf(current.toString()) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Pace count per 100 m", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Your paces for 100 m on flat ground — used on route cards. Walk a known 100 m to find it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
         OutlinedTextField(
             value = text,
             onValueChange = { v ->
@@ -243,7 +358,9 @@ private fun PaceSetting(current: Int, onChange: (Int) -> Unit) {
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            suffix = { Text("paces") },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = MonoFamily),
+            suffix = { Text("paces", style = MaterialTheme.typography.bodySmall) },
+            modifier = Modifier.width(128.dp),
         )
     }
 }
@@ -265,27 +382,5 @@ private fun SettingSwitch(
             )
         }
         Switch(checked = checked, onCheckedChange = onChange)
-    }
-}
-
-@Composable
-private fun ChipGroup(
-    title: String,
-    options: List<String>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-) {
-    Column {
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            options.forEachIndexed { index, label ->
-                FilterChip(
-                    selected = index == selected,
-                    onClick = { onSelect(index) },
-                    label = { Text(label) },
-                )
-            }
-        }
     }
 }
