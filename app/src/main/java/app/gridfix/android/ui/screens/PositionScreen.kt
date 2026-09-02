@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -50,7 +51,11 @@ import app.gridfix.android.ui.QrDialog
 import app.gridfix.android.ui.faces.DialPositionFace
 import app.gridfix.android.ui.faces.Face
 import app.gridfix.android.ui.faces.GlancePositionFace
+import app.gridfix.android.ui.faces.FixBars
 import app.gridfix.android.ui.faces.facePalette
+import app.gridfix.android.ui.faces.fixColor
+import app.gridfix.android.ui.faces.fixQuality
+import app.gridfix.android.ui.faces.fixSummary
 import app.gridfix.android.ui.faces.northRefLetter
 import app.gridfix.android.ui.faces.toNorthRef
 import app.gridfix.android.ui.geoUri
@@ -124,10 +129,10 @@ fun PositionScreen(
     val utmText = loc?.let { Coordinates.formatUtm(Coordinates.utm(it.latitude, it.longitude)) } ?: "—"
     val dtgText = Coordinates.dtg(now)
     val accuracyText = if (loc != null && loc.hasAccuracy()) Coordinates.formatAccuracy(loc.accuracy, settings.units) else null
+    val quality = fixQuality(loc, fix.satellitesUsed)
     val statusLine = when {
         loc == null && !fix.gpsEnabled -> "GPS OFF · enable Location in phone settings"
-        loc == null -> "acquiring · ${fix.satellitesUsed}/${fix.satellitesVisible} sats"
-        else -> "${accuracyText ?: "fix"} · ${fix.satellitesUsed} sats"
+        else -> fixSummary(quality, fix.satellitesUsed, accuracyText)
     }
     val precisionLabel = "${settings.mgrsDigits}-DIGIT"
     val cyclePrecision: () -> Unit = {
@@ -177,6 +182,7 @@ fun PositionScreen(
                     p = palette,
                     parts = parts,
                     acquiring = loc == null,
+                    quality = quality,
                     statusLine = statusLine,
                     precisionLabel = precisionLabel,
                     onCyclePrecision = cyclePrecision,
@@ -191,10 +197,11 @@ fun PositionScreen(
                     dialSize = dialSize,
                     parts = parts,
                     acquiring = loc == null,
+                    quality = quality,
                     fixLine = when {
-                        loc == null -> "ACQUIRING ${fix.satellitesUsed}/${fix.satellitesVisible} SATS"
-                        accuracyText != null -> "FIX $accuracyText"
-                        else -> "FIX"
+                        loc == null -> "ACQUIRING · ${fix.satellitesUsed} SATS"
+                        accuracyText != null -> "${quality.word} $accuracyText"
+                        else -> quality.word
                     },
                     precisionLabel = precisionLabel,
                     onCyclePrecision = cyclePrecision,
@@ -326,11 +333,36 @@ fun PositionScreen(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                // Fix quality the operator can act on: bars, a word, and which
+                // MGRS precision the error circle actually supports
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    FixBars(quality, palette, height = 16.dp)
+                    Spacer(Modifier.size(10.dp))
+                    Text(
+                        (if (loc == null) "ACQUIRING" else "${quality.word} FIX") +
+                            " · ${fix.satellitesUsed} OF ${fix.satellitesVisible} SATS USED" +
+                            (if (loc != null) " · TRUST ${quality.trustDigits}-DIGIT" else ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (loc == null) MaterialTheme.colorScheme.onSurfaceVariant else fixColor(quality, palette),
+                        letterSpacing = 1.2.sp,
+                        maxLines = 1,
+                    )
+                }
                 Text(
-                    "GNSS ${fix.satellitesUsed}/${fix.satellitesVisible} SATELLITES IN FIX",
-                    style = MaterialTheme.typography.labelSmall,
+                    when {
+                        loc == null -> "Waiting for a position. Clear sky helps; the count is satellites the receiver is using of those it can hear."
+                        quality.bars >= 4 -> "Accuracy is the error circle around the fix. This one supports ${quality.trustDigits}-digit grids; finer digits are noise."
+                        quality.bars >= 2 -> "Usable, but read no finer than ${quality.trustDigits} digits and confirm with terrain association."
+                        else -> "Do not trust this fix for a grid — move to open sky, wait, and rely on pace count and map."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    letterSpacing = 1.2.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
                 )

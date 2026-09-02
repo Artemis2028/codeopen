@@ -1235,6 +1235,7 @@ fun MapScreen(
                         Icons.Outlined.AddLocationAlt,
                         contentDescription = "Waypoint at crosshair",
                         tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(30.dp),
                     )
                 }
             }
@@ -2221,10 +2222,10 @@ private fun ToolCell(
             label.uppercase(java.util.Locale.US),
             style = androidx.compose.ui.text.TextStyle(
                 fontFamily = LabelFamily,
-                fontSize = 9.sp,
-                lineHeight = 10.sp,
+                fontSize = 11.sp,
+                lineHeight = 12.sp,
                 fontWeight = FontWeight.Medium,
-                letterSpacing = 0.6.sp,
+                letterSpacing = 0.4.sp,
                 lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
                     alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
                     trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
@@ -2234,12 +2235,12 @@ private fun ToolCell(
             color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
-        Spacer(Modifier.height(5.dp))
+        Spacer(Modifier.height(4.dp))
         Icon(
             icon,
             contentDescription = label,
             tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(28.dp),
         )
     }
 }

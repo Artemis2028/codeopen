@@ -109,6 +109,80 @@ fun steerText(deviation: Float?, angleUnit: Int): String {
 }
 
 // ---------------------------------------------------------------------------
+// Fix quality: one word and five bars an operator can act on, instead of a
+// satellite ratio. Horizontal accuracy is what matters; the satellite count
+// only caps it. "Trust N-digit" = the MGRS precision whose cell is at least
+// as big as the error circle.
+// ---------------------------------------------------------------------------
+class FixQuality(val bars: Int, val word: String, val trustDigits: Int, val accuracyM: Float?)
+
+fun fixQuality(loc: android.location.Location?, satsUsed: Int): FixQuality {
+    if (loc == null) return FixQuality(0, "NO FIX", 0, null)
+    val acc = if (loc.hasAccuracy()) loc.accuracy else 100f
+    var bars = when {
+        acc <= 5f -> 5
+        acc <= 10f -> 4
+        acc <= 20f -> 3
+        acc <= 50f -> 2
+        else -> 1
+    }
+    if (satsUsed in 1..3) bars = minOf(bars, 1)
+    else if (satsUsed in 4..5) bars = minOf(bars, 3)
+    val word = when (bars) {
+        5 -> "EXCELLENT"
+        4 -> "GOOD"
+        3 -> "FAIR"
+        2 -> "POOR"
+        else -> "DEGRADED"
+    }
+    val trust = when {
+        acc <= 2f -> 10
+        acc <= 15f -> 8
+        acc <= 150f -> 6
+        else -> 4
+    }
+    return FixQuality(bars, word, trust, if (loc.hasAccuracy()) loc.accuracy else null)
+}
+
+@Composable
+fun fixColor(q: FixQuality, p: FacePalette): Color = when {
+    q.bars >= 4 -> p.lume
+    q.bars >= 2 -> p.accent
+    q.bars == 1 -> MaterialTheme.colorScheme.error
+    else -> p.muted
+}
+
+/** Five rising bars, filled to the quality level. */
+@Composable
+fun FixBars(q: FixQuality, p: FacePalette, modifier: Modifier = Modifier, barWidth: Dp = 4.dp, height: Dp = 14.dp) {
+    val on = fixColor(q, p)
+    val off = p.line
+    Canvas(modifier.size(width = barWidth * 5 + 8.dp, height = height)) {
+        val w = barWidth.toPx()
+        val gap = 2.dp.toPx()
+        for (i in 0 until 5) {
+            val h = size.height * (0.4f + 0.15f * i)
+            drawRect(
+                color = if (i < q.bars) on else off,
+                topLeft = Offset(i * (w + gap), size.height - h),
+                size = Size(w, h),
+            )
+        }
+    }
+}
+
+/** "GOOD ±4 m · 9 sats · trust 8-digit" */
+fun fixSummary(q: FixQuality, satsUsed: Int, accuracyText: String?): String = when {
+    q.bars == 0 -> "acquiring · $satsUsed sats"
+    else -> listOfNotNull(
+        q.word.lowercase().replaceFirstChar { it.uppercase() },
+        accuracyText,
+        "$satsUsed sats",
+        "trust ${q.trustDigits}-digit",
+    ).joinToString(" · ")
+}
+
+// ---------------------------------------------------------------------------
 // Shared furniture: three-up cells and hairline rows (rules instead of boxes)
 // ---------------------------------------------------------------------------
 
@@ -196,6 +270,7 @@ fun GlancePositionFace(
     p: FacePalette,
     parts: Coordinates.MgrsParts?,
     acquiring: Boolean,
+    quality: FixQuality,
     statusLine: String,
     precisionLabel: String,
     onCyclePrecision: () -> Unit,
@@ -211,14 +286,17 @@ fun GlancePositionFace(
             .padding(horizontal = 20.dp, vertical = 10.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(if (acquiring) p.muted else p.accent),
-            )
+            FixBars(quality, p)
             Spacer(Modifier.size(10.dp))
-            Text(statusLine, fontFamily = MonoFamily, fontSize = 13.sp, letterSpacing = 1.sp, color = p.muted, modifier = Modifier.weight(1f))
+            Text(
+                statusLine,
+                fontFamily = MonoFamily,
+                fontSize = 13.sp,
+                letterSpacing = 0.5.sp,
+                color = if (acquiring) p.muted else fixColor(quality, p),
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
             PrecisionTag(precisionLabel, p, onCyclePrecision)
         }
         Spacer(Modifier.weight(1f))
@@ -376,6 +454,7 @@ fun DialPositionFace(
     dialSize: Dp,
     parts: Coordinates.MgrsParts?,
     acquiring: Boolean,
+    quality: FixQuality,
     fixLine: String,
     precisionLabel: String,
     onCyclePrecision: () -> Unit,
@@ -430,7 +509,7 @@ fun DialPositionFace(
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     letterSpacing = 1.4.sp,
-                    color = if (acquiring) p.muted else p.lume,
+                    color = if (acquiring) p.muted else fixColor(quality, p),
                 )
             }
         }
