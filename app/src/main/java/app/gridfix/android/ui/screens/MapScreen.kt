@@ -310,6 +310,8 @@ fun MapScreen(
     var downloadStatus by remember { mutableStateOf<String?>(null) }
     var importMessage by remember { mutableStateOf<String?>(null) }
     var readoutHeightPx by remember { mutableIntStateOf(0) }
+    var pillHeightPx by remember { mutableIntStateOf(0) }
+    val pillHeightDp = with(LocalDensity.current) { pillHeightPx.toDp() }
     var mbtilesFiles by remember { mutableStateOf(listMbtiles(context)) }
 
     val offlineName = if (p.baseLayer.startsWith("mbtiles:")) p.baseLayer.removePrefix("mbtiles:") else null
@@ -881,27 +883,18 @@ fun MapScreen(
                 }
                 cameraTick++
             }
-            MapButton(Icons.Outlined.FiberManualRecord, "Record track", activeTrack != null) {
-                if (activeTrack != null) {
-                    stopTrackOpen = true
-                } else if (!hasPermission) {
-                    onRequestPermission()
-                } else if (android.os.Build.VERSION.SDK_INT >= 33) {
-                    notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                } else {
-                    onRecordStart()
-                }
-            }
         }
 
-        // Status chips (download progress / import result / no-permission hint)
+        // Status chips (download progress / import result / no-permission hint):
+        // stacked under the grid pill, so they never sit on top of it
         Column(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 74.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .align(Alignment.TopStart)
+                .padding(start = 12.dp, top = 10.dp),
+            horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            Spacer(Modifier.height(pillHeightDp + 6.dp))
             downloadStatus?.let { status ->
                 StatusChip(status) { downloadStatus = null }
             }
@@ -960,7 +953,8 @@ fun MapScreen(
         Surface(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(start = 12.dp, top = 10.dp),
+                .padding(start = 12.dp, top = 10.dp)
+                .onSizeChanged { pillHeightPx = it.height },
             color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         ) {
@@ -1184,11 +1178,10 @@ fun MapScreen(
                 Modifier
                     .fillMaxWidth()
                     .height(64.dp)
-                    .drawBehind { drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) }
-                    .padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    .drawBehind { drawLine(rule, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(Modifier.weight(1f).fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).fillMaxHeight().padding(start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                     ToolCell(Icons.Outlined.Layers, "Layers", false, Modifier.weight(1f)) { layersOpen = true }
                     ToolCell(Icons.Outlined.MyLocation, "Locate", following, Modifier.weight(1f)) {
                         if (!hasPermission) {
@@ -1210,12 +1203,28 @@ fun MapScreen(
                     }
                     ToolCell(Icons.Outlined.Search, "Go to", false, Modifier.weight(1f)) { gotoOpen = true }
                     ToolCell(Icons.Outlined.Calculate, "Tools", fieldTool != null, Modifier.weight(1f)) { fieldToolsOpen = true }
+                    ToolCell(
+                        Icons.Outlined.FiberManualRecord,
+                        if (activeTrack != null) "Stop" else "Record",
+                        activeTrack != null,
+                        Modifier.weight(1f),
+                    ) {
+                        if (activeTrack != null) {
+                            stopTrackOpen = true
+                        } else if (!hasPermission) {
+                            onRequestPermission()
+                        } else if (android.os.Build.VERSION.SDK_INT >= 33) {
+                            notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            onRecordStart()
+                        }
+                    }
                 }
+                // The primary action fills its whole block, edge to edge
                 Box(
                     Modifier
-                        .padding(start = 6.dp)
                         .fillMaxHeight()
-                        .width(56.dp)
+                        .width(64.dp)
                         .background(MaterialTheme.colorScheme.primary)
                         .clickable {
                             holder.map?.mapCenter?.let { c -> newWpAt = c.latitude to c.longitude }
@@ -1601,6 +1610,12 @@ fun MapScreen(
                                     )
                                 }
                         }
+                        OutlinedTextField(
+                            value = gFolder,
+                            onValueChange = { gFolder = it.take(24) },
+                            label = { Text("Folder (type to create new)") },
+                            singleLine = true,
+                        )
                     }
                 },
                 confirmButton = {
@@ -1731,6 +1746,12 @@ fun MapScreen(
                                 )
                             }
                     }
+                    OutlinedTextField(
+                        value = gFolder,
+                        onValueChange = { gFolder = it.take(24) },
+                        label = { Text("Folder (type to create new)") },
+                        singleLine = true,
+                    )
                     Text(
                         "${g.points.size} vertices",
                         style = MaterialTheme.typography.bodySmall,
@@ -2198,14 +2219,22 @@ private fun ToolCell(
     ) {
         Text(
             label.uppercase(java.util.Locale.US),
-            fontFamily = LabelFamily,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 0.6.sp,
+            style = androidx.compose.ui.text.TextStyle(
+                fontFamily = LabelFamily,
+                fontSize = 9.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.6.sp,
+                lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                    alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                    trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both,
+                ),
+                platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
+            ),
             color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(5.dp))
         Icon(
             icon,
             contentDescription = label,

@@ -77,6 +77,9 @@ private val BlackoutColors = darkColorScheme(
     outlineVariant = Color(0xFF151A21),
     error = Color(0xFFFF6B61),
     onError = Color(0xFF000000),
+    // Tonal elevation tints surfaces with this colour; Material's default (primary)
+    // would turn every dialog and raised card amber-brown. Keep elevation neutral.
+    surfaceTint = Color(0xFF9AA4B2),
 )
 
 // Night-vision palette: red on black to preserve dark adaptation
