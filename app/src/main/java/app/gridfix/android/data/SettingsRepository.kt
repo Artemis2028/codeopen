@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +27,7 @@ data class AppSettings(
     val pacePer100m: Int = 65,    // user's pace count per 100 m, for route cards
     val face: Int = 1,            // Position/Navigate face: 0 = Glance, 1 = Lensatic, 2 = Dial
     val orientation: Int = 0,     // 0 = follow the device, 1 = portrait, 2 = landscape, 3 = landscape flipped
+    val declinationOverride: Float? = null,   // degrees, east positive; null = the phone's World Magnetic Model
 )
 
 class SettingsRepository(private val context: Context) {
@@ -41,6 +43,8 @@ class SettingsRepository(private val context: Context) {
         val PACE_PER_100M = intPreferencesKey("pace_per_100m")
         val FACE = intPreferencesKey("face")
         val ORIENTATION = intPreferencesKey("orientation")
+        val DECL_MANUAL = booleanPreferencesKey("decl_manual")
+        val DECL_VALUE = floatPreferencesKey("decl_value")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -55,6 +59,7 @@ class SettingsRepository(private val context: Context) {
             pacePer100m = p[Keys.PACE_PER_100M] ?: 65,
             face = (p[Keys.FACE] ?: 1).coerceIn(0, 2),
             orientation = (p[Keys.ORIENTATION] ?: 0).coerceIn(0, 3),
+            declinationOverride = if (p[Keys.DECL_MANUAL] == true) (p[Keys.DECL_VALUE] ?: 0f).coerceIn(-180f, 180f) else null,
         )
     }
 
@@ -71,6 +76,16 @@ class SettingsRepository(private val context: Context) {
             p[Keys.PACE_PER_100M] = s.pacePer100m
             p[Keys.FACE] = s.face
             p[Keys.ORIENTATION] = s.orientation
+            p[Keys.DECL_MANUAL] = s.declinationOverride != null
+            p[Keys.DECL_VALUE] = s.declinationOverride ?: 0f
+        }
+    }
+
+    /** Manual declination in degrees (east positive), or null to follow the magnetic model. */
+    suspend fun setDeclinationOverride(value: Float?) {
+        context.dataStore.edit {
+            it[Keys.DECL_MANUAL] = value != null
+            if (value != null) it[Keys.DECL_VALUE] = value.coerceIn(-180f, 180f)
         }
     }
 

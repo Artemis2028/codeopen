@@ -176,6 +176,21 @@ class TrackRepository(private val context: Context) {
         withContext(Dispatchers.IO) { pointsFile(context, id).delete() }
     }
 
+    /** Move every track in [from] to [to] (folder rename, or emptying a folder into Base). */
+    suspend fun renameFolder(from: String, to: String) {
+        val target = canonicalFolder(to)
+        if (from == target) return
+        context.trackStore.edit { p ->
+            p[listKey] = encode(decode(p[listKey] ?: "[]").map { if (it.folder == from) it.copy(folder = target) else it })
+        }
+    }
+
+    /** Delete every track in [folder], point logs included. */
+    suspend fun deleteFolder(folder: String) {
+        val doomed = decode(context.trackStore.data.first()[listKey] ?: "[]").filter { it.folder == folder }
+        for (t in doomed) delete(t.id)
+    }
+
     /** Remove a recording that was discarded before saving. */
     suspend fun discard(id: String) = delete(id)
 

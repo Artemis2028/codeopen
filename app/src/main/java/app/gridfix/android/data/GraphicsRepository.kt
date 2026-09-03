@@ -214,6 +214,15 @@ class GraphicsRepository(private val context: Context) {
         }
     }
 
+    /** Move every graphic in [from] to [to] (folder rename, or emptying a folder into Base). */
+    suspend fun renameFolder(from: String, to: String) {
+        val target = canonicalFolder(to)
+        if (from == target) return
+        context.graphicsStore.edit { p ->
+            p[listKey] = encode(decode(p[listKey] ?: "[]").map { if (it.folder == from) it.copy(folder = target) else it })
+        }
+    }
+
     /** Remove every graphic in [folder] — "clear the sketch" in one go. */
     suspend fun deleteFolder(folder: String) {
         context.graphicsStore.edit { p ->

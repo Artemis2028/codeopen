@@ -1,7 +1,6 @@
 package app.gridfix.android.ui.screens
 
 import android.content.Context
-import android.hardware.GeomagneticField
 import android.hardware.SensorManager
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -78,6 +77,7 @@ import app.gridfix.android.ui.isLandscape
 import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
 import kotlin.math.abs
+import app.gridfix.android.location.Declination
 
 @Composable
 fun NavigateScreen(
@@ -99,18 +99,13 @@ fun NavigateScreen(
     val loc = fix.location
     val target = waypoints.firstOrNull { it.id == selectedId } ?: waypoints.firstOrNull()
 
-    // Magnetic declination from the World Magnetic Model, refreshed when we move ~10 km
+    // Magnetic declination: the manual G-M angle if one is set, else the phone's
+    // World Magnetic Model, refreshed when we move ~10 km
     val declination = remember(
         loc?.latitude?.let { (it * 10).toInt() },
         loc?.longitude?.let { (it * 10).toInt() },
-    ) {
-        if (loc == null) 0f else GeomagneticField(
-            loc.latitude.toFloat(),
-            loc.longitude.toFloat(),
-            if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
-            loc.time,
-        ).declination
-    }
+        settings.declinationOverride,
+    ) { Declination.at(settings, loc) }
     val convergence = if (loc == null) 0f else {
         Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
     }

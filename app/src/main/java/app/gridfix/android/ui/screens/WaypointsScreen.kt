@@ -1,6 +1,5 @@
 package app.gridfix.android.ui.screens
 
-import android.hardware.GeomagneticField
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -72,6 +71,9 @@ import app.gridfix.android.ui.faces.northRefLetter
 import app.gridfix.android.ui.faces.toNorthRef
 import app.gridfix.android.coords.Coordinates
 import app.gridfix.android.data.AppSettings
+import app.gridfix.android.data.DEFAULT_FOLDER
+import app.gridfix.android.data.canonicalFolder
+import app.gridfix.android.data.reservedFolderHint
 import app.gridfix.android.data.FolderInfo
 import app.gridfix.android.data.GraphicTypes
 import app.gridfix.android.data.InterchangeFiles
@@ -95,6 +97,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import app.gridfix.android.location.Declination
 
 @Composable
 fun WaypointsScreen(
@@ -108,6 +111,8 @@ fun WaypointsScreen(
     onNavigateTo: (String) -> Unit,
     onAddFolder: (String) -> Unit,
     onSetFolderVisible: (name: String, visible: Boolean) -> Unit,
+    onRenameFolder: (from: String, to: String) -> Unit = { _, _ -> },
+    onDeleteFolder: (name: String, deleteContents: Boolean) -> Unit = { _, _ -> },
     graphics: List<TacGraphic>,
     onDeleteGraphic: (String) -> Unit,
     onClearGraphics: (folder: String) -> Unit,
@@ -162,6 +167,8 @@ fun WaypointsScreen(
         }
     }
     var newFolderOpen by remember { mutableStateOf(false) }
+    var renameFolderOpen by remember { mutableStateOf(false) }
+    var deleteFolderOpen by remember { mutableStateOf(false) }
     val loc = fix.location
     val byFolder = waypoints.groupBy { it.folder }
     val graphicsByFolder = graphics.groupBy { it.folder }
@@ -200,14 +207,8 @@ fun WaypointsScreen(
     val declination = remember(
         loc?.latitude?.let { (it * 10).toInt() },
         loc?.longitude?.let { (it * 10).toInt() },
-    ) {
-        if (loc == null) 0f else GeomagneticField(
-            loc.latitude.toFloat(),
-            loc.longitude.toFloat(),
-            if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
-            loc.time,
-        ).declination
-    }
+        settings.declinationOverride,
+    ) { Declination.at(settings, loc) }
     val convergence = if (loc == null) 0f else Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
     val refLetter = northRefLetter(settings.northRef)
     fun distanceTo(w: Waypoint): Float =
@@ -274,6 +275,29 @@ fun WaypointsScreen(
                             tint = if (f.visible) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    // Base is permanent; every other folder can be renamed or removed
+                    if (f.name != DEFAULT_FOLDER) {
+                        var folderMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { folderMenu = true }) {
+                                Icon(
+                                    Icons.Outlined.MoreVert,
+                                    contentDescription = "Folder options",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            DropdownMenu(expanded = folderMenu, onDismissRequest = { folderMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Rename folder…") },
+                                    onClick = { folderMenu = false; renameFolderOpen = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete folder…") },
+                                    onClick = { folderMenu = false; deleteFolderOpen = true },
+                                )
+                            }
+                        }
                     }
                 }
                 IconButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
@@ -471,6 +495,7 @@ fun WaypointsScreen(
 
     if (newFolderOpen) {
         var folderName by remember { mutableStateOf("") }
+        val hint = reservedFolderHint(folderName)
         AlertDialog(
             onDismissRequest = { newFolderOpen = false },
             title = { Text("New folder") },
@@ -480,6 +505,7 @@ fun WaypointsScreen(
                     onValueChange = { folderName = it },
                     label = { Text("Folder name") },
                     singleLine = true,
+                    supportingText = hint?.let { { Text(it) } },
                 )
             },
             confirmButton = {
@@ -490,6 +516,88 @@ fun WaypointsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { newFolderOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (renameFolderOpen && currentFolder != null && currentFolder.name != DEFAULT_FOLDER) {
+        val f = currentFolder
+        var newName by remember(f.name) { mutableStateOf(f.name) }
+        val hint = reservedFolderHint(newName)
+        val existing = folders.firstOrNull { it.name != f.name && it.name.equals(newName.trim(), ignoreCase = true) }
+        AlertDialog(
+            onDismissRequest = { renameFolderOpen = false },
+            title = { Text("Rename ${f.name}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("Folder name") },
+                        singleLine = true,
+                        supportingText = (hint ?: existing?.let { "Merges into ${it.name}" })?.let { { Text(it) } },
+                    )
+                    Text(
+                        "Waypoints, graphics and tracks in the folder move with it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = newName.isNotBlank() && newName.trim() != f.name,
+                    onClick = {
+                        val target = existing?.name ?: newName.trim()
+                        onRenameFolder(f.name, target)
+                        filter = canonicalFolder(target)
+                        renameFolderOpen = false
+                    },
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameFolderOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (deleteFolderOpen && currentFolder != null && currentFolder.name != DEFAULT_FOLDER) {
+        val f = currentFolder
+        val nW = byFolder[f.name].orEmpty().size
+        val nG = graphicsByFolder[f.name].orEmpty().size
+        val nT = tracks.count { it.folder == f.name }
+        val contents = listOfNotNull(
+            nW.takeIf { it > 0 }?.let { "$it waypoint" + (if (it == 1) "" else "s") },
+            nG.takeIf { it > 0 }?.let { "$it graphic" + (if (it == 1) "" else "s") },
+            nT.takeIf { it > 0 }?.let { "$it track" + (if (it == 1) "" else "s") },
+        )
+        AlertDialog(
+            onDismissRequest = { deleteFolderOpen = false },
+            title = { Text("Delete ${f.name}?") },
+            text = {
+                Text(
+                    if (contents.isEmpty()) "The folder is empty."
+                    else "It holds ${contents.joinToString(", ")}. Keep them in $DEFAULT_FOLDER, or delete them with the folder."
+                )
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (contents.isNotEmpty()) {
+                        TextButton(onClick = {
+                            onDeleteFolder(f.name, false)
+                            filter = FILTER_ALL
+                            deleteFolderOpen = false
+                        }) { Text("Keep in $DEFAULT_FOLDER") }
+                    }
+                    TextButton(onClick = {
+                        onDeleteFolder(f.name, true)
+                        filter = FILTER_ALL
+                        deleteFolderOpen = false
+                    }) { Text(if (contents.isEmpty()) "Delete" else "Delete all", color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteFolderOpen = false }) { Text("Cancel") }
             },
         )
     }

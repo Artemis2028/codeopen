@@ -1,6 +1,5 @@
 package app.gridfix.android.ui.screens
 
-import android.hardware.GeomagneticField
 import android.hardware.SensorManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -74,6 +73,9 @@ import kotlinx.coroutines.launch
 import java.util.Calendar
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import app.gridfix.android.location.Declination
+import app.gridfix.android.location.altitudeIsMsl
+import app.gridfix.android.location.bestAltitude
 
 @Composable
 fun PositionScreen(
@@ -106,21 +108,19 @@ fun PositionScreen(
     val landscape = isLandscape()
 
     val loc = fix.location
-    val parts = loc?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
+    // Coordinate strings are remembered per fix: the compass recomposes this screen
+    // at sensor rate, and each MGRS/UTM conversion is real work.
+    val parts = remember(loc?.latitude, loc?.longitude, settings.mgrsDigits) {
+        loc?.let { Coordinates.mgrs(it.latitude, it.longitude, settings.mgrsDigits) }
+    }
     val palette = facePalette(settings.nightMode)
 
-    // Declination and grid convergence, refreshed when we move ~10 km
+    // Declination (manual G-M angle when set) and grid convergence, refreshed when we move ~10 km
     val declination = remember(
         loc?.latitude?.let { (it * 10).toInt() },
         loc?.longitude?.let { (it * 10).toInt() },
-    ) {
-        if (loc == null) 0f else GeomagneticField(
-            loc.latitude.toFloat(),
-            loc.longitude.toFloat(),
-            if (loc.hasAltitude()) loc.altitude.toFloat() else 0f,
-            loc.time,
-        ).declination
-    }
+        settings.declinationOverride,
+    ) { Declination.at(settings, loc) }
     val convergence = if (loc == null) 0f else Coordinates.gridConvergence(loc.latitude, loc.longitude).toFloat()
 
     // Heading: compass sensor when a dial face is up, GPS course as the fallback while moving
@@ -133,15 +133,20 @@ fun PositionScreen(
     val headingRef = headingTrue?.let { toNorthRef(it, settings.northRef, declination, convergence) }
     val refLetter = northRefLetter(settings.northRef)
 
-    val elevText = if (loc != null && loc.hasAltitude()) Coordinates.formatAltitude(loc.altitude, settings.units) else "—"
+    // Height above sea level when the phone can convert it (Android 14+), else the GPS ellipsoid height
+    val altitude = loc?.bestAltitude()
+    val altitudeMsl = loc?.altitudeIsMsl() == true
+    val elevText = altitude?.let { Coordinates.formatAltitude(it, settings.units) } ?: "—"
     val speedText = if (loc != null && loc.hasSpeed()) Coordinates.formatSpeed(loc.speed, settings.units) else "—"
     // The reference letter lives in the label so "1234 mils" stays one number in its cell;
     // a heading taken from the direction of travel says so.
     val headingText = headingRef?.let { Coordinates.formatAngle(it, settings.angleUnit) } ?: "—"
     val headingLabel = (if (compassHeading || headingRef == null) "Heading" else "Course") + " · " + refLetter
     val cells = listOf("Elev" to elevText, headingLabel to headingText, "Speed" to speedText)
-    val utmText = loc?.let { Coordinates.formatUtm(Coordinates.utm(it.latitude, it.longitude)) } ?: "—"
-    val dtgText = Coordinates.dtg(now)
+    val utmText = remember(loc?.latitude, loc?.longitude) {
+        loc?.let { Coordinates.formatUtm(Coordinates.utm(it.latitude, it.longitude)) } ?: "—"
+    }
+    val dtgText = remember(now) { Coordinates.dtg(now) }
     val accuracyText = if (loc != null && loc.hasAccuracy()) Coordinates.formatAccuracy(loc.accuracy, settings.units) else null
     // Re-graded every second (this scope recomposes on the `now` tick), so a fix ages into STALE
     val quality = fixQuality(loc, fix.satellitesUsed)
@@ -184,11 +189,13 @@ fun PositionScreen(
                 ("SS ${SunMoon.formatLocal(t.sunset, y, m, d)} · EENT ${SunMoon.formatLocal(t.eent, y, m, d)}")
         }
     }
-    val declText = if (loc == null) "DECL —" else {
+    val declText = if (loc == null && settings.declinationOverride == null) "DECL —" else {
         val d = declination.roundToInt()
-        "DECL ${abs(d)}° ${if (declination >= 0f) "E" else "W"}"
+        "DECL ${abs(d)}° ${if (declination >= 0f) "E" else "W"}" + (if (settings.declinationOverride != null) " · SET" else "")
     }
-    val latLonShort = loc?.let { Coordinates.formatLatLon(it.latitude, it.longitude, 0).replace("   ", " ") } ?: "—"
+    val latLonShort = remember(loc?.latitude, loc?.longitude) {
+        loc?.let { Coordinates.formatLatLon(it.latitude, it.longitude, 0).replace("   ", " ") } ?: "—"
+    }
     val rows = listOf(
         Triple(utmText, dtgText, false),
         Triple(latLonShort, declText, false),
@@ -381,7 +388,7 @@ fun PositionScreen(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     InfoCard(
-                        label = "ALTITUDE (GPS)",
+                        label = if (altitudeMsl) "ALTITUDE (MSL)" else "ALTITUDE (GPS)",
                         value = elevText,
                         modifier = Modifier.weight(1f),
                     )

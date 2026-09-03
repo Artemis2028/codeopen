@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
@@ -28,6 +29,22 @@ const val DEFAULT_FOLDER = "Base"
 fun canonicalFolder(raw: String?): String = when (raw?.trim().orEmpty()) {
     "", "Waypoints", "Graphics" -> DEFAULT_FOLDER
     else -> raw!!.trim()
+}
+
+/** A one-line warning for folder name fields when the typed name will not be kept as typed. */
+fun reservedFolderHint(raw: String): String? {
+    val t = raw.trim()
+    if (t.isEmpty() || t == DEFAULT_FOLDER) return null
+    return if (canonicalFolder(t) == DEFAULT_FOLDER) "\"$t\" is a reserved name — this goes into $DEFAULT_FOLDER" else null
+}
+
+/**
+ * The stored spelling of a folder: "recon" and "Recon" are one folder. [known] is
+ * every folder name currently in use; the first case-insensitive match wins.
+ */
+fun matchFolder(known: Iterable<String>, raw: String?): String {
+    val clean = canonicalFolder(raw)
+    return known.firstOrNull { it.equals(clean, ignoreCase = true) } ?: clean
 }
 const val DEFAULT_SYMBOL = "flag"
 
@@ -78,23 +95,34 @@ class WaypointRepository(private val context: Context) {
 
     val selectedId: Flow<String?> = context.wpStore.data.map { p -> p[selectedKey] }
 
-    /** Stored folders unioned with any folder referenced by a waypoint, sorted by name. */
+    /** Stored folders unioned with any folder referenced by a waypoint: Base first, then by name. */
     val folders: Flow<List<FolderInfo>> = context.wpStore.data.map { p ->
         val stored = decodeFolders(p[foldersKey] ?: "[]")
         val referenced = decode(p[listKey] ?: "[]").map { it.folder }
         val names = (stored.map { it.name } + referenced + DEFAULT_FOLDER).distinct()
         names.map { n -> stored.firstOrNull { it.name == n } ?: FolderInfo(n) }
-            .sortedBy { it.name.lowercase(Locale.US) }
+            .sortedWith(compareBy({ it.name != DEFAULT_FOLDER }, { it.name.lowercase(Locale.US) }))
     }
 
-    suspend fun addFolder(name: String) {
-        val clean = canonicalFolder(name)
-        if (name.isBlank()) return
+    /** Every folder name in use right now (stored entries and waypoint references). */
+    private fun knownNames(p: androidx.datastore.preferences.core.Preferences): List<String> =
+        (decodeFolders(p[foldersKey] ?: "[]").map { it.name } + decode(p[listKey] ?: "[]").map { it.folder } + DEFAULT_FOLDER).distinct()
+
+    /** The spelling this name will be stored under (case-insensitive match against existing folders). */
+    suspend fun resolveFolder(raw: String): String =
+        matchFolder(knownNames(context.wpStore.data.first()), raw)
+
+    /** Create a folder (or match an existing one, ignoring case). Returns the stored name. */
+    suspend fun addFolder(name: String): String {
+        if (name.isBlank()) return DEFAULT_FOLDER
+        var stored = canonicalFolder(name)
         context.wpStore.edit { p ->
+            stored = matchFolder(knownNames(p), name)
             p[foldersKey] = encodeFolders(
-                upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), clean, null)
+                upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), stored, null)
             )
         }
+        return stored
     }
 
     suspend fun setFolderVisible(name: String, visible: Boolean) {
@@ -102,6 +130,43 @@ class WaypointRepository(private val context: Context) {
             p[foldersKey] = encodeFolders(
                 upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), name, visible)
             )
+        }
+    }
+
+    /**
+     * Rename a folder, moving its waypoints. Renaming onto an existing folder (any
+     * case) merges into it. Base cannot be renamed. Returns the name now in use.
+     */
+    suspend fun renameFolder(from: String, to: String): String {
+        if (from == DEFAULT_FOLDER || to.isBlank()) return from
+        var target = canonicalFolder(to)
+        context.wpStore.edit { p ->
+            val stored = decodeFolders(p[foldersKey] ?: "[]")
+            target = matchFolder(knownNames(p).filter { it != from }, to)
+            if (target == from) return@edit
+            val src = stored.firstOrNull { it.name == from }
+            val merged = stored.filterNot { it.name == from }.toMutableList()
+            mergeFolder(merged, FolderInfo(target, src?.visible ?: true))
+            p[foldersKey] = encodeFolders(merged)
+            p[listKey] = encode(decode(p[listKey] ?: "[]").map { if (it.folder == from) it.copy(folder = target) else it })
+        }
+        return target
+    }
+
+    /**
+     * Remove a folder: its waypoints are deleted with it, or moved to Base when
+     * [deleteContents] is false. Base cannot be deleted.
+     */
+    suspend fun deleteFolder(name: String, deleteContents: Boolean) {
+        if (name == DEFAULT_FOLDER) return
+        context.wpStore.edit { p ->
+            val current = decode(p[listKey] ?: "[]")
+            val kept = if (deleteContents) current.filterNot { it.folder == name }
+            else current.map { if (it.folder == name) it.copy(folder = DEFAULT_FOLDER) else it }
+            p[listKey] = encode(kept)
+            p[foldersKey] = encodeFolders(decodeFolders(p[foldersKey] ?: "[]").filterNot { it.name == name })
+            val sel = p[selectedKey]
+            if (sel != null && kept.none { it.id == sel }) p.remove(selectedKey)
         }
     }
 
@@ -115,7 +180,7 @@ class WaypointRepository(private val context: Context) {
                 lat = draft.lat,
                 lon = draft.lon,
                 createdAt = nowMillis,
-                folder = canonicalFolder(draft.folder),
+                folder = matchFolder(knownNames(p), draft.folder),
                 symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                 affiliation = draft.affiliation,
                 echelon = draft.echelon,
@@ -140,15 +205,18 @@ class WaypointRepository(private val context: Context) {
         context.wpStore.edit { p ->
             val current = decode(p[listKey] ?: "[]")
             var folders = decodeFolders(p[foldersKey] ?: "[]")
+            val known = knownNames(p).toMutableList()
             val added = drafts.map { draft ->
-                folders = upsertFolder(folders, canonicalFolder(draft.folder), null)
+                val f = matchFolder(known, draft.folder)
+                if (f !in known) known.add(f)
+                folders = upsertFolder(folders, f, null)
                 Waypoint(
                     id = UUID.randomUUID().toString(),
                     name = draft.name,
                     lat = draft.lat,
                     lon = draft.lon,
                     createdAt = nowMillis,
-                    folder = canonicalFolder(draft.folder),
+                    folder = f,
                     symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                     affiliation = draft.affiliation,
                     echelon = draft.echelon,
@@ -191,13 +259,14 @@ class WaypointRepository(private val context: Context) {
     suspend fun update(id: String, draft: WaypointDraft) {
         context.wpStore.edit { p ->
             val current = decode(p[listKey] ?: "[]")
+            val folder = matchFolder(knownNames(p), draft.folder)
             p[listKey] = encode(
                 current.map {
                     if (it.id == id) it.copy(
                         name = draft.name,
                         lat = draft.lat,
                         lon = draft.lon,
-                        folder = canonicalFolder(draft.folder),
+                        folder = folder,
                         symbol = draft.symbol.ifBlank { DEFAULT_SYMBOL },
                         affiliation = draft.affiliation,
                         echelon = draft.echelon,
@@ -208,11 +277,7 @@ class WaypointRepository(private val context: Context) {
                 }
             )
             p[foldersKey] = encodeFolders(
-                upsertFolder(
-                    decodeFolders(p[foldersKey] ?: "[]"),
-                    canonicalFolder(draft.folder),
-                    null,
-                )
+                upsertFolder(decodeFolders(p[foldersKey] ?: "[]"), folder, null)
             )
         }
     }

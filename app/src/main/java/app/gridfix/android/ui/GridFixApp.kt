@@ -102,6 +102,7 @@ import app.gridfix.android.data.SettingsRepository
 import app.gridfix.android.data.TrackRepository
 import app.gridfix.android.data.WaypointDraft
 import app.gridfix.android.data.WaypointRepository
+import app.gridfix.android.location.Declination
 import app.gridfix.android.location.TrackRecorderService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -490,14 +491,16 @@ fun GridFixApp() {
                         graphics = graphics,
                         onAddGraphic = { name, type, points, folder, affiliation, echelon ->
                             scope.launch {
-                                waypointRepo.addFolder(folder)   // so the overlay eye toggle exists
-                                graphicsRepo.add(name, type, points, folder, affiliation, System.currentTimeMillis(), echelon)
+                                // addFolder returns the stored spelling (case-insensitive match) and
+                                // makes sure the overlay eye toggle exists
+                                val f = waypointRepo.addFolder(folder)
+                                graphicsRepo.add(name, type, points, f, affiliation, System.currentTimeMillis(), echelon)
                             }
                         },
                         onUpdateGraphic = { id, name, folder, affiliation, echelon ->
                             scope.launch {
-                                waypointRepo.addFolder(folder)
-                                graphicsRepo.rename(id, name, folder, affiliation, echelon)
+                                val f = waypointRepo.addFolder(folder)
+                                graphicsRepo.rename(id, name, f, affiliation, echelon)
                             }
                         },
                         onUpdateGraphicPoints = { id, points ->
@@ -506,6 +509,7 @@ fun GridFixApp() {
                         onDeleteGraphic = { id -> scope.launch { graphicsRepo.delete(id) } },
                         onSaveRouteWps = { base, pts, folder ->
                             scope.launch {
+                                val f = waypointRepo.addFolder(folder)
                                 val prefix = "$base WP "
                                 waypoints.filter { it.name.startsWith(prefix) }.forEach {
                                     waypointRepo.delete(it.id)
@@ -516,7 +520,7 @@ fun GridFixApp() {
                                             name = prefix + (i + 1),
                                             lat = v.lat,
                                             lon = v.lon,
-                                            folder = folder,
+                                            folder = f,
                                             symbol = "",
                                             affiliation = "none",
                                         )
@@ -578,6 +582,29 @@ fun GridFixApp() {
                         onSetFolderVisible = { name, visible ->
                             scope.launch { waypointRepo.setFolderVisible(name, visible) }
                         },
+                        onRenameFolder = { from, to ->
+                            scope.launch {
+                                val target = waypointRepo.renameFolder(from, to)
+                                if (target != from) {
+                                    graphicsRepo.renameFolder(from, target)
+                                    trackRepo.renameFolder(from, target)
+                                }
+                            }
+                        },
+                        onDeleteFolder = { name, deleteContents ->
+                            scope.launch {
+                                if (deleteContents) {
+                                    if (tracks.any { it.id == viewedTrackId && it.folder == name }) viewedTrackId = null
+                                    waypointRepo.deleteFolder(name, true)
+                                    graphicsRepo.deleteFolder(name)
+                                    trackRepo.deleteFolder(name)
+                                } else {
+                                    waypointRepo.deleteFolder(name, false)
+                                    graphicsRepo.renameFolder(name, DEFAULT_FOLDER)
+                                    trackRepo.renameFolder(name, DEFAULT_FOLDER)
+                                }
+                            }
+                        },
                         onNavigateTo = { id ->
                             scope.launch { waypointRepo.select(id) }
                             goTo("navigate")
@@ -604,8 +631,7 @@ fun GridFixApp() {
                         },
                         onMoveTrack = { id, folder ->
                             scope.launch {
-                                waypointRepo.addFolder(folder)
-                                trackRepo.setFolder(id, folder)
+                                trackRepo.setFolder(id, waypointRepo.addFolder(folder))
                             }
                         },
                         onBacktrackTrack = { t ->
@@ -653,12 +679,12 @@ fun GridFixApp() {
                                     val now = System.currentTimeMillis()
                                     waypointRepo.addAll(data.waypoints, now)
                                     for (l in data.lines) {
-                                        waypointRepo.addFolder(l.folder)
-                                        graphicsRepo.add(l.name, "route", l.points, l.folder, "none", now)
+                                        val f = waypointRepo.addFolder(l.folder)
+                                        graphicsRepo.add(l.name, "route", l.points, f, "none", now)
                                     }
                                     for (a in data.areas) {
-                                        waypointRepo.addFolder(a.folder)
-                                        graphicsRepo.add(a.name, "aa", a.points, a.folder, "none", now)
+                                        val f = waypointRepo.addFolder(a.folder)
+                                        graphicsRepo.add(a.name, "aa", a.points, f, "none", now)
                                     }
                                     for (t in data.tracks) {
                                         trackRepo.importTrack(t.name, t.points, now)
@@ -731,6 +757,7 @@ fun GridFixApp() {
                     SettingsScreen(
                         repo,
                         settings,
+                        modelDeclination = fix.location?.let { Declination.model(it.latitude, it.longitude) },
                         entitled = entitlement == BillingManager.State.ENTITLED,
                         onPreviewPaywall = { paywallPreview = true },
                         onOpenReference = {

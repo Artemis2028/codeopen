@@ -49,16 +49,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.SettingsRepository
+import app.gridfix.android.location.Declination
 import app.gridfix.android.ui.ScreenOrientation
 import app.gridfix.android.ui.faces.Face
 import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
 import kotlinx.coroutines.launch
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun SettingsScreen(
     repo: SettingsRepository,
     settings: AppSettings,
+    modelDeclination: Float? = null,   // the phone's magnetic model at the current fix, for the caption
     entitled: Boolean = false,
     onPreviewPaywall: () -> Unit = {},
     onOpenReference: () -> Unit = {},
@@ -175,6 +180,13 @@ fun SettingsScreen(
                 }
             }
         }
+
+        DeclinationSetting(
+            override = settings.declinationOverride,
+            model = modelDeclination,
+            angleUnit = settings.angleUnit,
+            onChange = { v -> scope.launch { repo.setDeclinationOverride(v) } },
+        )
 
         PaceSetting(
             current = settings.pacePer100m,
@@ -360,6 +372,72 @@ private fun DataRow(title: String, subtitle: String, onClick: () -> Unit) {
             Icons.Outlined.ChevronRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Magnetic declination: the phone's World Magnetic Model, or a G-M angle typed
+ * from the map sheet / the order. Entered in degrees (or mils, per the angle
+ * unit) with an E/W switch; stored east-positive.
+ */
+@Composable
+private fun DeclinationSetting(override: Float?, model: Float?, angleUnit: Int, onChange: (Float?) -> Unit) {
+    val manual = override != null
+    val mils = angleUnit == 1
+    fun toDisplay(deg: Float): String {
+        val v = abs(deg)
+        return if (mils) (v * 6400f / 360f).roundToInt().toString()
+        else String.format(Locale.US, "%.1f", v)
+    }
+    var text by remember(manual, mils) { mutableStateOf(if (override != null) toDisplay(override) else "") }
+    var east by remember(manual) { mutableStateOf(override == null || override >= 0f) }
+    fun push(t: String, e: Boolean) {
+        val v = t.toFloatOrNull() ?: return
+        val deg = if (mils) v * 360f / 6400f else v
+        if (deg in 0f..180f) onChange(if (e) deg else -deg)
+    }
+    Setting("Declination") {
+        Segmented(options = listOf("Model", "Manual"), selected = if (manual) 1 else 0) { index ->
+            if (index == 0) onChange(null)
+            else onChange(model ?: 0f)
+        }
+        Spacer(Modifier.height(6.dp))
+        if (manual) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { v ->
+                        text = v.filter { it.isDigit() || it == '.' }.take(6)
+                        push(text, east)
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = MonoFamily),
+                    suffix = { Text(if (mils) "mils" else "°", style = MaterialTheme.typography.bodySmall) },
+                    modifier = Modifier.width(128.dp),
+                )
+                Spacer(Modifier.width(12.dp))
+                Box(Modifier.weight(1f)) {
+                    Segmented(options = listOf("East", "West"), selected = if (east) 0 else 1) { index ->
+                        east = index == 0
+                        push(text, east)
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+        Text(
+            when {
+                manual -> "Pinned to " + Declination.format(override ?: 0f, angleUnit) +
+                    (model?.let { " — the phone's model says " + Declination.format(it, angleUnit) + " here" } ?: "") +
+                    ". Every azimuth, the compass faces and the route cards use this value."
+                model != null -> "Phone's World Magnetic Model at your fix: " + Declination.format(model, angleUnit) +
+                    ". Switch to Manual to use the G-M angle from your map sheet or the order."
+                else -> "Phone's World Magnetic Model at your fix. Switch to Manual to use the G-M angle from your map sheet or the order."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

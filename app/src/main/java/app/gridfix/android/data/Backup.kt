@@ -75,6 +75,7 @@ object Backup {
             .put("pacePer100m", settings.pacePer100m)
             .put("face", settings.face)
             .put("orientation", settings.orientation)
+            .put("declinationOverride", settings.declinationOverride?.toDouble() ?: JSONObject.NULL)
         )
         root.put("tracks", JSONArray().also { a ->
             for (t in tracks) a.put(
@@ -259,6 +260,7 @@ object Backup {
                     pacePer100m = s.optInt("pacePer100m", 65),
                     face = s.optInt("face", 1),
                     orientation = s.optInt("orientation", 0),
+                    declinationOverride = if (s.isNull("declinationOverride")) null else s.optDouble("declinationOverride").toFloat(),
                 )
             )
             settingsApplied = true

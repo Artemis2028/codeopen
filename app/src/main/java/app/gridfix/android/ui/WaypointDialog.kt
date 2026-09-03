@@ -14,7 +14,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import android.hardware.GeomagneticField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material3.AlertDialog
@@ -51,8 +50,10 @@ import app.gridfix.android.data.KIND_UNIT
 import app.gridfix.android.data.KIND_WP
 import app.gridfix.android.data.Waypoint
 import app.gridfix.android.data.WaypointDraft
+import app.gridfix.android.data.reservedFolderHint
 import org.osmdroid.util.GeoPoint
 import java.util.Locale
+import app.gridfix.android.location.Declination
 
 /** Wrapped grid of symbol tiles — the browse-everything unit picker. */
 @Composable
@@ -231,9 +232,7 @@ fun WaypointDialog(
         val dist = distText.toFloatOrNull() ?: return@run null
         if (dist <= 0f || dist > 200000f) return@run null
         val deg = if (settings.angleUnit == 1) az * 360f / 6400f else az
-        val decl = GeomagneticField(
-            base.second.toFloat(), base.third.toFloat(), 0f, System.currentTimeMillis()
-        ).declination
+        val decl = Declination.at(settings, base.second, base.third)
         val conv = Coordinates.gridConvergence(base.second, base.third).toFloat()
         val trueDeg = when (settings.northRef) {
             1 -> deg + decl
@@ -461,11 +460,13 @@ fun WaypointDialog(
                         }
                     }
                 }
+                val folderHint = reservedFolderHint(folder)
                 OutlinedTextField(
                     value = folder,
                     onValueChange = { folder = it },
                     label = { Text("Folder (type to create new)") },
                     singleLine = true,
+                    supportingText = folderHint?.let { { Text(it) } },
                 )
 
                 Text("Position", style = MaterialTheme.typography.labelLarge)

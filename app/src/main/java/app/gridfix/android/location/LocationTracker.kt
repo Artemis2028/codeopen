@@ -6,8 +6,10 @@ import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,8 +29,24 @@ data class FixData(
  */
 class LocationTracker(context: Context) {
 
+    private val appContext = context.applicationContext
     private val locationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+    // Android 14+ can convert the GPS ellipsoid height to height above mean sea
+    // level (what the map's contours use). The geoid lookup does disk I/O the
+    // first time, so it runs off the main thread and the fix is re-emitted when done.
+    private val mslExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "msl-altitude").apply { isDaemon = true } }
+
+    private fun addMslAltitude(loc: Location) {
+        if (Build.VERSION.SDK_INT < 34 || !loc.hasAltitude()) return
+        mslExecutor.execute {
+            if (MslConverter.add(appContext, loc)) {
+                // Same fix, now with MSL fields: a copy so the state flow sees a new value
+                _fix.update { cur -> if (cur.location === loc) cur.copy(location = Location(loc)) else cur }
+            }
+        }
+    }
 
     private val _fix = MutableStateFlow(FixData())
     val fix: StateFlow<FixData> = _fix.asStateFlow()
@@ -47,6 +65,7 @@ class LocationTracker(context: Context) {
                     loc.elapsedRealtimeNanos - old.elapsedRealtimeNanos > 10_000_000_000L
                 if (accept) current.copy(location = loc) else current
             }
+            addMslAltitude(loc)
         }
 
         @Deprecated("Legacy callback, required for API 26-29 devices")
@@ -109,6 +128,7 @@ class LocationTracker(context: Context) {
             val last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
             _fix.update { it.copy(location = last ?: it.location, gpsEnabled = gpsEnabled) }
+            last?.let { addMslAltitude(it) }
         }
         if (!any) started = false
     }
@@ -121,5 +141,17 @@ class LocationTracker(context: Context) {
             locationManager.unregisterGnssStatusCallback(gnssCallback)
         } catch (_: SecurityException) {
         }
+    }
+}
+
+/** Kept in its own class so devices below Android 14 never load the converter type. */
+@androidx.annotation.RequiresApi(34)
+private object MslConverter {
+    private val converter = android.location.altitude.AltitudeConverter()
+
+    /** True when [loc] now carries an MSL altitude. */
+    fun add(context: Context, loc: Location): Boolean {
+        if (loc.hasMslAltitude()) return true
+        return runCatching { converter.addMslAltitudeToLocation(context, loc) }.isSuccess && loc.hasMslAltitude()
     }
 }
