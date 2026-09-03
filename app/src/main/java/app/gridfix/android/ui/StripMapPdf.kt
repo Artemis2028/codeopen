@@ -6,7 +6,6 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
-import android.hardware.GeomagneticField
 import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.TacGraphic
 import java.io.File
@@ -14,6 +13,7 @@ import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.roundToInt
+import app.gridfix.android.location.Declination
 
 /**
  * Printable strip map for a route: an overview sketch (route line, numbered
@@ -55,9 +55,7 @@ object StripMapPdf {
                 val nav = coords.navInfo(a.lat, a.lon, b.lat, b.lon)
                 val midLat = (a.lat + b.lat) / 2.0
                 val midLon = (a.lon + b.lon) / 2.0
-                val dec = GeomagneticField(
-                    midLat.toFloat(), midLon.toFloat(), 0f, System.currentTimeMillis()
-                ).declination
+                val dec = Declination.at(settings, midLat, midLon)
                 fun toRef(t: Float): Float = when (settings.northRef) {
                     1 -> (t - dec + 360f) % 360f
                     2 -> (t - coords.gridConvergence(midLat, midLon).toFloat() + 360f) % 360f

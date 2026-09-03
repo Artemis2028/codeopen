@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
@@ -951,6 +952,41 @@ private class DialLabel(
     val radial: Boolean,   // true: text reads outward like a real dial; false: stays upright
 )
 
+/** The dial's fixed shapes, built once per size instead of on every frame. */
+private class DialPaths(val arrow: Path, val needleHead: Path, val lubber: Path, val lumeMark: Path)
+
+private fun dialPaths(px: Float, lensatic: Boolean): DialPaths {
+    val c = Offset(px / 2f, px / 2f)
+    val r = px / 2f
+    val s = px / (if (lensatic) 360f else 330f)
+    val big = r - 26f * s
+    val arrow = Path().apply {
+        moveTo(c.x, c.y - (big - 32f * s))
+        lineTo(c.x - 7.5f * s, c.y - (big - 54f * s))
+        lineTo(c.x + 7.5f * s, c.y - (big - 54f * s))
+        close()
+    }
+    val needleHead = Path().apply {
+        moveTo(c.x, c.y - 140f * s)
+        lineTo(c.x - 9f * s, c.y - 116f * s)
+        lineTo(c.x + 9f * s, c.y - 116f * s)
+        close()
+    }
+    val lubber = Path().apply {
+        moveTo(c.x, c.y - r + 18f * s)
+        lineTo(c.x - 8f * s, c.y - r + 4f * s)
+        lineTo(c.x + 8f * s, c.y - r + 4f * s)
+        close()
+    }
+    val lumeMark = Path().apply {   // drawn translated to its spot on the ring
+        moveTo(0f, -9f * s)
+        lineTo(6f * s, 3f * s)
+        lineTo(-6f * s, 3f * s)
+        close()
+    }
+    return DialPaths(arrow, needleHead, lubber, lumeMark)
+}
+
 private class LensaticColors(
     val case: Color, val bezel: Color, val bezelTick: Color, val face: Color,
     val mils: Color, val degTick: Color, val red: Color,
@@ -983,6 +1019,7 @@ fun CompassDial(
     val s = px / (if (lensatic) 360f else 330f)   // px per mock pixel
     val lc = lensaticColors(p.night)
     val measurer = rememberTextMeasurer()
+    val paths = remember(px, style) { dialPaths(px, lensatic) }
     val labels = remember(px, style, p.ink, p.muted, p.lume, p.night) {
         val r = px / 2f
         val out = ArrayList<DialLabel>()
@@ -1023,44 +1060,26 @@ fun CompassDial(
             val c = center
             val r = px / 2f
             if (lensatic) {
-                drawLensatic(c, r, s, lc, p, rotation, bezelLineAt, labels)
+                drawLensatic(c, r, s, lc, p, rotation, bezelLineAt, labels, paths.arrow)
             } else {
                 drawCleanDial(c, r, s, p, rotation, labels)
             }
             lumeMarkAt?.let { a ->
                 val pos = polar(c, r - 22f * s, a)
-                rotate(a + 180f, pivot = pos) {
-                    val path = Path().apply {
-                        moveTo(pos.x, pos.y - 9f * s)
-                        lineTo(pos.x + 6f * s, pos.y + 3f * s)
-                        lineTo(pos.x - 6f * s, pos.y + 3f * s)
-                        close()
+                translate(pos.x, pos.y) {
+                    rotate(a + 180f, pivot = Offset.Zero) {
+                        drawPath(paths.lumeMark, p.lume)
                     }
-                    drawPath(path, p.lume)
                 }
             }
             needleAt?.let { a ->
                 rotate(a, pivot = c) {
                     drawLine(p.lume, Offset(c.x, c.y + 6f * s), Offset(c.x, c.y - 118f * s), 4f * s, cap = StrokeCap.Round)
-                    val head = Path().apply {
-                        moveTo(c.x, c.y - 140f * s)
-                        lineTo(c.x - 9f * s, c.y - 116f * s)
-                        lineTo(c.x + 9f * s, c.y - 116f * s)
-                        close()
-                    }
-                    drawPath(head, p.lume)
+                    drawPath(paths.needleHead, p.lume)
                 }
                 drawCircle(p.ink, radius = 5f * s, center = c)
             }
-            if (lubber) {
-                val path = Path().apply {
-                    moveTo(c.x, c.y - r + 18f * s)
-                    lineTo(c.x - 8f * s, c.y - r + 4f * s)
-                    lineTo(c.x + 8f * s, c.y - r + 4f * s)
-                    close()
-                }
-                drawPath(path, p.ink)
-            }
+            if (lubber) drawPath(paths.lubber, p.ink)
         }
         content()
     }
@@ -1088,7 +1107,7 @@ private fun DrawScope.drawLabels(c: Offset, labels: List<DialLabel>, rotation: F
 
 private fun DrawScope.drawLensatic(
     c: Offset, r: Float, s: Float, lc: LensaticColors, p: FacePalette,
-    rotation: Float, bezelLineAt: Float?, labels: List<DialLabel>,
+    rotation: Float, bezelLineAt: Float?, labels: List<DialLabel>, arrow: Path,
 ) {
     val big = r - 26f * s
     drawCircle(lc.case, radius = r - 1f * s, center = c)
@@ -1111,16 +1130,9 @@ private fun DrawScope.drawLensatic(
             val long = d % 10 == 0
             tick(c, d.toFloat(), big - 23f * s, big - (if (long) 30f else 27f) * s, lc.degTick, (if (long) 1f else 0.7f) * s)
         }
-        // luminous north arrow
-        val tip = big - 32f * s
+        // luminous north arrow (head prebuilt per size)
         val base = big - 54f * s
         val stem = big - 74f * s
-        val arrow = Path().apply {
-            moveTo(c.x, c.y - tip)
-            lineTo(c.x - 7.5f * s, c.y - base)
-            lineTo(c.x + 7.5f * s, c.y - base)
-            close()
-        }
         drawPath(arrow, p.lume)
         drawRect(p.lume, topLeft = Offset(c.x - 2.5f * s, c.y - base), size = Size(5f * s, base - stem))
         drawLabels(c, labels, rotation)

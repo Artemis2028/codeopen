@@ -1,6 +1,5 @@
 package app.gridfix.android.ui
 
-import android.hardware.GeomagneticField
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +49,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
+import app.gridfix.android.location.Declination
 
 /** Chooser for the map's field-tools button. */
 @Composable
@@ -123,9 +123,7 @@ fun RayFixDialog(
     fun trueBearing(point: RayPoint, entered: Float): Double {
         val deg = if (settings.angleUnit == 1) entered * 360f / 6400f else entered
         val adjusted = when (settings.northRef) {
-            1 -> deg + GeomagneticField(
-                point.lat.toFloat(), point.lon.toFloat(), 0f, System.currentTimeMillis()
-            ).declination
+            1 -> deg + Declination.at(settings, point.lat, point.lon)
             2 -> deg + Coordinates.gridConvergence(point.lat, point.lon).toFloat()
             else -> deg
         }
@@ -405,10 +403,9 @@ private val MONTHS = listOf(
 
 /** The map-margin declination diagram, computed for the map center. */
 @Composable
-fun DeclinationDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
-    val decl = remember(lat, lon) {
-        GeomagneticField(lat.toFloat(), lon.toFloat(), 0f, System.currentTimeMillis()).declination
-    }
+fun DeclinationDialog(lat: Double, lon: Double, override: Float? = null, onDismiss: () -> Unit) {
+    val model = remember(lat, lon) { Declination.model(lat, lon) }
+    val decl = override ?: model
     val conv = remember(lat, lon) { Coordinates.gridConvergence(lat, lon).toFloat() }
     val gm = decl - conv
 
@@ -491,7 +488,11 @@ fun DeclinationDialog(lat: Double, lon: Double, onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    "Diagram not to scale — use the printed values. World Magnetic Model via Android.",
+                    if (override != null) {
+                        "Declination is set by hand in Settings (the phone's model says ${ew(model)} here). Diagram not to scale — use the printed values."
+                    } else {
+                        "Diagram not to scale — use the printed values. World Magnetic Model via Android; a map-sheet G-M angle can be pinned in Settings."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

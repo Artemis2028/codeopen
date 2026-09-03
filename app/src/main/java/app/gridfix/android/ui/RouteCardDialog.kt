@@ -1,7 +1,6 @@
 package app.gridfix.android.ui
 
 import android.content.Intent
-import android.hardware.GeomagneticField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +29,7 @@ import app.gridfix.android.data.AppSettings
 import app.gridfix.android.data.TacGraphic
 import java.util.Locale
 import kotlin.math.roundToInt
+import app.gridfix.android.location.Declination
 
 private data class Leg(
     val index: Int,
@@ -70,9 +70,7 @@ fun RouteCardDialog(
                 val nav = Coordinates.navInfo(a.lat, a.lon, b.lat, b.lon)
                 val midLat = (a.lat + b.lat) / 2.0
                 val midLon = (a.lon + b.lon) / 2.0
-                val declination = GeomagneticField(
-                    midLat.toFloat(), midLon.toFloat(), 0f, System.currentTimeMillis()
-                ).declination
+                val declination = Declination.at(settings, midLat, midLon)
                 fun toRef(angleTrue: Float): Float = when (settings.northRef) {
                     1 -> (angleTrue - declination + 360f) % 360f
                     2 -> (angleTrue - Coordinates.gridConvergence(midLat, midLon).toFloat() + 360f) % 360f

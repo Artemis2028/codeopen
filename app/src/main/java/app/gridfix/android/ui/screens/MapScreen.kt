@@ -2,7 +2,6 @@ package app.gridfix.android.ui.screens
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
-import android.hardware.GeomagneticField
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -91,6 +90,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gridfix.android.data.reservedFolderHint
+import app.gridfix.android.location.Declination
 import app.gridfix.android.ui.isLandscape
 import app.gridfix.android.ui.theme.LabelFamily
 import app.gridfix.android.ui.theme.MonoFamily
@@ -311,8 +312,6 @@ fun MapScreen(
     var downloadStatus by remember { mutableStateOf<String?>(null) }
     var importMessage by remember { mutableStateOf<String?>(null) }
     var readoutHeightPx by remember { mutableIntStateOf(0) }
-    var pillHeightPx by remember { mutableIntStateOf(0) }
-    val pillHeightDp = with(LocalDensity.current) { pillHeightPx.toDp() }
     val readoutHeightDp = with(LocalDensity.current) { readoutHeightPx.toDp() }
     var mbtilesFiles by remember { mutableStateOf(listMbtiles(context)) }
 
@@ -904,110 +903,11 @@ fun MapScreen(
             drawCircle(crossColor, radius = 2.dp.toPx(), center = Offset(c, c))
         }
 
-        // Top-right: north indicator (tap to reset) and track recording
-        @Suppress("UNUSED_EXPRESSION")
-        cameraTick
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 10.dp, end = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            val orientation = holder.map?.mapOrientation ?: 0f
-            val rotated = orientation > 0.5f || orientation < -0.5f
-            MapButton(
-                Icons.Outlined.Navigation,
-                if (rotated) "Reset to north-up" else "North-up",
-                rotated,
-                iconRotation = orientation,
-                enabled = rotated,
-            ) {
-                holder.map?.let { m ->
-                    m.mapOrientation = 0f
-                    m.invalidate()
-                }
-                cameraTick++
-            }
-        }
-
-        // Status chips (download progress / import result / no-permission hint):
-        // stacked under the grid pill, so they never sit on top of it
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 12.dp, top = 10.dp, end = 72.dp),
-            horizontalAlignment = Alignment.Start,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            if (!landscape) Spacer(Modifier.height(pillHeightDp + 6.dp))
-            downloadStatus?.let { status ->
-                StatusChip(status) { downloadStatus = null }
-            }
-            importMessage?.let { msg ->
-                StatusChip(msg) { importMessage = null }
-            }
-            notice?.let { msg ->
-                StatusChip(msg) { notice = null }
-            }
-            courseStatus?.let { cs ->
-                StatusChip(cs) { onOpenCourse() }
-            }
-            if (viewshedOn) {
-                StatusChip(
-                    if (settings.nightMode) "Viewshed: faint seen · mid standing · bright masked — tap to clear"
-                    else "Viewshed: green seen · amber standing · red masked — tap to clear"
-                ) {
-                    holder.viewshed?.data = null
-                    viewshedOn = false
-                    holder.map?.invalidate()
-                }
-            }
-            activeTrack?.let { at ->
-                val km = at.distanceM / 1000.0
-                StatusChip(
-                    if (km < 1.0) String.format(java.util.Locale.US, "● REC  %.0f m", at.distanceM)
-                    else String.format(java.util.Locale.US, "● REC  %.2f km", km)
-                ) { stopTrackOpen = true }
-            }
-            run {
-                val loc = fix.location
-                val mock = loc != null && (
-                    if (android.os.Build.VERSION.SDK_INT >= 31) loc.isMock
-                    else @Suppress("DEPRECATION") loc.isFromMockProvider
-                    )
-                val warning = when {
-                    loc == null -> null
-                    mock -> "MOCK LOCATION ACTIVE"
-                    loc.hasAccuracy() && loc.accuracy > 50f ->
-                        "GPS DEGRADED ±${loc.accuracy.toInt()} m — trust your pace count"
-                    fix.satellitesUsed in 1..3 ->
-                        "GPS WEAK — ${fix.satellitesUsed} satellites in fix"
-                    else -> null
-                }
-                warning?.let { StatusChip(it) {} }
-            }
-            if (!hasPermission) {
-                StatusChip("Location off — tap to enable") { onRequestPermission() }
-            }
-        }
-
-        @Suppress("UNUSED_EXPRESSION")
-        cameraTick
-        val center = holder.map?.mapCenter
-        // The crosshair grid, tap to copy, hold to share. Portrait: a pill top-left.
-        // Sideways the vertical axis is the scarce one, so it becomes a square
-        // block in the bottom-right corner, out of the way of the map.
+        // The crosshair grid, tap to copy, hold to share. Portrait: a pill heading the
+        // top-left column. Sideways the vertical axis is the scarce one, so it becomes
+        // a square block in the bottom-right corner, out of the way of the map.
+        val gridReadout: @Composable (Boolean, org.osmdroid.api.IGeoPoint?) -> Unit = { landscape, center ->
         Surface(
-            modifier = if (landscape) {
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 10.dp, bottom = readoutHeightDp + 10.dp)   // clears the draw bar
-            } else {
-                Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 12.dp, top = 10.dp, end = 72.dp)   // never under the north button
-                    .onSizeChanged { pillHeightPx = it.height }
-            },
             color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         ) {
@@ -1100,12 +1000,8 @@ fun MapScreen(
                 val declination = remember(
                     loc?.latitude?.let { (it * 10).toInt() },
                     loc?.longitude?.let { (it * 10).toInt() },
-                ) {
-                    if (loc == null) 0f else GeomagneticField(
-                        loc.latitude.toFloat(), loc.longitude.toFloat(),
-                        if (loc.hasAltitude()) loc.altitude.toFloat() else 0f, loc.time,
-                    ).declination
-                }
+                    settings.declinationOverride,
+                ) { Declination.at(settings, loc) }
                 fun toRef(angleTrue: Float): Float = when (settings.northRef) {
                     1 -> (angleTrue - declination + 360f) % 360f
                     2 -> if (center == null) angleTrue else
@@ -1155,6 +1051,125 @@ fun MapScreen(
                 }
             }
         }
+        }
+
+        // Top-right: north indicator (tap to reset) and track recording
+        @Suppress("UNUSED_EXPRESSION")
+        cameraTick
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 10.dp, end = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val orientation = holder.map?.mapOrientation ?: 0f
+            val rotated = orientation > 0.5f || orientation < -0.5f
+            MapButton(
+                Icons.Outlined.Navigation,
+                if (rotated) "Reset to north-up" else "North-up",
+                rotated,
+                iconRotation = orientation,
+                enabled = rotated,
+            ) {
+                holder.map?.let { m ->
+                    m.mapOrientation = 0f
+                    m.invalidate()
+                }
+                cameraTick++
+            }
+        }
+
+        // Status chips (download progress / import result / no-permission hint):
+        // stacked under the grid pill, so they never sit on top of it
+        @Suppress("UNUSED_EXPRESSION")
+        cameraTick
+        val center = holder.map?.mapCenter
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 12.dp, top = 10.dp, end = 72.dp),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // The grid pill heads this column in portrait, so chips stack under it
+            // without measuring anything (no first-frame jump)
+            if (!landscape) gridReadout(false, center)
+            downloadStatus?.let { status ->
+                StatusChip(status) { downloadStatus = null }
+            }
+            importMessage?.let { msg ->
+                StatusChip(msg) { importMessage = null }
+            }
+            notice?.let { msg ->
+                StatusChip(msg) { notice = null }
+            }
+            courseStatus?.let { cs ->
+                StatusChip(cs) { onOpenCourse() }
+            }
+            if (viewshedOn) {
+                StatusChip(
+                    if (settings.nightMode) "Viewshed: faint seen · mid standing · bright masked — tap to clear"
+                    else "Viewshed: green seen · amber standing · red masked — tap to clear"
+                ) {
+                    holder.viewshed?.data = null
+                    viewshedOn = false
+                    holder.map?.invalidate()
+                }
+            }
+            activeTrack?.let { at ->
+                val km = at.distanceM / 1000.0
+                StatusChip(
+                    if (km < 1.0) String.format(java.util.Locale.US, "● REC  %.0f m", at.distanceM)
+                    else String.format(java.util.Locale.US, "● REC  %.2f km", km)
+                ) { stopTrackOpen = true }
+            }
+            run {
+                val loc = fix.location
+                val mock = loc != null && (
+                    if (android.os.Build.VERSION.SDK_INT >= 31) loc.isMock
+                    else @Suppress("DEPRECATION") loc.isFromMockProvider
+                    )
+                val warning = when {
+                    loc == null -> null
+                    mock -> "MOCK LOCATION ACTIVE"
+                    loc.hasAccuracy() && loc.accuracy > 50f ->
+                        "GPS DEGRADED ±${loc.accuracy.toInt()} m — trust your pace count"
+                    fix.satellitesUsed in 1..3 ->
+                        "GPS WEAK — ${fix.satellitesUsed} satellites in fix"
+                    else -> null
+                }
+                warning?.let { StatusChip(it) {} }
+            }
+            if (!hasPermission) {
+                StatusChip("Location off — tap to enable") { onRequestPermission() }
+            }
+        }
+
+        if (landscape) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 10.dp, bottom = readoutHeightDp + 10.dp),   // clears the draw bar
+            ) { gridReadout(true, center) }
+        }
+
+        // Scale bar, bottom-left, above the deck; sized from the map's own projection
+        ScaleBar(
+            metersPer100Px = run {
+                val m = holder.map
+                val proj = m?.projection
+                if (m == null || proj == null || m.width <= 0) null else {
+                    val y = m.height / 2
+                    val a = proj.fromPixels(0, y)
+                    val b = proj.fromPixels(100, y)
+                    GeoPoint(a.latitude, a.longitude).distanceToAsDouble(GeoPoint(b.latitude, b.longitude))
+                }
+            },
+            units = settings.units,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 12.dp, bottom = readoutHeightDp + 12.dp),
+        )
 
         // Bottom stack: draw-mode action bar (when drawing) above the tool deck
         Column(
@@ -1703,6 +1718,7 @@ fun MapScreen(
                             onValueChange = { gFolder = it.take(24) },
                             label = { Text("Folder (type to create new)") },
                             singleLine = true,
+                            supportingText = reservedFolderHint(gFolder)?.let { { Text(it) } },
                         )
                     }
                 },
@@ -1839,6 +1855,7 @@ fun MapScreen(
                         onValueChange = { gFolder = it.take(24) },
                         label = { Text("Folder (type to create new)") },
                         singleLine = true,
+                        supportingText = reservedFolderHint(gFolder)?.let { { Text(it) } },
                     )
                     Text(
                         "${g.points.size} vertices",
@@ -1946,7 +1963,7 @@ fun MapScreen(
                 onDismiss = { fieldTool = null },
             )
             "sunmoon" -> SunMoonDialog(crossLat, crossLon) { fieldTool = null }
-            "declination" -> DeclinationDialog(crossLat, crossLon) { fieldTool = null }
+            "declination" -> DeclinationDialog(crossLat, crossLon, settings.declinationOverride) { fieldTool = null }
             "los" -> app.gridfix.android.ui.LosDialog(
                 settings = settings,
                 waypoints = visibleWaypoints,
@@ -2257,6 +2274,73 @@ fun MapScreen(
         if (s != null && (s.startsWith("Offline area") || s.startsWith("Download done") || s.startsWith("Download failed") || s.startsWith("Elevation"))) {
             delay(5000)
             if (downloadStatus == s) downloadStatus = null
+        }
+    }
+}
+
+/**
+ * Scale bar in the house style: a round length that fits ~120 dp, end ticks,
+ * the label in mono. Metric / imperial / nautical follow the units setting.
+ */
+@Composable
+private fun ScaleBar(metersPer100Px: Double?, units: Int, modifier: Modifier = Modifier) {
+    if (metersPer100Px == null || metersPer100Px <= 0.0) return
+    val density = LocalDensity.current
+    val maxPx = with(density) { 120.dp.toPx() }
+    val metersPerPx = metersPer100Px / 100.0
+    val maxMeters = maxPx * metersPerPx
+    // candidate lengths in the unit system, converted to metres
+    val (label, meters) = when (units) {
+        1 -> {
+            val feet = listOf(50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0)
+            val miles = listOf(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0)
+            val ft = feet.lastOrNull { it * 0.3048 <= maxMeters }
+            val mi = miles.lastOrNull { it * 1609.344 <= maxMeters }
+            when {
+                mi != null -> (if (mi < 1.0) "0.5 mi" else "${mi.toInt()} mi") to mi * 1609.344
+                ft != null -> "${ft.toInt()} ft" to ft * 0.3048
+                else -> "50 ft" to 50.0 * 0.3048
+            }
+        }
+        2 -> {
+            val nm = listOf(0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0)
+            val m = listOf(10.0, 20.0, 50.0, 100.0)
+            val n = nm.lastOrNull { it * 1852.0 <= maxMeters }
+            val mm = m.lastOrNull { it <= maxMeters }
+            when {
+                n != null -> (if (n < 1.0) "$n NM" else "${n.toInt()} NM") to n * 1852.0
+                mm != null -> "${mm.toInt()} m" to mm
+                else -> "10 m" to 10.0
+            }
+        }
+        else -> {
+            val m = listOf(10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0, 50000.0, 100000.0)
+            val v = m.lastOrNull { it <= maxMeters } ?: 10.0
+            (if (v >= 1000.0) "${(v / 1000.0).toInt()} km" else "${v.toInt()} m") to v
+        }
+    }
+    val widthDp = with(density) { (meters / metersPerPx).toFloat().toDp() }
+    val ink = MaterialTheme.colorScheme.onSurface
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.8f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 5.dp)) {
+            Text(
+                label,
+                fontFamily = MonoFamily,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(3.dp))
+            Canvas(Modifier.width(widthDp).height(6.dp)) {
+                val w = 1.5.dp.toPx()
+                drawLine(ink, Offset(0f, size.height - w / 2f), Offset(size.width, size.height - w / 2f), w)
+                drawLine(ink, Offset(w / 2f, 0f), Offset(w / 2f, size.height), w)
+                drawLine(ink, Offset(size.width - w / 2f, 0f), Offset(size.width - w / 2f, size.height), w)
+            }
         }
     }
 }
