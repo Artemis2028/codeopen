@@ -235,11 +235,18 @@ object Coordinates {
 
     data class NavInfo(val distanceMeters: Float, val bearingTrue: Float)
 
-    /** Geodesic distance and initial true bearing between two points. */
+    /**
+     * Geodesic distance and initial true bearing between two points.
+     *
+     * Was `android.location.Location.distanceBetween`. That is Vincenty on
+     * WGS84 and so is [Geodesy], to well under a millimetre — GoldenTest holds
+     * both to the same vectors. The reason for the swap is that the framework
+     * call is stubbed out in JVM unit tests, so every distance the app shows
+     * was untestable in CI; and the iOS port needs the identical numbers.
+     */
     fun navInfo(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): NavInfo {
-        val results = FloatArray(2)
-        android.location.Location.distanceBetween(fromLat, fromLon, toLat, toLon, results)
-        return NavInfo(results[0], (results[1] + 360f) % 360f)
+        val d = Geodesy.distanceAndBearing(fromLat, fromLon, toLat, toLon)
+        return NavInfo(d[0].toFloat(), (((d[1] % 360.0) + 360.0) % 360.0).toFloat())
     }
 
     fun formatDistance(meters: Float, units: Int): String = when (units) {
@@ -286,6 +293,33 @@ object Coordinates {
         val ll = utmInverse(utm.easting + cell / 2.0, utm.northing + cell / 2.0, utm.zone, north)
         ll[0] to ll[1]
     }.getOrNull()
+
+    /**
+     * Parse an MGRS string to the SW corner of its cell (no centre offset).
+     * Roadmap A (photo-map calibration): control points are grid LINE
+     * intersections = cell corners. Never use [parseMgrs] here — it aims at
+     * the cell centre and would bake a half-cell error into the homography.
+     */
+    fun parseMgrsCorner(text: String): Pair<Double, Double>? = runCatching {
+        val cleaned = asciiDigits(text.trim()).uppercase(Locale.US).replace(" ", "")
+        if (cleaned.isEmpty()) return null
+        val mgrs = MGRS.parse(cleaned)
+        val utm = mgrs.toUTM()
+        val north = utm.hemisphere.toString().uppercase(Locale.US).startsWith("N")
+        val ll = utmInverse(utm.easting, utm.northing, utm.zone, north)
+        ll[0] to ll[1]
+    }.getOrNull()
+
+    /**
+     * Scale a typed grid line number to 5 digits ("45" -> 45000).
+     * Control-point entry takes 2-5 digits per roadmap A; null otherwise.
+     * Pure — shared with iOS calibration screen verbatim.
+     */
+    fun scaleGridLineNumber(raw: String): Double? {
+        val digits = raw.filter { it.isDigit() }
+        if (digits.length !in 2..5 || digits.length != raw.trim().length) return null
+        return (digits + "0".repeat(5 - digits.length)).toDoubleOrNull()
+    }
 
     // ---- Grid-overlay math: forced-zone UTM forward and the Snyder-series inverse ----
     // Validated by roundtrip against the forward formulas above: < 1 mm error worldwide,
